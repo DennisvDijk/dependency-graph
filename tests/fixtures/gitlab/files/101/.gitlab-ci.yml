@@ -1,0 +1,6 @@
+stages: [deploy]
+deploy_prod:
+  stage: deploy
+  script: [echo deploy]
+  environment:
+    name: production

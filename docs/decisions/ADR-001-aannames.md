@@ -21,8 +21,8 @@ Afwijkingen van de taal en de repo-locatie staan in [ADR-002](ADR-002-rust-en-gi
 ### 2. Welke GitLab-groepen en subgroepen in scope
 
 - Status: beantwoord
-- Besluit: alleen de groepen van Dennis' eigen team. Niet de hele instance en niet de groepen van andere teams.
-- Gevolg: `gitlab.groups` blijft de placeholder `example-group/pilot` tot een mens de echte paden invult. Die paden zijn nog een TODO. De collector mag daarbuiten niets ophalen.
+- Besluit: vervangen door [ADR-006](ADR-006-volledige-scan.md). Standaard ziet depgraph elk project dat het token mag zien. `gitlab.groups` vernauwt optioneel, recursief, op een groep of subgroep (`platform`, `org/infra/platform`). `gitlab.projects` voegt losse projectpaden toe (`org/other-team/ingress-gateway`).
+- Gevolg: de voorbeeldconfig laat beide lijsten leeg. Filters (`exclude_forks`, `exclude_archived`, paden, topics, activiteit, visibility) gelden na de lijst. Expliciete projecten slaan die filters over, behalve archief.
 
 ### 3. Kubernetes? Welke clusters en namespaces per omgeving
 
@@ -117,7 +117,8 @@ Afwijkingen van de taal en de repo-locatie staan in [ADR-002](ADR-002-rust-en-gi
 ## Vragen die een mens nog moet beantwoorden
 
 1. De exacte GitLab-versie, via `GET /api/v4/version`. Self-managed en het `glab`-pad staan vast.
-2. De exacte groeps- en subgroepspaden van Dennis' team. De scope "alleen dat team" staat vast.
+
+Groepspaden zijn geen blokkade meer. Zie ADR-006.
 
 Vragen 3, 4, 7, 9, 10, 11, 12, 13 en 17 blijven `standaardaanname`. Een mens corrigeert ze als de werkelijkheid anders is.
 

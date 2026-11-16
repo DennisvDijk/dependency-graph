@@ -1,0 +1,10 @@
+[
+  {"path": "catalog-info.yaml", "type": "blob"},
+  {"path": ".gitlab-ci.yml", "type": "blob"},
+  {"path": "deploy/deployment.yaml", "type": "blob"},
+  {"path": "chart/Chart.yaml", "type": "blob"},
+  {"path": "chart/values.yaml", "type": "blob"},
+  {"path": "gitops/kustomization.yaml", "type": "blob"},
+  {"path": "terraform/main.tf", "type": "blob"},
+  {"path": "istio/virtual-service.yaml", "type": "blob"}
+]

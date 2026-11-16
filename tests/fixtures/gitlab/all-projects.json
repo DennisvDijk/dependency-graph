@@ -1,0 +1,39 @@
+[
+  {
+    "id": 11,
+    "path_with_namespace": "team/app",
+    "default_branch": "main",
+    "last_activity_at": "2026-11-01T00:00:00Z",
+    "archived": false,
+    "visibility": "private",
+    "topics": ["api"]
+  },
+  {
+    "id": 12,
+    "path_with_namespace": "team/fork",
+    "default_branch": "main",
+    "last_activity_at": "2026-11-01T00:00:00Z",
+    "archived": false,
+    "visibility": "private",
+    "topics": [],
+    "forked_from_project": {"id": 1}
+  },
+  {
+    "id": 13,
+    "path_with_namespace": "team/old",
+    "default_branch": "main",
+    "last_activity_at": "2026-11-01T00:00:00Z",
+    "archived": true,
+    "visibility": "private",
+    "topics": []
+  },
+  {
+    "id": 14,
+    "path_with_namespace": "other/public",
+    "default_branch": "main",
+    "last_activity_at": "2026-01-01T00:00:00Z",
+    "archived": false,
+    "visibility": "public",
+    "topics": []
+  }
+]

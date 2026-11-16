@@ -7,17 +7,22 @@
 #![forbid(unsafe_code)]
 
 pub mod analysis;
+pub mod catalog;
 pub mod cli;
 pub mod collectors;
 pub mod config;
 pub mod error;
+pub mod gitlab;
 pub mod ids;
+pub mod inventory;
 pub mod mcp;
 pub mod models;
 pub mod normalize;
+pub mod propose;
 pub mod publish;
 pub mod raw;
 pub mod redact;
+pub mod repo_scan;
 pub mod store;
 
 pub use error::Error;

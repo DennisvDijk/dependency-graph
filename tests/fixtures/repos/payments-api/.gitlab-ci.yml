@@ -1,0 +1,4 @@
+deploy:
+  script: [echo deploy]
+  environment:
+    name: production

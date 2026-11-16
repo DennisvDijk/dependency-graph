@@ -19,6 +19,9 @@ pub enum Error {
     /// Filesystem failure.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// GitLab HTTP or auth failure. The message is redacted.
+    #[error("{0}")]
+    GitLab(String),
 }
 
 impl Error {
@@ -27,7 +30,11 @@ impl Error {
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::NotImplemented(_) | Self::Usage(_) => 2,
-            Self::Validation(_) | Self::Config(_) | Self::Store(_) | Self::Io(_) => 1,
+            Self::Validation(_)
+            | Self::Config(_)
+            | Self::Store(_)
+            | Self::Io(_)
+            | Self::GitLab(_) => 1,
         }
     }
 }

@@ -1,11 +1,11 @@
 //! `depgraph` command line.
 //!
-//! `validate` is implemented. Every other command is wired to its module and
-//! returns [`crate::Error::NotImplemented`] so a pipeline can see the stub
-//! without touching a source system.
+//! `validate`, `inventory`, `validate-catalog`, `resolve-env`, and
+//! `propose-catalog` are implemented. Collect, analysis, and publish still
+//! return [`crate::Error::NotImplemented`] until phase 1.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -67,6 +67,14 @@ pub enum Command {
     At(ReadArgs),
     /// Validate a graph snapshot.
     Validate(ValidateArgs),
+    /// Write inventory.csv for the configured GitLab groups.
+    Inventory(InventoryArgs),
+    /// Validate catalog-info.yaml files and resolve dependsOn.
+    ValidateCatalog(ValidateCatalogArgs),
+    /// Map a source environment name onto dev, acc, or prod.
+    ResolveEnv(ResolveEnvArgs),
+    /// Draft catalog-info.yaml files from a local checkout.
+    ProposeCatalog(ProposeCatalogArgs),
     /// Serve the read-only MCP endpoint. OAuth is not implemented.
     ServeMcp,
 }
@@ -104,6 +112,64 @@ pub struct ReadArgs {
     /// Graph snapshot to read.
     #[arg(long)]
     pub snapshot: Option<PathBuf>,
+}
+
+/// `depgraph inventory`.
+#[derive(Debug, clap::Args)]
+pub struct InventoryArgs {
+    /// CSV path. Defaults to `inventory.csv`.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+    /// GitLab base URL. Defaults to `config/config.yaml`.
+    #[arg(long)]
+    pub base_url: Option<String>,
+    /// Group or subgroup path. Repeat to override `gitlab.groups`.
+    /// One path collects every project beneath it.
+    #[arg(long)]
+    pub group: Vec<String>,
+    /// Project path. Repeat to override `gitlab.projects`.
+    #[arg(long = "project")]
+    pub project_path: Vec<String>,
+    /// Page size. Defaults to config.
+    #[arg(long)]
+    pub per_page: Option<u32>,
+    /// Parallel project inspections. Defaults to config.
+    #[arg(long)]
+    pub max_concurrency: Option<usize>,
+}
+
+/// `depgraph validate-catalog`.
+#[derive(Debug, clap::Args)]
+pub struct ValidateCatalogArgs {
+    /// Catalog files. dependsOn must resolve inside this set.
+    pub files: Vec<PathBuf>,
+}
+
+/// `depgraph resolve-env`.
+#[derive(Debug, clap::Args)]
+pub struct ResolveEnvArgs {
+    /// Source environment name, such as `staging`.
+    pub name: String,
+}
+
+/// `depgraph propose-catalog`.
+#[derive(Debug, clap::Args)]
+pub struct ProposeCatalogArgs {
+    /// Checkout or a directory of checkouts.
+    #[arg(long)]
+    pub from: PathBuf,
+    /// Where drafts are written. Defaults to `proposed-catalog`.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+    /// Open GitLab merge requests. Never merges.
+    #[arg(long)]
+    pub open_mr: bool,
+    /// GitLab project path for each repo, in directory order. Required with `--open-mr`.
+    #[arg(long)]
+    pub project: Vec<String>,
+    /// GitLab base URL. Defaults to config.
+    #[arg(long)]
+    pub base_url: Option<String>,
 }
 
 /// `depgraph validate`.
@@ -236,8 +302,106 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::Diff(args) => analysis::diff(&read_request("diff", args)),
         Command::At(args) => analysis::at(&read_request("at", args)),
         Command::Validate(args) => validate_path(&args),
+        Command::Inventory(args) => run_inventory(args),
+        Command::ValidateCatalog(args) => validate_catalog(&args),
+        Command::ResolveEnv(args) => resolve_env(&args),
+        Command::ProposeCatalog(args) => propose_catalog(args),
         Command::ServeMcp => crate::mcp::serve(),
     }
+}
+
+fn run_inventory(args: InventoryArgs) -> Result<(), Error> {
+    let project = config::load_project(Path::new("."))?;
+    let filter = project.config.gitlab.project_filter()?;
+    let base_url = args
+        .base_url
+        .unwrap_or_else(|| project.config.gitlab.base_url.clone());
+    let groups = if args.group.is_empty() {
+        project.config.gitlab.groups.clone()
+    } else {
+        args.group
+    };
+    let projects = if args.project_path.is_empty() {
+        project.config.gitlab.projects.clone()
+    } else {
+        args.project_path
+    };
+    let per_page = args.per_page.unwrap_or(project.config.gitlab.per_page);
+    let max_concurrency = args
+        .max_concurrency
+        .unwrap_or(project.config.gitlab.max_concurrency as usize);
+    let catalog_file = project.config.gitlab.catalog_file.clone();
+    let output = args
+        .output
+        .unwrap_or_else(|| PathBuf::from("inventory.csv"));
+    let (rows, warnings) = tokio_runtime()?.block_on(crate::inventory::collect_inventory(
+        crate::inventory::InventoryQuery {
+            base_url: &base_url,
+            groups: &groups,
+            projects: &projects,
+            filter: &filter,
+            catalog_file: &catalog_file,
+            per_page,
+            max_concurrency,
+            now: chrono::Utc::now(),
+        },
+    ))?;
+    for warning in &warnings {
+        eprintln!("warning: {warning}");
+    }
+    let count = rows.len();
+    crate::inventory::write_inventory_csv(&output, &rows)?;
+    println!("wrote {} ({count} projects)", output.display());
+    Ok(())
+}
+
+fn validate_catalog(args: &ValidateCatalogArgs) -> Result<(), Error> {
+    let entities = crate::catalog::validate_catalog_files(&args.files)?;
+    println!("valid ({} entities)", entities.len());
+    Ok(())
+}
+
+fn resolve_env(args: &ResolveEnvArgs) -> Result<(), Error> {
+    let environments = config::parse_environments(
+        &std::fs::read_to_string("config/environments.yaml")
+            .map_err(|err| Error::Config(format!("reading config/environments.yaml: {err}")))?,
+    )?;
+    let index = environments.index()?;
+    let env = crate::normalize::resolve_source_env(&index, &args.name)?;
+    println!("{env}");
+    Ok(())
+}
+
+fn propose_catalog(args: ProposeCatalogArgs) -> Result<(), Error> {
+    let drafts = crate::propose::draft_from_directory(&args.from)?;
+    let output = args
+        .output
+        .unwrap_or_else(|| PathBuf::from("proposed-catalog"));
+    let written = crate::propose::write_drafts(&output, &drafts)?;
+    for path in &written {
+        println!("wrote {}", path.display());
+    }
+    if args.open_mr {
+        let project = config::load_project(Path::new("."))?;
+        let base_url = args.base_url.unwrap_or(project.config.gitlab.base_url);
+        let urls = tokio_runtime()?.block_on(crate::propose::open_merge_requests(
+            &base_url,
+            project.config.gitlab.per_page,
+            &drafts,
+            &args.project,
+        ))?;
+        for url in urls {
+            println!("opened {url}");
+        }
+    }
+    Ok(())
+}
+
+fn tokio_runtime() -> Result<tokio::runtime::Runtime, Error> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(Error::Io)
 }
 
 fn read_request(command: &'static str, args: ReadArgs) -> ReadRequest {

@@ -1,0 +1,29 @@
+[
+  {
+    "id": 301,
+    "path_with_namespace": "org/infra/platform/api",
+    "default_branch": "main",
+    "last_activity_at": "2026-06-01T00:00:00Z",
+    "archived": false,
+    "visibility": "private",
+    "topics": ["platform"]
+  },
+  {
+    "id": 303,
+    "path_with_namespace": "org/infra/platform/edge/gateway",
+    "default_branch": "main",
+    "last_activity_at": "2026-06-01T00:00:00Z",
+    "archived": false,
+    "visibility": "private",
+    "topics": ["platform"]
+  },
+  {
+    "id": 304,
+    "path_with_namespace": "org/infra/platform/edge/mesh/sidecar",
+    "default_branch": "main",
+    "last_activity_at": "2026-06-01T00:00:00Z",
+    "archived": false,
+    "visibility": "internal",
+    "topics": ["mesh"]
+  }
+]

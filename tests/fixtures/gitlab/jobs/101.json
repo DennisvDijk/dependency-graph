@@ -1,0 +1,8 @@
+[
+  {
+    "id": 9,
+    "name": "cyclonedx",
+    "artifacts": [{"filename": "sbom.cdx.json", "file_type": "metadata"}],
+    "artifacts_file": {"filename": "sbom.cdx.json"}
+  }
+]
