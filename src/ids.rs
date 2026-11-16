@@ -51,6 +51,12 @@ pub enum ResourceKind {
     ModelEndpoint,
     /// An identity provider.
     IdentityProvider,
+    /// A Kubernetes NetworkPolicy. Accepted in ADR-007.
+    NetworkPolicy,
+    /// A firewall rule declared in a repo. Accepted in ADR-007.
+    FirewallRule,
+    /// An infrastructure component from IaC. Accepted in ADR-007.
+    Infra,
     /// Anything else that still needs a node.
     Other,
 }
@@ -66,6 +72,9 @@ impl ResourceKind {
             Self::ExternalApi => "external-api",
             Self::ModelEndpoint => "model-endpoint",
             Self::IdentityProvider => "identity-provider",
+            Self::NetworkPolicy => "network-policy",
+            Self::FirewallRule => "firewall-rule",
+            Self::Infra => "infra",
             Self::Other => "other",
         }
     }
@@ -80,6 +89,9 @@ impl ResourceKind {
             "external-api" => Self::ExternalApi,
             "model-endpoint" => Self::ModelEndpoint,
             "identity-provider" => Self::IdentityProvider,
+            "network-policy" => Self::NetworkPolicy,
+            "firewall-rule" => Self::FirewallRule,
+            "infra" => Self::Infra,
             "other" => Self::Other,
             _ => return None,
         })
@@ -280,6 +292,9 @@ mod tests {
         assert!(parse_node_id("resource:identity-provider:keycloak").is_ok());
         assert!(parse_node_id("resource:model-endpoint:ranker").is_ok());
         assert!(parse_node_id("resource:other:legacy").is_ok());
+        assert!(parse_node_id("resource:network-policy:payments-net").is_ok());
+        assert!(parse_node_id("resource:firewall-rule:payments-egress").is_ok());
+        assert!(parse_node_id("resource:infra:payments-api").is_ok());
     }
 
     #[test]

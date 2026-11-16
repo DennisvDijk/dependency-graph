@@ -35,6 +35,22 @@ pub struct Meta {
     /// Collector name to the latest outcome.
     #[serde(default)]
     pub collectors: BTreeMap<String, CollectorMeta>,
+    /// Deployments dropped because another version won for the same component and env.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deployment_mismatches: Vec<DeploymentMismatch>,
+}
+
+/// One component and environment had more than one deployment version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeploymentMismatch {
+    /// Canonical component name.
+    pub component: String,
+    /// Canonical environment.
+    pub env: String,
+    /// Version that was kept.
+    pub chosen: String,
+    /// Versions that were not kept.
+    pub discarded: Vec<String>,
 }
 
 /// Persistence for snapshots, raw JSONL, and collector metadata.

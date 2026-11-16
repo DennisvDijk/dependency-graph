@@ -1,0 +1,7 @@
+projects:
+  - path: example-group/pilot/payments-api
+    dir: payments-api
+  - path: example-group/pilot/billing-api
+    dir: billing-api
+  - path: example-group/pilot/payments-db
+    dir: payments-db

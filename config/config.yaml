@@ -22,6 +22,8 @@ gitlab:
   per_page: 100
   max_concurrency: 4
 kubernetes:
+  # ADR-004: pilot collection reads Git. Live kubectl is optional and off.
+  live_read: false
   clusters:
     # kubeconfig_env is the variable name. Never put kubeconfig contents here.
     - name: main

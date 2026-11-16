@@ -141,6 +141,9 @@ impl GitlabConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KubernetesConfig {
+    /// When true, also read workloads with kubectl. Default false: repos only.
+    #[serde(default)]
+    pub live_read: bool,
     /// One entry per cluster. The default assumption is a single cluster.
     pub clusters: Vec<ClusterConfig>,
 }
@@ -878,6 +881,7 @@ mod tests {
         assert_eq!(project.config.gitlab.catalog_file, "catalog-info.yaml");
         assert_eq!(project.config.gitlab.per_page, 100);
         assert_eq!(project.config.gitlab.max_concurrency, 4);
+        assert!(!project.config.kubernetes.live_read);
         assert_eq!(project.config.kubernetes.clusters.len(), 1);
         assert_eq!(
             project.config.kubernetes.clusters[0].kubeconfig_env,

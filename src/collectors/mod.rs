@@ -10,6 +10,7 @@
 
 mod base;
 mod datadog_status;
+mod gather;
 mod gitlab_deployments;
 mod gitlab_inventory;
 mod k8s_workloads;
@@ -18,6 +19,9 @@ mod sbom_links;
 
 pub use crate::raw::RawRecord;
 pub use base::{CollectSet, Collector, all, collect};
+pub use gather::{
+    GatherSet, GitlabScope, KubectlRead, LiveRead, records_from_fixture, records_from_gitlab,
+};
 
 #[cfg(test)]
 mod tests {

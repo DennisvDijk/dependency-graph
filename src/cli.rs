@@ -32,9 +32,9 @@ pub enum Command {
     /// Collect raw records from source systems.
     Collect(CollectArgs),
     /// Build a graph snapshot from raw records.
-    Build,
+    Build(BuildArgs),
     /// Generate the static site.
-    Site,
+    Site(SiteArgs),
     /// Publish a snapshot or a drift issue.
     Publish {
         /// What to publish.
@@ -85,13 +85,42 @@ pub struct CollectArgs {
     /// Collector set.
     #[arg(long, value_enum)]
     pub set: CollectSetArg,
+    /// Fixture directory. Omit to read GitLab.
+    #[arg(long)]
+    pub fixture: Option<PathBuf>,
+    /// Directory for raw JSONL. Defaults to `data`.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+    /// GitLab base URL override.
+    #[arg(long)]
+    pub base_url: Option<String>,
+    /// Group or subgroup path. Repeat to override `gitlab.groups`.
+    #[arg(long)]
+    pub group: Vec<String>,
+    /// Project path. Repeat to override `gitlab.projects`.
+    #[arg(long = "project")]
+    pub project_path: Vec<String>,
+}
+
+/// `depgraph build`.
+#[derive(Debug, clap::Args)]
+pub struct BuildArgs {
+    /// Directory of collector JSONL files. Defaults to `data/raw`.
+    #[arg(long)]
+    pub raw: Option<PathBuf>,
+    /// Snapshot path. Defaults to `data/snapshot.json`.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+    /// Alias file. Defaults to `config/aliases.yaml`.
+    #[arg(long)]
+    pub aliases: Option<PathBuf>,
 }
 
 /// `depgraph publish`.
 #[derive(Debug, Subcommand)]
 pub enum PublishCommand {
     /// Publish the graph snapshot.
-    Snapshot,
+    Snapshot(SnapshotArgs),
     /// Open or update the drift issue.
     DriftIssue,
 }
@@ -112,6 +141,28 @@ pub struct ReadArgs {
     /// Graph snapshot to read.
     #[arg(long)]
     pub snapshot: Option<PathBuf>,
+}
+
+/// `depgraph site`.
+#[derive(Debug, clap::Args)]
+pub struct SiteArgs {
+    /// Snapshot to render. Defaults to `data/snapshot.json`.
+    #[arg(long)]
+    pub snapshot: Option<PathBuf>,
+    /// Output directory. Defaults to `public`.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+}
+
+/// `depgraph publish snapshot`.
+#[derive(Debug, clap::Args)]
+pub struct SnapshotArgs {
+    /// Snapshot to copy. Defaults to `data/snapshot.json`.
+    #[arg(long)]
+    pub snapshot: Option<PathBuf>,
+    /// Destination. Defaults to `data/published.json`.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 }
 
 /// `depgraph inventory`.
@@ -280,11 +331,11 @@ where
 
 fn execute(cli: Cli) -> Result<(), Error> {
     match cli.command {
-        Command::Collect(args) => collectors::collect(args.set.into_set()),
-        Command::Build => normalize::merge::merge(),
-        Command::Site => publish::site(),
+        Command::Collect(args) => run_collect(args),
+        Command::Build(args) => run_build(args),
+        Command::Site(args) => run_site(args),
         Command::Publish { target } => match target {
-            PublishCommand::Snapshot => publish::publish_snapshot(),
+            PublishCommand::Snapshot(args) => run_publish_snapshot(args),
             PublishCommand::DriftIssue => publish::drift_issue(),
         },
         Command::Show(args) => analysis::show(&read_request("show", args)),
@@ -308,6 +359,227 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::ProposeCatalog(args) => propose_catalog(args),
         Command::ServeMcp => crate::mcp::serve(),
     }
+}
+
+fn run_collect(args: CollectArgs) -> Result<(), Error> {
+    let set = match args.set.into_set() {
+        collectors::CollectSet::Fast => collectors::GatherSet::Fast,
+        collectors::CollectSet::Full => collectors::GatherSet::Full,
+    };
+    let records = if let Some(fixture) = &args.fixture {
+        collectors::records_from_fixture(fixture, set)?
+    } else {
+        let project = config::load_project(Path::new("."))?;
+        let filter = project.config.gitlab.project_filter()?;
+        let base_url = args
+            .base_url
+            .unwrap_or_else(|| project.config.gitlab.base_url.clone());
+        let groups = if args.group.is_empty() {
+            project.config.gitlab.groups.clone()
+        } else {
+            args.group
+        };
+        let projects = if args.project_path.is_empty() {
+            project.config.gitlab.projects.clone()
+        } else {
+            args.project_path
+        };
+        let catalog_file = project.config.gitlab.catalog_file.clone();
+        let per_page = project.config.gitlab.per_page;
+        let token = crate::gitlab::resolve_token(&base_url)?;
+        let client = crate::gitlab::GitLabClient::new(base_url, token, per_page)?;
+        let live = live_reader(&project.config.kubernetes)?;
+        let (records, warnings) = tokio_runtime()?.block_on(collectors::records_from_gitlab(
+            &client,
+            collectors::GitlabScope {
+                groups: &groups,
+                projects: &projects,
+                filter: &filter,
+                now: chrono::Utc::now(),
+            },
+            &catalog_file,
+            set,
+            live.as_ref()
+                .map(|reader| reader as &dyn collectors::LiveRead),
+        ))?;
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
+        records
+    };
+    let output = args.output.unwrap_or_else(|| PathBuf::from("data"));
+    write_raw_dir(&output.join("raw"), &records)?;
+    println!(
+        "wrote {} raw records to {}",
+        records.len(),
+        output.display()
+    );
+    Ok(())
+}
+
+fn live_reader(
+    kubernetes: &config::KubernetesConfig,
+) -> Result<Option<collectors::KubectlRead>, Error> {
+    if !kubernetes.live_read {
+        return Ok(None);
+    }
+    let Some(cluster) = kubernetes.clusters.first() else {
+        return Err(Error::Config(
+            "kubernetes.live_read needs a cluster".to_owned(),
+        ));
+    };
+    let path = std::env::var(&cluster.kubeconfig_env).map_err(|_| {
+        Error::Config(format!(
+            "environment variable {} is not set. The kubeconfig was not read.",
+            cluster.kubeconfig_env
+        ))
+    })?;
+    Ok(Some(collectors::KubectlRead {
+        kubeconfig: PathBuf::from(path),
+    }))
+}
+
+fn write_raw_dir(dir: &Path, records: &[crate::raw::RawRecord]) -> Result<(), Error> {
+    fs::create_dir_all(dir)?;
+    let mut by_collector: std::collections::BTreeMap<&str, Vec<&crate::raw::RawRecord>> =
+        std::collections::BTreeMap::new();
+    for record in records {
+        by_collector
+            .entry(record.collector.as_str())
+            .or_default()
+            .push(record);
+    }
+    for (name, group) in by_collector {
+        let mut lines = Vec::new();
+        for record in group {
+            lines.push(serde_json::to_string(record).map_err(|err| Error::Store(err.to_string()))?);
+        }
+        lines.sort();
+        let mut body = lines.join("\n");
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        fs::write(dir.join(format!("{name}.jsonl")), body)?;
+    }
+    Ok(())
+}
+
+fn run_build(args: BuildArgs) -> Result<(), Error> {
+    let raw_dir = args.raw.unwrap_or_else(|| PathBuf::from("data/raw"));
+    let records = read_raw_dir(&raw_dir)?;
+    let aliases = if let Some(path) = &args.aliases {
+        config::parse_aliases(&fs::read_to_string(path)?)?
+    } else {
+        config::load_project(Path::new("."))?.aliases
+    };
+    let environments =
+        config::parse_environments(&fs::read_to_string("config/environments.yaml")?)?.index()?;
+    let generated_at = generated_at_from(&records);
+    let libraries = config::load_project(Path::new("."))
+        .map(|project| project.config.libraries.enabled)
+        .unwrap_or(false);
+    let built = normalize::merge::merge_records(
+        &records,
+        &aliases,
+        &environments,
+        &generated_at,
+        "local",
+        libraries,
+    )?;
+    let output = args
+        .output
+        .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
+    publish::write_snapshot(&built.graph, &output)?;
+    let unresolved_path = output.with_file_name("unresolved.csv");
+    fs::write(
+        &unresolved_path,
+        normalize::merge::unresolved_csv(&built.unresolved),
+    )?;
+    let meta_path = output.with_file_name("meta.json");
+    let meta = crate::store::Meta {
+        collectors: Default::default(),
+        deployment_mismatches: built.mismatches,
+    };
+    fs::write(
+        &meta_path,
+        serde_json::to_string_pretty(&meta).map_err(|err| Error::Store(err.to_string()))?,
+    )?;
+    println!(
+        "wrote {} ({} unresolved)",
+        output.display(),
+        built.unresolved.len()
+    );
+    Ok(())
+}
+
+fn read_raw_dir(dir: &Path) -> Result<Vec<crate::raw::RawRecord>, Error> {
+    let mut records = Vec::new();
+    if !dir.is_dir() {
+        return Err(Error::Config(format!(
+            "raw directory {} does not exist",
+            dir.display()
+        )));
+    }
+    let mut paths: Vec<_> = fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .collect();
+    paths.sort();
+    for path in paths {
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let text = fs::read_to_string(&path)?;
+        for line in text.lines().filter(|line| !line.is_empty()) {
+            records.push(
+                serde_json::from_str(line)
+                    .map_err(|err| Error::Store(format!("{}: {err}", path.display())))?,
+            );
+        }
+    }
+    Ok(records)
+}
+
+fn generated_at_from(records: &[crate::raw::RawRecord]) -> crate::models::Timestamp {
+    let mut latest = "1970-01-01T00:00:00Z".to_owned();
+    for record in records {
+        if let Some(created) = record
+            .payload
+            .get("created_at")
+            .and_then(|value| value.as_str())
+            && created > latest.as_str()
+        {
+            latest = created.to_owned();
+        }
+    }
+    crate::models::Timestamp::parse(latest)
+        .unwrap_or_else(|_| crate::models::Timestamp::parse("1970-01-01T00:00:00Z").expect("epoch"))
+}
+
+fn run_site(args: SiteArgs) -> Result<(), Error> {
+    let snapshot = args
+        .snapshot
+        .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
+    let graph: crate::models::GraphSnapshot = serde_json::from_str(&fs::read_to_string(&snapshot)?)
+        .map_err(|err| Error::Validation(err.to_string()))?;
+    let output = args.output.unwrap_or_else(|| PathBuf::from("public"));
+    publish::write_site(&graph, &output)?;
+    println!("wrote {}", output.join("index.html").display());
+    Ok(())
+}
+
+fn run_publish_snapshot(args: SnapshotArgs) -> Result<(), Error> {
+    let snapshot = args
+        .snapshot
+        .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
+    let graph: crate::models::GraphSnapshot = serde_json::from_str(&fs::read_to_string(&snapshot)?)
+        .map_err(|err| Error::Validation(err.to_string()))?;
+    let output = args
+        .output
+        .unwrap_or_else(|| PathBuf::from("data/published.json"));
+    publish::write_snapshot(&graph, &output)?;
+    println!("wrote {}", output.display());
+    Ok(())
 }
 
 fn run_inventory(args: InventoryArgs) -> Result<(), Error> {

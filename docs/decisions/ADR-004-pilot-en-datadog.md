@@ -15,7 +15,7 @@ Datadog mag deployment- en health-status leveren, alleen lezen.
 1. De pilot is alle applicaties van het team. `pilot.yaml` houdt `apps: []`. Een lege lijst is hier geen shortlist-die-nog-leeg-is. De scope is elk project dat het token mag zien, optioneel vernauwd met `gitlab.groups` of `gitlab.projects` ([ADR-006](ADR-006-volledige-scan.md)). Er is geen allowlist van 5 tot 10 namen.
 2. Collectors voor deze pilot lezen GitLab-code: catalogus, manifests, Helm, kustomize, Terraform en andere IaC, Istio-config in de repo, en CI-jobs met `environment:`. Ze raken het cluster niet rechtstreeks aan. De Kubernetes-collector blijft in de boom als latere controle, en is niet het pilotpad.
 3. Datadog is een optionele, read-only statusbron. `datadog.enabled` staat default op `false`. De config noemt alleen de env-var-namen `DEPGRAPH_DATADOG_API_KEY` en `DEPGRAPH_DATADOG_APP_KEY`, plus een placeholder-site. Geen API-sleutel en geen app-key in de repo of in de graaf. De collector `datadog_status` is een stub en schrijft nergens naar Datadog.
-4. Zelfde voorstel als [ADR-003](ADR-003-runtime-bron.md), nog niet gebouwd: resource-kinds `network-policy`, `firewall-rule` en `infra` voor firewallregels, network policies, ingresses en infra-componenten uit de repo's. De parser kent die kinds nog niet.
+4. Zelfde voorstel als [ADR-003](ADR-003-runtime-bron.md): resource-kinds `network-policy`, `firewall-rule` en `infra` voor firewallregels, network policies, ingresses en infra-componenten uit de repo's. [ADR-007](ADR-007-resource-kinds.md) accepteert ze. De parser kent ze.
 
 ## Gevolgen
 
