@@ -1,0 +1,16 @@
+# Include from an application repository:
+#   include:
+#     - project: <tool-group>/depgraph
+#       file: ci/depgraph-mr-check.yml
+#
+# F0-1 does not inspect the application and does not call GitLab, Kubernetes,
+# Prometheus, or an SBOM store. The job exits 0 so including it cannot fail a
+# merge request. Later phases replace the script with catalog and contract checks.
+
+depgraph-mr-check:
+  stage: test
+  image: debian:bookworm-slim
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - echo "depgraph MR check is not implemented in F0-1; no source system is contacted"

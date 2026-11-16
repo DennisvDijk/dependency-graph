@@ -1,0 +1,455 @@
+{
+  "$defs": {
+    "Criticality": {
+      "description": "How hard a dependency is.",
+      "oneOf": [
+        {
+          "const": "hard",
+          "description": "Failure propagates.",
+          "type": "string"
+        },
+        {
+          "const": "soft",
+          "description": "The caller tolerates failure.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Not classified.",
+          "type": "string"
+        }
+      ]
+    },
+    "Edge": {
+      "additionalProperties": false,
+      "description": "A directed relationship. `env` is null when the edge is not environment-specific.",
+      "properties": {
+        "active": {
+          "default": true,
+          "description": "Inactive edges stay in the snapshot until expiry. Defaults to `true`.",
+          "type": "boolean"
+        },
+        "attrs": {
+          "$ref": "#/$defs/EdgeAttrs",
+          "default": {},
+          "description": "Optional measurements."
+        },
+        "criticality": {
+          "$ref": "#/$defs/Criticality",
+          "default": "unknown",
+          "description": "Hard, soft, or unknown. Defaults to `unknown`."
+        },
+        "env": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Env"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Canonical environment, or null."
+        },
+        "from_id": {
+          "description": "Source node id.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Stable hash of `(type, from_id, to_id, env)`.",
+          "type": "string"
+        },
+        "sources": {
+          "default": [],
+          "description": "At least one source is required.",
+          "items": {
+            "$ref": "#/$defs/EdgeSource"
+          },
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/EdgeStatus",
+          "default": "n/a",
+          "description": "Declared versus observed. Defaults to `n/a`."
+        },
+        "to_id": {
+          "description": "Target node id.",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/EdgeType",
+          "description": "Relationship kind."
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "from_id",
+        "to_id"
+      ],
+      "type": "object"
+    },
+    "EdgeAttrs": {
+      "additionalProperties": false,
+      "description": "Numeric and protocol attributes. Absent fields are unknown, not zero.",
+      "properties": {
+        "calls_7d": {
+          "description": "Call count over seven days.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error_rate_7d": {
+          "description": "Error rate over seven days, from 0 to 1 when known.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "p95_ms_7d": {
+          "description": "95th percentile latency in milliseconds over seven days.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "protocol": {
+          "description": "Protocol name, such as `http` or `grpc`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sync": {
+          "description": "`true` when the call is synchronous.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "EdgeSource": {
+      "additionalProperties": false,
+      "description": "One observation window on an edge.",
+      "properties": {
+        "evidence_ref": {
+          "description": "Optional pointer to a fixture, job, or query. Never a credentialed URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "first_seen": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "First time this source supported the edge."
+        },
+        "kind": {
+          "$ref": "#/$defs/SourceKind",
+          "description": "Which system produced the observation."
+        },
+        "last_seen": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Last time this source supported the edge."
+        }
+      },
+      "required": [
+        "kind",
+        "first_seen",
+        "last_seen"
+      ],
+      "type": "object"
+    },
+    "EdgeStatus": {
+      "description": "Agreement between declared and observed edges.",
+      "oneOf": [
+        {
+          "const": "both",
+          "description": "Declared and observed.",
+          "type": "string"
+        },
+        {
+          "const": "observed_only",
+          "description": "Observed, with no declaration.",
+          "type": "string"
+        },
+        {
+          "const": "declared_only",
+          "description": "Declared, with no observation.",
+          "type": "string"
+        },
+        {
+          "const": "candidate",
+          "description": "Only a candidate signal.",
+          "type": "string"
+        },
+        {
+          "const": "n/a",
+          "description": "Not applicable, including structural edges such as `deployed_as`.",
+          "type": "string"
+        }
+      ]
+    },
+    "EdgeType": {
+      "description": "How two nodes are related.",
+      "oneOf": [
+        {
+          "const": "declared_depends_on",
+          "description": "Declared in catalog or contract data.",
+          "type": "string"
+        },
+        {
+          "const": "observed_calls",
+          "description": "Seen in traces or mesh telemetry for one environment.",
+          "type": "string"
+        },
+        {
+          "const": "candidate_calls",
+          "description": "Suggested by static analysis and not yet confirmed.",
+          "type": "string"
+        },
+        {
+          "const": "deployed_as",
+          "description": "Component runs as this deployment.",
+          "type": "string"
+        },
+        {
+          "const": "uses_library",
+          "description": "Component includes this library.",
+          "type": "string"
+        },
+        {
+          "const": "publishes_to",
+          "description": "Component publishes to a topic or queue.",
+          "type": "string"
+        },
+        {
+          "const": "consumes_from",
+          "description": "Component consumes from a topic or queue.",
+          "type": "string"
+        }
+      ]
+    },
+    "Env": {
+      "description": "Canonical environment. Source names such as `staging` map onto these.",
+      "oneOf": [
+        {
+          "const": "dev",
+          "description": "Development.",
+          "type": "string"
+        },
+        {
+          "const": "acc",
+          "description": "Acceptance.",
+          "type": "string"
+        },
+        {
+          "const": "prod",
+          "description": "Production.",
+          "type": "string"
+        }
+      ]
+    },
+    "Node": {
+      "additionalProperties": false,
+      "description": "A component, deployment, resource, or library.",
+      "properties": {
+        "attrs": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Free-form attributes. Keys are sorted on write. Do not put secrets here.",
+          "type": "object"
+        },
+        "id": {
+          "description": "Id following the convention in `docs/naming.md`.",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/NodeType",
+          "description": "Kind. Must agree with the id prefix."
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "NodeType": {
+      "description": "Node kind. The id prefix must agree with this value.",
+      "oneOf": [
+        {
+          "const": "component",
+          "description": "A deployable or library-producing component.",
+          "type": "string"
+        },
+        {
+          "const": "deployment",
+          "description": "One component running in one environment.",
+          "type": "string"
+        },
+        {
+          "const": "resource",
+          "description": "A database, topic, queue, or other shared resource.",
+          "type": "string"
+        },
+        {
+          "const": "library",
+          "description": "A versionless package URL.",
+          "type": "string"
+        }
+      ]
+    },
+    "RunStatus": {
+      "description": "Outcome of one collector inside a snapshot or `meta.json`.",
+      "oneOf": [
+        {
+          "const": "ok",
+          "description": "The collector finished and its records were kept.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "The collector failed.",
+          "type": "string"
+        },
+        {
+          "const": "stale",
+          "description": "This run failed; the previous records stay in place.",
+          "type": "string"
+        },
+        {
+          "const": "skipped",
+          "description": "The collector was not selected for this run.",
+          "type": "string"
+        }
+      ]
+    },
+    "SourceKind": {
+      "description": "Where an edge observation came from.",
+      "oneOf": [
+        {
+          "const": "catalog",
+          "description": "Backstage catalog or `catalog-info.yaml`.",
+          "type": "string"
+        },
+        {
+          "const": "otel",
+          "description": "OpenTelemetry service graph or traces.",
+          "type": "string"
+        },
+        {
+          "const": "istio",
+          "description": "Istio telemetry.",
+          "type": "string"
+        },
+        {
+          "const": "hubble",
+          "description": "Cilium Hubble flows.",
+          "type": "string"
+        },
+        {
+          "const": "sbom_hint",
+          "description": "Hint derived from an SBOM, not a resolved library edge by itself.",
+          "type": "string"
+        },
+        {
+          "const": "static",
+          "description": "Static contract or source scan.",
+          "type": "string"
+        }
+      ]
+    },
+    "SourceSummary": {
+      "additionalProperties": false,
+      "description": "Per-collector summary stored on the snapshot. Messages stay in `meta.json`.",
+      "properties": {
+        "count": {
+          "description": "Records kept for this collector.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "When the collector finished, if it did."
+        },
+        "status": {
+          "$ref": "#/$defs/RunStatus",
+          "description": "Last known outcome."
+        }
+      },
+      "required": [
+        "status",
+        "count"
+      ],
+      "type": "object"
+    },
+    "Timestamp": {
+      "description": "RFC 3339 timestamp stored as text so the schema stays a string.",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One published graph.",
+  "properties": {
+    "edges": {
+      "description": "Edges, sorted by id in canonical output.",
+      "items": {
+        "$ref": "#/$defs/Edge"
+      },
+      "type": "array"
+    },
+    "generated_at": {
+      "$ref": "#/$defs/Timestamp",
+      "description": "When the snapshot was built."
+    },
+    "nodes": {
+      "description": "Nodes, sorted by id in canonical output.",
+      "items": {
+        "$ref": "#/$defs/Node"
+      },
+      "type": "array"
+    },
+    "run_id": {
+      "description": "Id of the run that produced the snapshot.",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Semver of this document shape.",
+      "type": "string"
+    },
+    "sources": {
+      "additionalProperties": {
+        "$ref": "#/$defs/SourceSummary"
+      },
+      "description": "Collector name to summary. Keys are sorted.",
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "generated_at",
+    "sources",
+    "nodes",
+    "edges"
+  ],
+  "title": "GraphSnapshot",
+  "type": "object"
+}

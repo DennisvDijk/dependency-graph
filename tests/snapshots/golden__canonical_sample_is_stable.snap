@@ -1,0 +1,121 @@
+---
+source: tests/golden.rs
+expression: value
+---
+{
+  "edges": [
+    {
+      "active": true,
+      "attrs": {},
+      "criticality": "hard",
+      "env": "prod",
+      "from_id": "component:payments-api",
+      "id": "edge:2de7140d89feef0fb45b9bf14a0b33b5f06ac387cae438ce473a99e794912439",
+      "sources": [
+        {
+          "first_seen": "2026-01-01T00:00:00Z",
+          "kind": "catalog",
+          "last_seen": "2026-01-15T00:00:00Z"
+        }
+      ],
+      "status": "n/a",
+      "to_id": "deployment:payments-api@prod",
+      "type": "deployed_as"
+    },
+    {
+      "active": true,
+      "attrs": {},
+      "criticality": "hard",
+      "env": null,
+      "from_id": "component:payments-api",
+      "id": "edge:6aaec4d166acdcc592284a22feecf0cab4312bafc2f78939ce9f6d6a323479b1",
+      "sources": [
+        {
+          "first_seen": "2026-01-01T00:00:00Z",
+          "kind": "catalog",
+          "last_seen": "2026-01-15T00:00:00Z"
+        }
+      ],
+      "status": "declared_only",
+      "to_id": "component:billing-api",
+      "type": "declared_depends_on"
+    },
+    {
+      "active": true,
+      "attrs": {
+        "calls_7d": 12,
+        "protocol": "http",
+        "sync": true
+      },
+      "criticality": "hard",
+      "env": "prod",
+      "from_id": "component:payments-api",
+      "id": "edge:739255e1d018a80886800629bf3cae2bba08110b17d7fb31d00bf24104a6a7fa",
+      "sources": [
+        {
+          "first_seen": "2026-01-01T00:00:00Z",
+          "kind": "otel",
+          "last_seen": "2026-01-15T00:00:00Z"
+        }
+      ],
+      "status": "observed_only",
+      "to_id": "component:billing-api",
+      "type": "observed_calls"
+    },
+    {
+      "active": true,
+      "attrs": {},
+      "criticality": "hard",
+      "env": null,
+      "from_id": "component:payments-api",
+      "id": "edge:8c4ba6c01952d66f94f3dbb1e39e49664ee753894af43f7cb22a36607a670fc1",
+      "sources": [
+        {
+          "first_seen": "2026-01-01T00:00:00Z",
+          "kind": "sbom_hint",
+          "last_seen": "2026-01-15T00:00:00Z"
+        }
+      ],
+      "status": "n/a",
+      "to_id": "library:pkg:cargo/serde",
+      "type": "uses_library"
+    }
+  ],
+  "generated_at": "2026-01-15T12:00:00Z",
+  "nodes": [
+    {
+      "attrs": {},
+      "id": "component:billing-api",
+      "type": "component"
+    },
+    {
+      "attrs": {},
+      "id": "component:payments-api",
+      "type": "component"
+    },
+    {
+      "attrs": {},
+      "id": "deployment:payments-api@prod",
+      "type": "deployment"
+    },
+    {
+      "attrs": {},
+      "id": "library:pkg:cargo/serde",
+      "type": "library"
+    },
+    {
+      "attrs": {},
+      "id": "resource:database:payments-db",
+      "type": "resource"
+    }
+  ],
+  "run_id": "sample",
+  "schema_version": "0.1.0",
+  "sources": {
+    "gitlab_inventory": {
+      "count": 2,
+      "finished_at": "2026-01-15T12:00:00Z",
+      "status": "ok"
+    }
+  }
+}

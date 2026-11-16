@@ -1,0 +1,3 @@
+# Platform team owns depgraph (ADR-001, question 14).
+# Replace @platform-team with the real GitHub team slug once a human confirms it.
+* @platform-team

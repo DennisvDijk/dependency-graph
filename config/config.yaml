@@ -1,0 +1,28 @@
+# Placeholder configuration. example.com only — no tokens, kubeconfigs, or real groups.
+schema_version: "0.1.0"
+gitlab:
+  base_url: https://gitlab.example.com
+  groups:
+    - example-group/pilot
+  catalog_file: catalog-info.yaml
+  per_page: 100
+  max_concurrency: 4
+kubernetes:
+  clusters:
+    # kubeconfig_env is the variable name. Never put kubeconfig contents here.
+    - name: main
+      kubeconfig_env: DEPGRAPH_KUBECONFIG_MAIN
+prometheus:
+  url: https://prometheus.example.com
+  env_label: env
+  window_days: 7
+runtime_source: none
+sbom:
+  sources: []
+  internal_package_prefixes: []
+contract_paths:
+  - openapi/**
+  - "**/*.proto"
+  - schema/**
+edge_expiry_days: 30
+retention_days: 90
