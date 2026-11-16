@@ -35,7 +35,7 @@ Zachte afhankelijkheden horen in de annotatie `depgraph/soft-dependencies`, niet
 
 ## Omgevingen
 
-We kennen drie namen: `dev`, `acc`, `prod`. GitLab-namen `development`, `acceptance`, `staging` en `production` worden daarop gemapt. Gebruik geen vierde omgevingsnaam in `environment:` zonder dat het platformteam de mapping aanpast.
+We kennen drie namen: `dev`, `acc`, `prod`. GitLab-namen `development`, `acceptance`, `staging` en `production` worden daarop gemapt. Gebruik geen vierde omgevingsnaam in `environment:` zonder dat het AI Platform-team de mapping aanpast.
 
 Workloads dragen het label `app.kubernetes.io/name` met dezelfde canonieke naam.
 
@@ -47,6 +47,6 @@ Workloads dragen het label `app.kubernetes.io/name` met dezelfde canonieke naam.
 
 ## Pilot
 
-De lijst van 5 tot 10 pilotapplicaties is leeg tot de teams die kiezen. Aanmelden loopt via het platformteam, niet via een PR die alleen een naam toevoegt.
+De pilot is alle applicaties van het team, gelezen uit de GitLab-repo's. Er is geen shortlist van 5 tot 10. Interne libraries zitten niet in de graaf. Vragen lopen via het AI Platform-team.
 
-Ids en de hash van een edge staan in [naming.md](naming.md). Open vragen staan in [ADR-001](decisions/ADR-001-aannames.md).
+Ids en de hash van een edge staan in [naming.md](naming.md). Besluiten staan in [ADR-001](decisions/ADR-001-aannames.md).

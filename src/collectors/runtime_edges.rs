@@ -1,8 +1,6 @@
-//! Runtime edges from Tempo, Jaeger, Istio, or Hubble.
-//!
-//! Metric names (`traces_service_graph_*`), the environment label, and Hubble
-//! flow context are unverified. See ADR-001, "Verifieer vóór gebruik". This
-//! stub does not query Prometheus or a mesh.
+//! Runtime edges. ADR-003 selects Istio: `istio_requests_total` with
+//! `reporter="destination"`. Tempo is optional and stays off until
+//! `traces_service_graph_*` is verified. This stub does not query Prometheus.
 
 use crate::collectors::base::Collector;
 use crate::error::Error;

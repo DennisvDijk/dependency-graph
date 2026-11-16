@@ -2,7 +2,7 @@
 
 Self-hosted dependency graph for runtime dependencies and deployments.
 
-The tool is Rust. This repository lives on GitHub. The systems it will read stay where they are: GitLab, Kubernetes, Prometheus/Tempo (or later Istio/Hubble), and CycloneDX SBOMs. It does not write back to those systems. Decisions that differ from the original plan are in [ADR-002](docs/decisions/ADR-002-rust-en-github.md). Working assumptions for the open questions are in [ADR-001](docs/decisions/ADR-001-aannames.md).
+The tool is Rust. This repository lives on GitHub for now; the code will live in GitLab later. It reads GitLab (local access via `glab`), declared manifests in those repos, Istio metrics, and optionally Tempo and Datadog. It does not write back to those systems. Decisions: [ADR-001](docs/decisions/ADR-001-aannames.md), [ADR-002](docs/decisions/ADR-002-rust-en-github.md), [ADR-003](docs/decisions/ADR-003-runtime-bron.md), [ADR-004](docs/decisions/ADR-004-pilot-en-datadog.md), [ADR-005](docs/decisions/ADR-005-mcp-server.md).
 
 Status: **F0-1 only**. Collectors, graph build, analysis, and publishers return `not implemented in F0-1`. `depgraph validate` checks a snapshot for real. No tokens, kubeconfigs, or production data belong in this repo. Config uses `example.com`.
 
@@ -11,7 +11,7 @@ Status: **F0-1 only**. Collectors, graph build, analysis, and publishers return 
 ```text
 config/                 example config, environments, aliases, pilot, sdk hints
 schemas/                graph.schema.json (generated) and the catalog-info stub
-src/                    models, ids, config, collectors, normalize, store, analysis, publish, cli
+src/                    models, ids, config, collectors, normalize, store, analysis, publish, mcp, cli
 ci/depgraph-mr-check.yml
 tests/fixtures/         empty graph and a sample catalog-info.yaml
 docs/decisions/         ADRs (Dutch)
@@ -38,6 +38,7 @@ just ci
 ```sh
 cargo run -- validate tests/fixtures/empty-graph.json
 cargo run -- collect --set fast   # exits 2 until a later phase
+cargo run -- serve-mcp             # exits 2; OAuth is not implemented yet
 ```
 
 Read commands accept `--env dev|acc|prod`, `--format table|json|mermaid`, and `--snapshot`.

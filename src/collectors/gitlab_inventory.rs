@@ -1,7 +1,8 @@
 //! GitLab group and project inventory.
 //!
-//! The real collector will call the GitLab API with a token read from the
-//! environment at call time. The token is not stored in config or logs.
+//! Collectors may call the REST API directly. For a local run, `glab` auth
+//! and host config is the expected access path (ADR-001). The token is never
+//! stored in config or logs. F0-1 does not call GitLab.
 
 use crate::collectors::base::Collector;
 use crate::error::Error;

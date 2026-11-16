@@ -16,7 +16,20 @@ prometheus:
   url: https://prometheus.example.com
   env_label: env
   window_days: 7
-runtime_source: none
+# ADR-003: Istio is the runtime source. Tempo stays off until its metric names are verified.
+runtime_source: istio
+tempo:
+  enabled: false
+  url: https://tempo.example.com
+# ADR-001 question 8: no internal libraries. Types stay in the model; collectors must not emit them.
+libraries:
+  enabled: false
+# ADR-004: optional read-only Datadog status. Env var names only, never key material.
+datadog:
+  enabled: false
+  site: api.datadog.example
+  api_key_env: DEPGRAPH_DATADOG_API_KEY
+  app_key_env: DEPGRAPH_DATADOG_APP_KEY
 sbom:
   sources: []
   internal_package_prefixes: []

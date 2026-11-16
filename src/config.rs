@@ -24,7 +24,7 @@ pub struct ProjectConfig {
     pub env_index: EnvIndex,
     /// Alias to exactly one component name.
     pub aliases: Aliases,
-    /// Pilot applications. Empty until teams choose them.
+    /// Pilot file. An empty app list means every app in the configured groups.
     pub pilot: PilotFile,
     /// SDK hints. Empty until internal package prefixes are known.
     pub sdk_hints: SdkHintsFile,
@@ -42,8 +42,14 @@ pub struct Config {
     pub kubernetes: KubernetesConfig,
     /// Prometheus base settings.
     pub prometheus: PrometheusConfig,
-    /// Which runtime signal phase 1 will read. `none` until that is known.
+    /// Primary runtime signal. ADR-003 selects Istio.
     pub runtime_source: RuntimeSource,
+    /// Optional Tempo source. Off until metric names are verified.
+    pub tempo: TempoConfig,
+    /// Library nodes and `uses_library` edges. Off: there are no internal libraries.
+    pub libraries: LibraryConfig,
+    /// Optional read-only Datadog status. Key fields are environment variable names.
+    pub datadog: DatadogConfig,
     /// Where CycloneDX documents come from, and which packages are internal.
     pub sbom: SbomConfig,
     /// Globs for API contracts.
@@ -112,8 +118,40 @@ pub enum RuntimeSource {
     Istio,
     /// Cilium Hubble flows.
     Hubble,
-    /// No runtime source until coverage is known.
+    /// No runtime source.
     None,
+}
+
+/// Optional Tempo endpoint. The URL is a placeholder, never a credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TempoConfig {
+    /// When false, collectors skip Tempo.
+    pub enabled: bool,
+    /// Base URL without userinfo.
+    pub url: String,
+}
+
+/// Whether collectors may emit library nodes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LibraryConfig {
+    /// Default false. The model types stay available for a later decision.
+    pub enabled: bool,
+}
+
+/// Optional Datadog status source. Secrets stay in the named env vars.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DatadogConfig {
+    /// When false, the Datadog collector is not selected.
+    pub enabled: bool,
+    /// Site hostname, such as `api.datadog.example`. Not a URL and not a key.
+    pub site: String,
+    /// Environment variable that holds the API key at runtime.
+    pub api_key_env: String,
+    /// Environment variable that holds the application key at runtime.
+    pub app_key_env: String,
 }
 
 /// SBOM inputs.
@@ -123,7 +161,7 @@ pub struct SbomConfig {
     /// Artifact globs or URLs. URLs must not carry credentials.
     #[serde(default)]
     pub sources: Vec<String>,
-    /// Package prefixes that become `Library` nodes. Empty until known.
+    /// Package prefixes that become `Library` nodes. Must be empty while libraries are disabled.
     #[serde(default)]
     pub internal_package_prefixes: Vec<String>,
 }
@@ -176,7 +214,7 @@ pub struct Aliases {
     pub aliases: BTreeMap<String, String>,
 }
 
-/// `config/pilot.yaml`.
+/// `config/pilot.yaml`. Empty `apps` means all applications in the GitLab groups.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PilotFile {
@@ -481,6 +519,27 @@ fn validate_config(config: &Config) -> Result<(), Error> {
             return Err(config_error("contract path must not be empty"));
         }
     }
+    check_http_url("tempo.url", &config.tempo.url)?;
+    if !config.libraries.enabled && !config.sbom.internal_package_prefixes.is_empty() {
+        return Err(config_error(
+            "libraries are disabled; internal_package_prefixes must be empty",
+        ));
+    }
+    if !is_datadog_site(&config.datadog.site) {
+        return Err(config_error(
+            "datadog.site must be a hostname, not a URL or a key",
+        ));
+    }
+    for (field, name) in [
+        ("datadog.api_key_env", config.datadog.api_key_env.as_str()),
+        ("datadog.app_key_env", config.datadog.app_key_env.as_str()),
+    ] {
+        if !is_env_var_name(name) || redact::secret_kind(name).is_some() {
+            return Err(config_error(format!(
+                "{field} must be an environment variable name, not key material"
+            )));
+        }
+    }
     if config.edge_expiry_days == 0 {
         return Err(config_error("edge_expiry_days must be at least 1"));
     }
@@ -657,6 +716,17 @@ fn is_env_var_name(value: &str) -> bool {
     bytes.all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
+fn is_datadog_site(value: &str) -> bool {
+    !value.is_empty()
+        && !value.contains("://")
+        && !value.contains('@')
+        && !value.contains('/')
+        && value.contains('.')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+}
+
 fn is_label(value: &str) -> bool {
     let mut bytes = value.bytes();
     match bytes.next() {
@@ -712,7 +782,20 @@ mod tests {
         );
         assert_eq!(project.config.prometheus.env_label, "env");
         assert_eq!(project.config.prometheus.window_days, 7);
-        assert_eq!(project.config.runtime_source, RuntimeSource::None);
+        assert_eq!(project.config.runtime_source, RuntimeSource::Istio);
+        assert!(!project.config.tempo.enabled);
+        assert_eq!(project.config.tempo.url, "https://tempo.example.com");
+        assert!(!project.config.libraries.enabled);
+        assert!(!project.config.datadog.enabled);
+        assert_eq!(project.config.datadog.site, "api.datadog.example");
+        assert_eq!(
+            project.config.datadog.api_key_env,
+            "DEPGRAPH_DATADOG_API_KEY"
+        );
+        assert_eq!(
+            project.config.datadog.app_key_env,
+            "DEPGRAPH_DATADOG_APP_KEY"
+        );
         assert!(project.config.sbom.sources.is_empty());
         assert!(project.config.sbom.internal_package_prefixes.is_empty());
         assert_eq!(
@@ -731,6 +814,24 @@ mod tests {
         assert_eq!(project.env_index.resolve("production"), Some(Env::Prod));
         assert_eq!(project.env_index.resolve("prod"), Some(Env::Prod));
         assert_eq!(project.env_index.resolve("qa"), None);
+    }
+
+    #[test]
+    fn disabled_libraries_reject_prefixes_and_datadog_rejects_raw_keys() {
+        let with_prefix = include_str!("../config/config.yaml").replace(
+            "internal_package_prefixes: []",
+            "internal_package_prefixes:\n    - pkg:cargo/example-",
+        );
+        let error = parse_config(&with_prefix).unwrap_err();
+        assert!(error.to_string().contains("libraries are disabled"));
+
+        let with_key = include_str!("../config/config.yaml").replace(
+            "api_key_env: DEPGRAPH_DATADOG_API_KEY",
+            "api_key_env: glpat-ABCDEFGHIJKLMNOPQRST",
+        );
+        let error = parse_config(&with_key).unwrap_err();
+        assert!(error.to_string().contains("environment variable name"));
+        assert!(!error.to_string().contains("ABCDEFG"));
     }
 
     #[test]

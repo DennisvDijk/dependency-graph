@@ -1,2 +1,3 @@
-# Pilot applications are chosen with the teams (ADR-001, question 15).
+# ADR-004: the pilot is every app in the team's GitLab groups, not a list of 5-10.
+# An empty apps list is not an allowlist. Group paths still use the placeholder in config.yaml.
 apps: []

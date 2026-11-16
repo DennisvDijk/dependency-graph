@@ -71,6 +71,12 @@ fn stubs_exit_2() {
         .assert()
         .failure()
         .code(2);
+    depgraph()
+        .arg("serve-mcp")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("not implemented in F0-1"));
 }
 
 #[test]

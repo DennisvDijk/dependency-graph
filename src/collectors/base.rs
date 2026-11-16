@@ -37,6 +37,7 @@ pub fn all() -> Vec<Box<dyn Collector>> {
         Box::new(super::k8s_workloads::K8sWorkloads),
         Box::new(super::runtime_edges::RuntimeEdges),
         Box::new(super::sbom_links::SbomLinks),
+        Box::new(super::datadog_status::DatadogStatus),
     ]
 }
 

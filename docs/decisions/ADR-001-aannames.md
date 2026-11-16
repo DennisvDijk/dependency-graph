@@ -6,23 +6,23 @@
 
 ## Context
 
-Het plan laat zeventien vragen open die de vorm van collectors, config en de graaf bepalen. Deze run bouwt geen fase 1. Elke vraag krijgt hier de status `standaardaanname` met het afgesproken default, zodat F0-1 niet blokkeert. Een aanname is geen meting. Wat een mens nog moet invullen staat onderaan, samen met de punten die we verifiëren vóór we er logica op bouwen.
+Het plan laat zeventien vragen open die de vorm van collectors, config en de graaf bepalen. Elke vraag begon als `standaardaanname`. Dennis heeft op 2026-11-16 een deel beantwoord; die punten staan op `beantwoord`. Wat hij niet invulde, blijft `standaardaanname`. Wat nog een mens nodig heeft, staat onderaan.
 
-Afwijkingen van de taal en de repo-locatie staan in [ADR-002](ADR-002-rust-en-github.md).
+Afwijkingen van de taal en de repo-locatie staan in [ADR-002](ADR-002-rust-en-github.md). De runtimebron staat in [ADR-003](ADR-003-runtime-bron.md), de pilot en Datadog in [ADR-004](ADR-004-pilot-en-datadog.md), de MCP-server in [ADR-005](ADR-005-mcp-server.md).
 
 ## Besluiten
 
 ### 1. GitLab self-managed of gitlab.com, en welke versie
 
-- Status: standaardaanname
-- Besluit: self-managed, recente versie. De exacte versie wordt later gelezen met `GET /api/v4/version`.
-- Gevolg: de client praat tegen de API v4 van een eigen instance. `config.yaml` gebruikt `https://gitlab.example.com` tot een mens de echte origin bevestigt. Geen aanname over gitlab.com-specifieke features.
+- Status: beantwoord
+- Besluit: self-managed. Lokaal is `glab` het toegangspad: de host- en auth-configuratie van `glab`, niet een token in deze repo. Collectors mogen de REST API rechtstreeks aanroepen; voor een lokale run is de `glab`-config het verwachte pad.
+- Gevolg: `config.yaml` houdt `https://gitlab.example.com` tot de echte origin bekend is. De versie is nog niet genoteerd. Een mens leest die nog via `GET /api/v4/version`. Geen gitlab.com-specifieke features.
 
 ### 2. Welke GitLab-groepen en subgroepen in scope
 
-- Status: standaardaanname
-- Besluit: alleen de groepen van de pilotteams.
-- Gevolg: `gitlab.groups` blijft een placeholder (`example-group/pilot`) tot de concrete paden bekend zijn. De collector mag niet "alle groepen van de instance" pakken.
+- Status: beantwoord
+- Besluit: alleen de groepen van Dennis' eigen team. Niet de hele instance en niet de groepen van andere teams.
+- Gevolg: `gitlab.groups` blijft de placeholder `example-group/pilot` tot een mens de echte paden invult. Die paden zijn nog een TODO. De collector mag daarbuiten niets ophalen.
 
 ### 3. Kubernetes? Welke clusters en namespaces per omgeving
 
@@ -38,27 +38,27 @@ Afwijkingen van de taal en de repo-locatie staan in [ADR-002](ADR-002-rust-en-gi
 
 ### 5. OpenTelemetry-instrumentatie en tracedestinatie
 
-- Status: standaardaanname
-- Besluit: onbekend. Fase 1 start met meten van de dekking, niet met een aangenomen backend.
-- Gevolg: `runtime_source` staat op `none`. Er worden geen runtime-edges verzonnen. De vraag blijft open tot een mens de instrumentatie en de bestemming aanwijst.
+- Status: beantwoord
+- Besluit: OpenTelemetry is aanwezig. Langfuse doet daarnaast LLM-tracing. Welke runtimebron de graaf voedt, staat in vraag 6 en in [ADR-003](ADR-003-runtime-bron.md).
+- Gevolg: Langfuse is geen fase-1-bron. Het kan later edges naar `resource:model-endpoint:…` voeden. Er is nog geen Langfuse-collector en geen Langfuse-config.
 
 ### 6. Service mesh (Istio) of Cilium/Hubble
 
-- Status: standaardaanname
-- Besluit: geen mesh.
-- Gevolg: geen Istio- of Hubble-collector in fase 1-2. `runtime_source` heeft de waarden wel, zodat een correctie geen config-schema-breuk is. Hubble-flowcontext blijft ongelezen tot de Cilium-versie bekend is.
+- Status: beantwoord
+- Besluit: Istio is aanwezig. De aanname "geen mesh" vervalt. `runtime_source` is `istio`. Tempo is optioneel. Uitwerking: [ADR-003](ADR-003-runtime-bron.md).
+- Gevolg: Hubble is niet de gekozen mesh. De voorbeeldconfig zet `runtime_source: istio` en `tempo.enabled: false`. De runtime-collector blijft een stub en opent geen socket.
 
 ### 7. Waar SBOMs staan, welk formaat, gelabeld met digest, sha of tag
 
 - Status: standaardaanname
 - Besluit: CycloneDX JSON als artifact van een GitLab-job.
-- Gevolg: `sbom.sources` is leeg in de voorbeeldconfig. De collector zoekt later job-artifacts, niet een aparte SBOM-server, tot een mens dat wijzigt. Library-koppeling wacht op vraag 8.
+- Gevolg: `sbom.sources` is leeg in de voorbeeldconfig. De collector zoekt later job-artifacts, niet een aparte SBOM-server, tot een mens dat wijzigt. Library-koppeling doet deze SBOM niet: vraag 8 zet `Library`-nodes uit.
 
 ### 8. Interne package-prefixes
 
-- Status: standaardaanname
-- Besluit: leeg. Geen `Library`-nodes tot de prefixes bekend zijn.
-- Gevolg: `internal_package_prefixes` en `sdk_hints.yaml` blijven leeg. Een SBOM mag nog geen library-edge promoveren alleen omdat een purl bestaat.
+- Status: beantwoord
+- Besluit: er zijn geen interne libraries. Het landschap is Kubernetes, infrastructuur, firewalling en aanverwante platformonderdelen. Geen `Library`-nodes en geen `uses_library`-edges in scope.
+- Gevolg: de types blijven in het model staan voor later gebruik. `libraries.enabled` staat default op `false`, `internal_package_prefixes` blijft leeg, en `sdk_hints.yaml` blijft leeg. Zolang `libraries.enabled` uit staat, mag een collector die nodes en edges niet aanmaken. Een niet-lege prefixlijst bij `enabled: false` is een configfout.
 
 ### 9. Canonieke omgevingsnamen en mapping
 
@@ -92,21 +92,21 @@ Afwijkingen van de taal en de repo-locatie staan in [ADR-002](ADR-002-rust-en-gi
 
 ### 14. Eigenaarsteam en reviewers
 
-- Status: standaardaanname
-- Besluit: het platformteam.
-- Gevolg: `CODEOWNERS` noemt `@platform-team` als placeholder. Een mens vervangt dat door de echte GitHub-teamslug. Tot die tijd is het platformteam de reviewende partij in de documentatie.
+- Status: beantwoord
+- Besluit: het AI Platform-team. De code leeft uiteindelijk op GitLab. Deze GitHub-repo is voorlopig de bouwplaats; `.gitlab-ci.yml` blijft de pipeline voor de uitvoering daar.
+- Gevolg: `CODEOWNERS` noemt `@ai-platform` als placeholder-slug, met die toelichting. De teamnaam staat vast; de slug is alleen de GitHub-plaatsvervanger.
 
 ### 15. Welke 5-10 pilotapplicaties
 
-- Status: standaardaanname
-- Besluit: nog te kiezen met de teams (`TBD`).
-- Gevolg: `pilot.yaml` heeft `apps: []`. Er wordt geen applicatie geïmporteerd "omdat die voor de hand ligt".
+- Status: beantwoord
+- Besluit: niet een shortlist van 5 tot 10. De pilot is alle applicaties van Dennis' team. Uitwerking, inclusief Datadog als optionele read-only statusbron: [ADR-004](ADR-004-pilot-en-datadog.md).
+- Gevolg: `pilot.yaml` houdt `apps: []`. Dat is geen lege selectie. De scope is elke app in de groepen uit vraag 2. Verzamelen leest de repo's, niet het cluster.
 
 ### 16. Goedgekeurd platform voor de uitvoerende bot, en welke data daarheen mag
 
-- Status: standaardaanname
-- Besluit: geen tokens en geen echte data naar de bot.
-- Gevolg: fixtures only. Config bevat `example.com`. Collectors in F0-1 openen geen socket. Logs en `meta.json` redigeren credential-URLs en bekende tokenvormen. Het platform zelf (welke bot-omgeving) is hiermee niet gekozen; alleen de datagrens staat vast.
+- Status: beantwoord
+- Besluit: het product draait lokaal of eventueel op EKS Auto Mode, en moet aanspreekbaar zijn als MCP-server met OAuth 2.1. Dat tilt plantaak F3-6 naar een kernvereiste. Uitwerking: [ADR-005](ADR-005-mcp-server.md). De datagrens voor de bot die de tool bouwt blijft: geen tokens en geen echte data.
+- Gevolg: `depgraph serve-mcp` en de module `mcp` zijn stubs zonder OAuth. Config blijft `example.com`. Collectors in F0-1 openen geen socket. Logs en `meta.json` redigeren credential-URLs en bekende tokenvormen.
 
 ### 17. Bestaande labelconventie op workloads
 
@@ -116,27 +116,20 @@ Afwijkingen van de taal en de repo-locatie staan in [ADR-002](ADR-002-rust-en-gi
 
 ## Vragen die een mens nog moet beantwoorden
 
-De standaardaanname is genoeg om F0-1 te bouwen. Deze punten blijven een antwoord van een mens nodig hebben voordat een latere fase echte bronnen leest:
+1. De exacte GitLab-versie, via `GET /api/v4/version`. Self-managed en het `glab`-pad staan vast.
+2. De exacte groeps- en subgroepspaden van Dennis' team. De scope "alleen dat team" staat vast.
 
-1. Bevestig self-managed versus gitlab.com, en noteer de versie uit `GET /api/v4/version`.
-2. Welke concrete groepen en subgroepen van de pilotteams vallen in scope?
-5. Is er OpenTelemetry-instrumentatie, en waar landen de traces?
-6. Klopt het dat er geen Istio en geen Cilium/Hubble is?
-8. Welke interne package-prefixes horen bij `Library`-nodes?
-14. Bevestig het platformteam en de echte GitHub-teamslug in `CODEOWNERS`.
-15. Welke 5 tot 10 pilotapplicaties doen mee?
-16. Welk platform is goedgekeurd voor de uitvoerende bot? De datagrens staat al vast: geen tokens en geen echte data.
-
-Vragen 3, 4, 7, 9, 10, 11, 12, 13 en 17 hebben een werkbare aanname. Een mens corrigeert ze als de werkelijkheid anders is; F0-1 codeert ze als config, niet als verborgen constanten in de collectors.
+Vragen 3, 4, 7, 9, 10, 11, 12, 13 en 17 blijven `standaardaanname`. Een mens corrigeert ze als de werkelijkheid anders is.
 
 ## Verifieer vóór gebruik
 
 Niet gebruiken als feit tot iemand de bron heeft gelezen:
 
-- Tempo-metriek- en labelnamen (`traces_service_graph_*`) en de omgevingsdimensie.
-- Hubble-flowcontext per Cilium-versie.
+- Tempo-metriek- en labelnamen (`traces_service_graph_*`) en de omgevingsdimensie, pas als `tempo.enabled` aan gaat.
 - GitLab-API-parameters en de minimale rol per endpoint.
 - Of er een Cartography-module voor GitLab bestaat.
-- Dependency-Track-API-rechten en -endpoints.
+- Dependency-Track-API-rechten en -endpoints, alleen als er toch een SBOM-server bij komt. De default is een CycloneDX-artifact van een GitLab-job, en `Library`-nodes staan uit.
+
+Hubble-flowcontext is niet meer van toepassing: Istio is de mesh ([ADR-003](ADR-003-runtime-bron.md)). `istio_requests_total` met `reporter="destination"` is het besluit van Dennis, geen open meetvraag.
 
 F0-1 bevat geen client voor deze systemen. Een latere collector die een naam uit deze lijst hard codeert zonder verificatie is een afwijking van dit besluit.

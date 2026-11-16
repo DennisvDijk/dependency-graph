@@ -2,8 +2,10 @@
 //!
 //! The kubeconfig is selected by the environment variable named in config.
 //! This module never accepts kubeconfig contents as an argument, and F0-1
-//! does not open the Kubernetes API. The client will be `kube` plus
-//! `k8s-openapi` (ADR-002). Workload labels default to `app.kubernetes.io/name`.
+//! does not open the Kubernetes API. ADR-004: the pilot reads workloads from
+//! Git, not from the cluster API. This collector stays a later check. The
+//! client will be `kube` plus `k8s-openapi` (ADR-002). Workload labels default
+//! to `app.kubernetes.io/name`.
 
 use crate::collectors::base::Collector;
 use crate::error::Error;

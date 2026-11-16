@@ -9,6 +9,7 @@
 //! None of these stubs contact a source system.
 
 mod base;
+mod datadog_status;
 mod gitlab_deployments;
 mod gitlab_inventory;
 mod k8s_workloads;
@@ -25,7 +26,7 @@ mod tests {
     #[test]
     fn every_collector_is_a_stub() {
         let collectors = all();
-        assert_eq!(collectors.len(), 5);
+        assert_eq!(collectors.len(), 6);
         for collector in collectors {
             let error = collector.collect().unwrap_err();
             assert!(error.to_string().contains("not implemented in F0-1"));

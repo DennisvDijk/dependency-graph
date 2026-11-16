@@ -67,6 +67,8 @@ pub enum Command {
     At(ReadArgs),
     /// Validate a graph snapshot.
     Validate(ValidateArgs),
+    /// Serve the read-only MCP endpoint. OAuth is not implemented.
+    ServeMcp,
 }
 
 /// `depgraph collect`.
@@ -234,6 +236,7 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::Diff(args) => analysis::diff(&read_request("diff", args)),
         Command::At(args) => analysis::at(&read_request("at", args)),
         Command::Validate(args) => validate_path(&args),
+        Command::ServeMcp => crate::mcp::serve(),
     }
 }
 
