@@ -8,8 +8,10 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use chrono::{DateTime, Utc};
+
 use crate::error::Error;
-use crate::gitlab::{GitLabClient, Job, Project, resolve_token};
+use crate::gitlab::{GitLabClient, Job, Project, ProjectFilter, resolve_token};
 use crate::repo_scan::{self, JobHint, RepoFlags};
 
 /// One inventory row. Column order is the CSV header order.
@@ -25,34 +27,52 @@ pub struct InventoryRow {
     pub flags: RepoFlags,
 }
 
-/// Collect inventory for every project in `groups`.
+/// Inputs for one inventory run.
+pub struct InventoryQuery<'a> {
+    /// GitLab origin.
+    pub base_url: &'a str,
+    /// Group or subgroup paths. Empty together with `projects` means a full scan.
+    pub groups: &'a [String],
+    /// Explicit project paths.
+    pub projects: &'a [String],
+    /// Filters for the group or full-scan list.
+    pub filter: &'a ProjectFilter,
+    /// Catalog file name.
+    pub catalog_file: &'a str,
+    /// GitLab page size.
+    pub per_page: u32,
+    /// Parallel project inspections.
+    pub max_concurrency: usize,
+    /// Clock injected for `min_last_activity`.
+    pub now: DateTime<Utc>,
+}
+
+/// Collect inventory.
+///
+/// Empty `groups` and `projects` lists every project the token can see.
+/// A group or subgroup path lists that node and everything beneath it.
+/// Explicit project paths are fetched individually and unioned in.
+/// Filters apply to the group or full-scan list. Explicit projects skip
+/// those filters, except archived projects, which are skipped with a warning.
 ///
 /// # Errors
 ///
 /// Returns an error when the token or the GitLab API is unavailable.
 pub async fn collect_inventory(
-    base_url: &str,
-    groups: &[String],
-    catalog_file: &str,
-    per_page: u32,
-    max_concurrency: usize,
-) -> Result<Vec<InventoryRow>, Error> {
-    let token = resolve_token(base_url)?;
-    let client = GitLabClient::new(base_url, token, per_page)?;
-    let mut projects = Vec::new();
-    for group in groups {
-        let mut batch = client.list_group_projects(group).await?;
-        projects.append(&mut batch);
-    }
-    projects.sort_by(|left, right| left.path_with_namespace.cmp(&right.path_with_namespace));
-    projects.dedup_by(|left, right| left.path_with_namespace == right.path_with_namespace);
+    query: InventoryQuery<'_>,
+) -> Result<(Vec<InventoryRow>, Vec<String>), Error> {
+    let token = resolve_token(query.base_url)?;
+    let client = GitLabClient::new(query.base_url, token, query.per_page)?;
+    let (projects, warnings) = client
+        .select_scope(query.groups, query.projects, query.filter, query.now)
+        .await?;
 
-    let semaphore = Arc::new(Semaphore::new(max_concurrency.max(1)));
+    let semaphore = Arc::new(Semaphore::new(query.max_concurrency.max(1)));
     let mut tasks = JoinSet::new();
     for project in projects {
         let client = client.clone();
         let semaphore = semaphore.clone();
-        let catalog_file = catalog_file.to_owned();
+        let catalog_file = query.catalog_file.to_owned();
         tasks.spawn(async move {
             let _permit = semaphore
                 .acquire()
@@ -66,7 +86,7 @@ pub async fn collect_inventory(
         rows.push(joined.map_err(|err| Error::GitLab(format!("inventory task failed: {err}")))??);
     }
     rows.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(rows)
+    Ok((rows, warnings))
 }
 
 async fn inspect_project(

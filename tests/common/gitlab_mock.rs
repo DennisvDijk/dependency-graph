@@ -31,6 +31,7 @@ pub fn spawn() -> MockGitLab {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gitlab");
     thread::spawn(move || {
         let mut project_hits = 0_u32;
+        let mut all_hits = 0_u32;
         for stream in listener.incoming() {
             let mut stream = match stream {
                 Ok(stream) => stream,
@@ -63,6 +64,51 @@ pub fn spawn() -> MockGitLab {
                 let _ = write_response(&mut stream, 500, br#"{"message":"merge is forbidden"}"#);
                 continue;
             }
+            if method == "GET" && path == "/api/v4/projects" {
+                all_hits += 1;
+                if all_hits == 1 {
+                    let _ = write_response_headers(
+                        &mut stream,
+                        429,
+                        &[("retry-after", "0"), ("content-type", "application/json")],
+                        br#"{"message":"rate limit"}"#,
+                    );
+                    continue;
+                }
+                let projects: Value = serde_json::from_str(
+                    &std::fs::read_to_string(root.join("all-projects.json")).unwrap(),
+                )
+                .unwrap();
+                let per_page = query_u32(query, "per_page").unwrap_or(100);
+                let id_after = query_u32(query, "id_after").unwrap_or(0);
+                let mut pending: Vec<Value> = projects
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|item| item["id"].as_u64().unwrap_or(0) > u64::from(id_after))
+                    .collect();
+                let page: Vec<Value> = pending
+                    .drain(..pending.len().min(per_page as usize))
+                    .collect();
+                let link = page.last().and_then(|item| item["id"].as_u64()).and_then(|last| {
+                    if pending.is_empty() {
+                        None
+                    } else {
+                        Some(format!(
+                            "</api/v4/projects?membership=false&archived=false&simple=true&pagination=keyset&order_by=id&sort=asc&per_page={per_page}&id_after={last}>; rel=\"next\""
+                        ))
+                    }
+                });
+                let body = serde_json::to_vec(&page).unwrap();
+                let mut headers = vec![("content-type", "application/json")];
+                let link_value = link.unwrap_or_default();
+                if !link_value.is_empty() {
+                    headers.push(("link", link_value.as_str()));
+                }
+                let _ = write_response_headers(&mut stream, 200, &headers, &body);
+                continue;
+            }
             if method == "GET" && path.contains("/groups/") && path.ends_with("/projects") {
                 project_hits += 1;
                 if project_hits == 1 {
@@ -74,10 +120,15 @@ pub fn spawn() -> MockGitLab {
                     );
                     continue;
                 }
-                let projects: Value = serde_json::from_str(
-                    &std::fs::read_to_string(root.join("projects.json")).unwrap(),
-                )
-                .unwrap();
+                let group = group_id(path);
+                let file = match group.as_str() {
+                    "org/infra/platform" => "nested-platform.json",
+                    "platform" => "platform-group.json",
+                    _ => "projects.json",
+                };
+                let projects: Value =
+                    serde_json::from_str(&std::fs::read_to_string(root.join(file)).unwrap())
+                        .unwrap();
                 let page = query_u32(query, "page").unwrap_or(1);
                 let per_page = query_u32(query, "per_page").unwrap_or(100);
                 let items = projects.as_array().cloned().unwrap_or_default();
@@ -141,19 +192,49 @@ pub fn spawn() -> MockGitLab {
                 }
                 continue;
             }
-            if method == "GET" && path.starts_with("/api/v4/projects/") {
+            if method == "GET"
+                && path.starts_with("/api/v4/projects/")
+                && !path.contains("/repository/")
+                && !path.contains("/jobs")
+            {
                 let encoded = path.trim_start_matches("/api/v4/projects/");
                 let project_path = percent_decode(encoded);
-                if project_path == "example-group/pilot/payments-api" {
-                    let payload = serde_json::json!({
+                let payload = match project_path.as_str() {
+                    "example-group/pilot/payments-api" => serde_json::json!({
                         "id": 101,
                         "path_with_namespace": project_path,
                         "default_branch": "main"
-                    });
+                    }),
+                    "org/other-team/ingress-gateway" => serde_json::json!({
+                        "id": 401,
+                        "path_with_namespace": project_path,
+                        "default_branch": "main",
+                        "last_activity_at": "2026-06-01T00:00:00Z",
+                        "archived": false,
+                        "visibility": "private"
+                    }),
+                    "org/other-team/old-archived" => serde_json::json!({
+                        "id": 402,
+                        "path_with_namespace": project_path,
+                        "default_branch": "main",
+                        "archived": true
+                    }),
+                    "org/infra/platform/api" => serde_json::json!({
+                        "id": 301,
+                        "path_with_namespace": project_path,
+                        "default_branch": "main",
+                        "last_activity_at": "2026-06-01T00:00:00Z",
+                        "archived": false
+                    }),
+                    _ => serde_json::Value::Null,
+                };
+                if payload.is_null() {
+                    let _ = write_response(&mut stream, 404, br#"{"message":"404"}"#);
+                } else {
                     let _ =
                         write_response(&mut stream, 200, &serde_json::to_vec(&payload).unwrap());
-                    continue;
                 }
+                continue;
             }
             if method == "POST" && path.ends_with("/repository/commits") {
                 let _ = write_response(&mut stream, 201, br#"{"id":"abc"}"#);
@@ -171,6 +252,12 @@ pub fn spawn() -> MockGitLab {
         base_url: format!("http://{address}"),
         requests,
     }
+}
+
+fn group_id(path: &str) -> String {
+    let rest = path.split("/groups/").nth(1).unwrap_or("");
+    let id = rest.split("/projects").next().unwrap_or("");
+    percent_decode(id)
 }
 
 fn project_id(path: &str) -> &str {

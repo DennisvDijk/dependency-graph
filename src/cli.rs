@@ -123,9 +123,13 @@ pub struct InventoryArgs {
     /// GitLab base URL. Defaults to `config/config.yaml`.
     #[arg(long)]
     pub base_url: Option<String>,
-    /// Group path. Repeat to override `gitlab.groups`.
+    /// Group or subgroup path. Repeat to override `gitlab.groups`.
+    /// One path collects every project beneath it.
     #[arg(long)]
     pub group: Vec<String>,
+    /// Project path. Repeat to override `gitlab.projects`.
+    #[arg(long = "project")]
+    pub project_path: Vec<String>,
     /// Page size. Defaults to config.
     #[arg(long)]
     pub per_page: Option<u32>,
@@ -308,27 +312,43 @@ fn execute(cli: Cli) -> Result<(), Error> {
 
 fn run_inventory(args: InventoryArgs) -> Result<(), Error> {
     let project = config::load_project(Path::new("."))?;
-    let base_url = args.base_url.unwrap_or(project.config.gitlab.base_url);
+    let filter = project.config.gitlab.project_filter()?;
+    let base_url = args
+        .base_url
+        .unwrap_or_else(|| project.config.gitlab.base_url.clone());
     let groups = if args.group.is_empty() {
-        project.config.gitlab.groups
+        project.config.gitlab.groups.clone()
     } else {
         args.group
+    };
+    let projects = if args.project_path.is_empty() {
+        project.config.gitlab.projects.clone()
+    } else {
+        args.project_path
     };
     let per_page = args.per_page.unwrap_or(project.config.gitlab.per_page);
     let max_concurrency = args
         .max_concurrency
         .unwrap_or(project.config.gitlab.max_concurrency as usize);
-    let catalog_file = project.config.gitlab.catalog_file;
+    let catalog_file = project.config.gitlab.catalog_file.clone();
     let output = args
         .output
         .unwrap_or_else(|| PathBuf::from("inventory.csv"));
-    let rows = tokio_runtime()?.block_on(crate::inventory::collect_inventory(
-        &base_url,
-        &groups,
-        &catalog_file,
-        per_page,
-        max_concurrency,
+    let (rows, warnings) = tokio_runtime()?.block_on(crate::inventory::collect_inventory(
+        crate::inventory::InventoryQuery {
+            base_url: &base_url,
+            groups: &groups,
+            projects: &projects,
+            filter: &filter,
+            catalog_file: &catalog_file,
+            per_page,
+            max_concurrency,
+            now: chrono::Utc::now(),
+        },
     ))?;
+    for warning in &warnings {
+        eprintln!("warning: {warning}");
+    }
     let count = rows.len();
     crate::inventory::write_inventory_csv(&output, &rows)?;
     println!("wrote {} ({count} projects)", output.display());

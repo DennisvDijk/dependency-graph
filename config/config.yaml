@@ -2,8 +2,22 @@
 schema_version: "0.1.0"
 gitlab:
   base_url: https://gitlab.example.com
-  groups:
-    - example-group/pilot
+  # Empty groups and projects: every project the token can see (ADR-006).
+  # A group or subgroup path is recursive. One path collects every project beneath it:
+  #   groups:
+  #     - platform
+  #     - org/infra/platform
+  groups: []
+  # Explicit projects are fetched one by one and unioned with the groups above.
+  # They skip include/exclude filters. Archived ones are skipped with a warning.
+  #   projects:
+  #     - org/other-team/ingress-gateway
+  projects: []
+  include_paths: []
+  exclude_paths: []
+  topics: []
+  exclude_forks: true
+  exclude_archived: true
   catalog_file: catalog-info.yaml
   per_page: 100
   max_concurrency: 4

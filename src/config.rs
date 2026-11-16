@@ -66,14 +66,75 @@ pub struct Config {
 pub struct GitlabConfig {
     /// API origin, without userinfo. Example: `https://gitlab.example.com`.
     pub base_url: String,
-    /// Group or subgroup paths in scope.
+    /// Optional group or subgroup paths. Empty means every project the token can see.
+    /// One path is recursive: `platform` or `org/infra/platform`.
+    #[serde(default)]
     pub groups: Vec<String>,
+    /// Explicit project paths, fetched one by one and unioned with `groups`.
+    /// Example: `org/other-team/ingress-gateway`.
+    #[serde(default)]
+    pub projects: Vec<String>,
+    /// Globs on `path_with_namespace`. Empty keeps every listed project.
+    #[serde(default)]
+    pub include_paths: Vec<String>,
+    /// Globs on `path_with_namespace` to drop after listing.
+    #[serde(default)]
+    pub exclude_paths: Vec<String>,
+    /// Keep a project when it has any of these topics. Empty keeps all.
+    #[serde(default)]
+    pub topics: Vec<String>,
+    /// Drop forks. Default true.
+    #[serde(default = "default_true")]
+    pub exclude_forks: bool,
+    /// Drop archived projects. Default true.
+    #[serde(default = "default_true")]
+    pub exclude_archived: bool,
+    /// Oldest last activity to keep, such as `180d`, `24h`, or `2w`.
+    #[serde(default)]
+    pub min_last_activity: Option<String>,
+    /// `public`, `internal`, or `private`. Absent keeps every visibility.
+    #[serde(default)]
+    pub visibility: Option<String>,
     /// Catalog file name looked up in each project.
     pub catalog_file: String,
     /// Page size for list endpoints. GitLab allows at most 100.
     pub per_page: u32,
     /// Parallel requests one collector may have in flight.
     pub max_concurrency: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl GitlabConfig {
+    /// Filters applied after the GitLab list returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `min_last_activity` or `visibility` is invalid.
+    pub fn project_filter(&self) -> Result<crate::gitlab::ProjectFilter, Error> {
+        let min_last_activity = match &self.min_last_activity {
+            Some(value) => Some(crate::gitlab::parse_activity_window(value)?),
+            None => None,
+        };
+        if let Some(visibility) = &self.visibility
+            && !matches!(visibility.as_str(), "public" | "internal" | "private")
+        {
+            return Err(Error::Config(format!(
+                "gitlab.visibility `{visibility}` must be public, internal, or private"
+            )));
+        }
+        Ok(crate::gitlab::ProjectFilter {
+            include_paths: self.include_paths.clone(),
+            exclude_paths: self.exclude_paths.clone(),
+            topics: self.topics.clone(),
+            exclude_forks: self.exclude_forks,
+            exclude_archived: self.exclude_archived,
+            min_last_activity,
+            visibility: self.visibility.clone(),
+        })
+    }
 }
 
 /// Kubernetes settings.
@@ -467,14 +528,31 @@ fn validate_config(config: &Config) -> Result<(), Error> {
         )));
     }
     check_http_url("gitlab.base_url", &config.gitlab.base_url)?;
-    if config.gitlab.groups.is_empty() {
-        return Err(config_error("gitlab.groups must list at least one group"));
-    }
     for group in &config.gitlab.groups {
         if !is_gitlab_path(group) {
-            return Err(config_error(format!("gitlab group `{group}` is invalid")));
+            return Err(config_error(format!(
+                "gitlab group `{group}` must be a group or subgroup path such as platform or org/infra/platform"
+            )));
         }
     }
+    for project in &config.gitlab.projects {
+        if !is_project_path(project) {
+            return Err(config_error(format!(
+                "gitlab project `{project}` must be a project path such as org/other-team/ingress-gateway"
+            )));
+        }
+    }
+    for pattern in config
+        .gitlab
+        .include_paths
+        .iter()
+        .chain(config.gitlab.exclude_paths.iter())
+    {
+        if pattern.trim().is_empty() {
+            return Err(config_error("gitlab path globs must not be empty"));
+        }
+    }
+    let _ = config.gitlab.project_filter()?;
     if !(1..=100).contains(&config.gitlab.per_page) {
         return Err(config_error("gitlab.per_page must be between 1 and 100"));
     }
@@ -697,6 +775,10 @@ fn reject_duplicate_alias_keys(text: &str) -> Result<(), Error> {
     }
 }
 
+fn is_project_path(value: &str) -> bool {
+    is_gitlab_path(value) && value.contains('/')
+}
+
 fn is_gitlab_path(value: &str) -> bool {
     !value.is_empty()
         && !value.starts_with('/')
@@ -784,7 +866,15 @@ mod tests {
         let project = load_project(project_root()).unwrap();
         assert_eq!(project.config.schema_version, "0.1.0");
         assert_eq!(project.config.gitlab.base_url, "https://gitlab.example.com");
-        assert_eq!(project.config.gitlab.groups, vec!["example-group/pilot"]);
+        assert!(project.config.gitlab.groups.is_empty());
+        assert!(project.config.gitlab.projects.is_empty());
+        assert!(project.config.gitlab.include_paths.is_empty());
+        assert!(project.config.gitlab.exclude_paths.is_empty());
+        assert!(project.config.gitlab.topics.is_empty());
+        assert!(project.config.gitlab.exclude_forks);
+        assert!(project.config.gitlab.exclude_archived);
+        assert!(project.config.gitlab.min_last_activity.is_none());
+        assert!(project.config.gitlab.visibility.is_none());
         assert_eq!(project.config.gitlab.catalog_file, "catalog-info.yaml");
         assert_eq!(project.config.gitlab.per_page, 100);
         assert_eq!(project.config.gitlab.max_concurrency, 4);
@@ -956,6 +1046,31 @@ prod:
             aliases.aliases.get("payments").map(String::as_str),
             Some("payments-api")
         );
+    }
+
+    #[test]
+    fn group_or_subgroup_and_project_paths_are_accepted() {
+        let text = include_str!("../config/config.yaml")
+            .replace(
+                "groups: []",
+                "groups:\n    - platform\n    - org/infra/platform",
+            )
+            .replace(
+                "projects: []",
+                "projects:\n    - org/other-team/ingress-gateway",
+            );
+        let config = parse_config(&text).unwrap();
+        assert_eq!(
+            config.gitlab.groups,
+            vec!["platform".to_owned(), "org/infra/platform".to_owned()]
+        );
+        assert_eq!(
+            config.gitlab.projects,
+            vec!["org/other-team/ingress-gateway".to_owned()]
+        );
+        let bad = include_str!("../config/config.yaml")
+            .replace("projects: []", "projects:\n    - not a path");
+        assert!(parse_config(&bad).is_err());
     }
 
     #[test]

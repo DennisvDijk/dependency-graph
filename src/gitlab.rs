@@ -34,7 +34,7 @@ impl std::fmt::Debug for GitLabClient {
     }
 }
 
-/// A project row from the groups API.
+/// A project row from the groups or projects API.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Project {
     /// Numeric project id.
@@ -47,6 +47,37 @@ pub struct Project {
     /// Last activity timestamp from GitLab.
     #[serde(default)]
     pub last_activity_at: Option<String>,
+    /// Present when the list payload includes it. Simple responses may omit it.
+    #[serde(default)]
+    pub archived: bool,
+    /// `public`, `internal`, or `private`, when the payload includes it.
+    #[serde(default)]
+    pub visibility: Option<String>,
+    /// Project topics. Empty when the payload omits them.
+    #[serde(default)]
+    pub topics: Vec<String>,
+    /// Set when this project is a fork. Absent means "not a fork" for filtering.
+    #[serde(default)]
+    pub forked_from_project: Option<serde_json::Value>,
+}
+
+/// Filters applied after a project list is fetched. Empty collections do not filter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectFilter {
+    /// Keep projects whose path matches any of these globs. Empty keeps all.
+    pub include_paths: Vec<String>,
+    /// Drop projects whose path matches any of these globs.
+    pub exclude_paths: Vec<String>,
+    /// Keep projects that have at least one of these topics. Empty keeps all.
+    pub topics: Vec<String>,
+    /// Drop projects that expose `forked_from_project`.
+    pub exclude_forks: bool,
+    /// Drop projects marked archived.
+    pub exclude_archived: bool,
+    /// Drop projects whose last activity is older than this, relative to `now`.
+    pub min_last_activity: Option<chrono::Duration>,
+    /// Keep only this visibility. Empty keeps all.
+    pub visibility: Option<String>,
 }
 
 /// One repository tree entry.
@@ -180,33 +211,114 @@ impl GitLabClient {
         })
     }
 
-    /// List active projects in a group, including subgroups.
+    /// List projects in one group, including subgroups.
+    ///
+    /// Uses keyset pagination when GitLab sends a `Link: rel="next"` header,
+    /// and falls back to `x-next-page`.
     ///
     /// # Errors
     ///
     /// Returns an error on HTTP failure. The token is not part of the message.
-    pub async fn list_group_projects(&self, group: &str) -> Result<Vec<Project>, Error> {
+    pub async fn list_group_projects(
+        &self,
+        group: &str,
+        exclude_archived: bool,
+    ) -> Result<Vec<Project>, Error> {
         let group = encode_uri_component(group);
-        let mut page = 1_u32;
+        let archived = if exclude_archived {
+            "&archived=false"
+        } else {
+            ""
+        };
+        let path = format!(
+            "/api/v4/groups/{group}/projects?include_subgroups=true{archived}&pagination=keyset&order_by=id&sort=asc&per_page={}&page=1",
+            self.per_page
+        );
+        self.list_paginated(&path).await
+    }
+
+    /// Every project this token can see.
+    ///
+    /// `GET /projects?membership=false&simple=true`, with keyset pagination.
+    /// `archived=false` is sent only when `exclude_archived` is set; the
+    /// caller still filters the payload afterwards.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on HTTP failure. The token is not part of the message.
+    pub async fn list_visible_projects(
+        &self,
+        exclude_archived: bool,
+    ) -> Result<Vec<Project>, Error> {
+        let archived = if exclude_archived {
+            "&archived=false"
+        } else {
+            ""
+        };
+        let path = format!(
+            "/api/v4/projects?membership=false{archived}&simple=true&pagination=keyset&order_by=id&sort=asc&per_page={}",
+            self.per_page
+        );
+        self.list_paginated(&path).await
+    }
+
+    /// Projects to collect.
+    ///
+    /// A non-empty `groups` list is recursive (`include_subgroups=true`).
+    /// `explicit_paths` are fetched one by one and unioned with that list.
+    /// The full visible project list is used only when both are empty.
+    /// Results are deduped by project id. Explicit projects skip the
+    /// include/exclude filters. Archived explicit projects are omitted and
+    /// named in the returned warnings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on HTTP failure.
+    pub async fn select_scope(
+        &self,
+        groups: &[String],
+        explicit_paths: &[String],
+        filter: &ProjectFilter,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(Vec<Project>, Vec<String>), Error> {
+        let discovered = if groups.is_empty() && explicit_paths.is_empty() {
+            self.list_visible_projects(filter.exclude_archived).await?
+        } else {
+            let mut all = Vec::new();
+            for group in groups {
+                all.extend(
+                    self.list_group_projects(group, filter.exclude_archived)
+                        .await?,
+                );
+            }
+            all
+        };
+        let chosen = select_projects(&discovered, filter, now);
+        let mut explicit = Vec::new();
+        for path in explicit_paths {
+            explicit.push(self.project_by_path(path).await?);
+        }
+        Ok(union_explicit(chosen, explicit))
+    }
+
+    async fn list_paginated<T: serde::de::DeserializeOwned>(
+        &self,
+        first: &str,
+    ) -> Result<Vec<T>, Error> {
+        let mut next = Some(absolute_url(&self.base_url, first));
         let mut all = Vec::new();
-        loop {
-            let path = format!(
-                "/api/v4/groups/{group}/projects?include_subgroups=true&archived=false&per_page={}&page={page}",
-                self.per_page
-            );
-            let (status, headers, bytes) = self.request(reqwest::Method::GET, &path, None).await?;
+        while let Some(url) = next {
+            let (status, headers, bytes) =
+                self.request_url(reqwest::Method::GET, &url, None).await?;
             if !status.is_success() {
-                return Err(http_error("list group projects", status, &bytes));
+                return Err(http_error("list projects", status, &bytes));
             }
-            let batch: Vec<Project> = serde_json::from_slice(&bytes)
+            let batch: Vec<T> = serde_json::from_slice(&bytes)
                 .map_err(|err| Error::GitLab(format!("gitlab project page was not JSON: {err}")))?;
-            let count = batch.len();
             all.extend(batch);
-            match next_page(&headers) {
-                Some(next) => page = next,
-                None if count < self.per_page as usize => break,
-                None => break,
-            }
+            next = link_next(&headers)
+                .map(|href| absolute_url(&self.base_url, &href))
+                .or_else(|| next_page(&headers).map(|page| with_page(&url, page)));
         }
         Ok(all)
     }
@@ -389,11 +501,20 @@ impl GitLabClient {
         path: &str,
         body: Option<Value>,
     ) -> Result<(reqwest::StatusCode, reqwest::header::HeaderMap, Vec<u8>), Error> {
-        let url = format!("{}{path}", self.base_url);
+        self.request_url(method, &absolute_url(&self.base_url, path), body)
+            .await
+    }
+
+    async fn request_url(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        body: Option<Value>,
+    ) -> Result<(reqwest::StatusCode, reqwest::header::HeaderMap, Vec<u8>), Error> {
         for _attempt in 0..5 {
             let mut builder = self
                 .http
-                .request(method.clone(), &url)
+                .request(method.clone(), url)
                 .header("PRIVATE-TOKEN", &self.token);
             if let Some(body) = &body {
                 builder = builder.json(body);
@@ -428,6 +549,218 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Duration {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(1);
     Duration::from_secs(seconds.min(30))
+}
+
+fn absolute_url(base: &str, url: &str) -> String {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        url.to_owned()
+    } else if let Some(path) = url.strip_prefix('/') {
+        format!("{base}/{path}")
+    } else {
+        format!("{base}/{url}")
+    }
+}
+
+fn link_next(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let value = headers.get("link")?.to_str().ok()?;
+    for part in value.split(',') {
+        let mut pieces = part.split(';');
+        let url = pieces.next()?.trim();
+        let url = url.trim_start_matches('<').trim_end_matches('>');
+        let is_next = pieces.any(|piece| {
+            let piece = piece.trim();
+            piece.eq_ignore_ascii_case("rel=\"next\"") || piece.eq_ignore_ascii_case("rel=next")
+        });
+        if is_next {
+            return Some(url.to_owned());
+        }
+    }
+    None
+}
+
+fn with_page(url: &str, page: u32) -> String {
+    if let Some(start) = url.find("page=") {
+        let after = start + "page=".len();
+        let end = url[after..]
+            .find('&')
+            .map(|index| after + index)
+            .unwrap_or(url.len());
+        format!("{}{page}{}", &url[..after], &url[end..])
+    } else if url.contains('?') {
+        format!("{url}&page={page}")
+    } else {
+        format!("{url}?page={page}")
+    }
+}
+
+/// Union an explicit opt-in list onto an already filtered list.
+///
+/// Archived explicit projects are dropped with a warning. Other explicit
+/// projects are kept even when a filter would have removed them. Duplicate
+/// ids are kept once.
+#[must_use]
+pub fn union_explicit(
+    mut chosen: Vec<Project>,
+    explicit: Vec<Project>,
+) -> (Vec<Project>, Vec<String>) {
+    let mut seen: std::collections::BTreeSet<u64> =
+        chosen.iter().map(|project| project.id).collect();
+    let mut warnings = Vec::new();
+    for project in explicit {
+        if project.archived {
+            warnings.push(format!(
+                "skipping archived project {}",
+                project.path_with_namespace
+            ));
+            continue;
+        }
+        if seen.insert(project.id) {
+            chosen.push(project);
+        }
+    }
+    chosen.sort_by(|left, right| left.path_with_namespace.cmp(&right.path_with_namespace));
+    chosen.dedup_by(|left, right| left.id == right.id);
+    (chosen, warnings)
+}
+
+/// Keep projects that match every configured filter.
+///
+/// `now` is injected so tests do not read the clock. A project with no
+/// `last_activity_at` fails `min_last_activity`. A project with no
+/// `forked_from_project` is not treated as a fork.
+#[must_use]
+pub fn select_projects(
+    projects: &[Project],
+    filter: &ProjectFilter,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<Project> {
+    projects
+        .iter()
+        .filter(|project| project_matches(project, filter, now))
+        .cloned()
+        .collect()
+}
+
+fn project_matches(
+    project: &Project,
+    filter: &ProjectFilter,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    if filter.exclude_archived && project.archived {
+        return false;
+    }
+    if filter.exclude_forks && project.forked_from_project.is_some() {
+        return false;
+    }
+    if let Some(visibility) = &filter.visibility {
+        match &project.visibility {
+            Some(value) if value.eq_ignore_ascii_case(visibility) => {}
+            _ => return false,
+        }
+    }
+    if !filter.topics.is_empty()
+        && !filter
+            .topics
+            .iter()
+            .any(|topic| project.topics.iter().any(|have| have == topic))
+    {
+        return false;
+    }
+    if !filter.include_paths.is_empty()
+        && !filter
+            .include_paths
+            .iter()
+            .any(|pattern| path_glob_matches(pattern, &project.path_with_namespace))
+    {
+        return false;
+    }
+    if filter
+        .exclude_paths
+        .iter()
+        .any(|pattern| path_glob_matches(pattern, &project.path_with_namespace))
+    {
+        return false;
+    }
+    if let Some(window) = filter.min_last_activity {
+        let Some(stamp) = project
+            .last_activity_at
+            .as_deref()
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        else {
+            return false;
+        };
+        if stamp.with_timezone(&chrono::Utc) < now - window {
+            return false;
+        }
+    }
+    true
+}
+
+/// Parse `180d`, `24h`, or `2w`.
+///
+/// # Errors
+///
+/// Returns an error when the text is not a positive integer plus `d`, `h`, or `w`.
+pub fn parse_activity_window(value: &str) -> Result<chrono::Duration, Error> {
+    let value = value.trim();
+    let Some((count, unit)) = value.split_at_checked(value.len().saturating_sub(1)) else {
+        return Err(Error::Config(format!(
+            "min_last_activity `{value}` must look like 180d"
+        )));
+    };
+    let Ok(count) = count.parse::<i64>() else {
+        return Err(Error::Config(format!(
+            "min_last_activity `{value}` must look like 180d"
+        )));
+    };
+    if count <= 0 {
+        return Err(Error::Config(
+            "min_last_activity must be a positive window".to_owned(),
+        ));
+    }
+    let window = match unit {
+        "d" => chrono::Duration::days(count),
+        "h" => chrono::Duration::hours(count),
+        "w" => chrono::Duration::days(count.saturating_mul(7)),
+        _ => {
+            return Err(Error::Config(format!(
+                "min_last_activity `{value}` must end in d, h, or w"
+            )));
+        }
+    };
+    Ok(window)
+}
+
+fn path_glob_matches(pattern: &str, path: &str) -> bool {
+    let expression = glob_to_regex(pattern);
+    regex::Regex::new(&expression)
+        .map(|pattern| pattern.is_match(path))
+        .unwrap_or(false)
+}
+
+fn glob_to_regex(pattern: &str) -> String {
+    let mut regex = String::from("^");
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '*' && chars.get(index + 1) == Some(&'*') {
+            regex.push_str(".*");
+            index += 2;
+            continue;
+        }
+        if chars[index] == '*' {
+            regex.push_str("[^/]*");
+            index += 1;
+            continue;
+        }
+        if "\\.+()|[]{}^$?".contains(chars[index]) {
+            regex.push('\\');
+        }
+        regex.push(chars[index]);
+        index += 1;
+    }
+    regex.push('$');
+    regex
 }
 
 fn next_page(headers: &reqwest::header::HeaderMap) -> Option<u32> {
@@ -475,8 +808,66 @@ mod tests {
     #[test]
     fn encoding_escapes_slashes() {
         assert_eq!(
-            encode_uri_component("example-group/pilot"),
-            "example-group%2Fpilot"
+            encode_uri_component("org/infra/platform"),
+            "org%2Finfra%2Fplatform"
         );
+        assert_eq!(
+            encode_uri_component("org/other-team/ingress-gateway"),
+            "org%2Fother-team%2Fingress-gateway"
+        );
+    }
+
+    fn sample(id: u64, path: &str) -> Project {
+        Project {
+            id,
+            path_with_namespace: path.to_owned(),
+            default_branch: Some("main".to_owned()),
+            last_activity_at: Some("2026-11-01T00:00:00Z".to_owned()),
+            archived: false,
+            visibility: Some("private".to_owned()),
+            topics: vec!["platform".to_owned()],
+            forked_from_project: None,
+        }
+    }
+
+    #[test]
+    fn filters_and_explicit_opt_in() {
+        let mut fork = sample(2, "team/fork");
+        fork.forked_from_project = Some(serde_json::json!({"id": 1}));
+        let mut archived = sample(3, "team/old");
+        archived.archived = true;
+        let archived_again = archived.clone();
+        let mut old = sample(4, "team/stale");
+        old.last_activity_at = Some("2020-01-01T00:00:00Z".to_owned());
+        let mut public = sample(5, "other/public");
+        public.visibility = Some("public".to_owned());
+        public.topics.clear();
+        let projects = vec![
+            sample(1, "org/infra/platform/api"),
+            fork,
+            archived,
+            old,
+            public,
+        ];
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-16T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let filter = ProjectFilter {
+            include_paths: vec!["org/infra/**".to_owned()],
+            exclude_paths: vec!["**/sidecar".to_owned()],
+            topics: vec!["platform".to_owned()],
+            exclude_forks: true,
+            exclude_archived: true,
+            min_last_activity: Some(parse_activity_window("180d").unwrap()),
+            visibility: Some("private".to_owned()),
+        };
+        let kept = select_projects(&projects, &filter, now);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].path_with_namespace, "org/infra/platform/api");
+
+        let explicit = vec![sample(9, "org/other-team/ingress-gateway"), archived_again];
+        let (unioned, warnings) = union_explicit(kept, explicit);
+        assert_eq!(unioned.len(), 2);
+        assert!(warnings[0].contains("skipping archived project team/old"));
     }
 }

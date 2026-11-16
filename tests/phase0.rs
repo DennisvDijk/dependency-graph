@@ -199,3 +199,122 @@ fn open_mr_creates_a_request_and_never_merges() {
             .all(|request| !request.path.ends_with("/merge"))
     );
 }
+
+fn inventory_csv(
+    args: &[&str],
+    token: &str,
+    per_page: &str,
+) -> (String, String, common::gitlab_mock::MockGitLab) {
+    let mock = common::gitlab_mock::spawn();
+    let output = tempfile::NamedTempFile::new().unwrap();
+    let path = output.path().to_path_buf();
+    let mut command_args = vec![
+        "inventory",
+        "--output",
+        path.to_str().unwrap(),
+        "--base-url",
+        &mock.base_url,
+        "--per-page",
+        per_page,
+    ];
+    command_args.extend_from_slice(args);
+    let asserted = depgraph()
+        .env("GITLAB_TOKEN", token)
+        .args(&command_args)
+        .assert()
+        .success();
+    let stderr = String::from_utf8(asserted.get_output().stderr.clone()).unwrap();
+    (fs::read_to_string(path).unwrap(), stderr, mock)
+}
+
+#[test]
+fn subgroup_path_collects_projects_at_every_depth() {
+    let (csv, _, mock) = inventory_csv(&["--group", "org/infra/platform"], "fixture-token", "100");
+    assert!(csv.contains("org/infra/platform/api"));
+    assert!(csv.contains("org/infra/platform/edge/gateway"));
+    assert!(csv.contains("org/infra/platform/edge/mesh/sidecar"));
+    assert!(!csv.contains("platform/root-app"));
+    let requests = mock.requests.lock().unwrap();
+    assert!(requests.iter().any(|request| {
+        request
+            .path
+            .contains("/groups/org%2Finfra%2Fplatform/projects")
+            && request.path.contains("include_subgroups=true")
+    }));
+}
+
+#[test]
+fn explicit_projects_are_fetched_by_path_and_skip_archived() {
+    let (csv, stderr, mock) = inventory_csv(
+        &[
+            "--project",
+            "org/other-team/ingress-gateway",
+            "--project",
+            "org/other-team/old-archived",
+        ],
+        "fixture-token",
+        "100",
+    );
+    assert!(csv.contains("org/other-team/ingress-gateway"));
+    assert!(!csv.contains("old-archived"));
+    assert!(stderr.contains("warning: skipping archived project org/other-team/old-archived"));
+    let requests = mock.requests.lock().unwrap();
+    assert!(requests.iter().any(|request| {
+        request
+            .path
+            .contains("/projects/org%2Fother-team%2Fingress-gateway")
+    }));
+    assert!(
+        requests
+            .iter()
+            .all(|request| { request.path.split('?').next() != Some("/api/v4/projects") })
+    );
+}
+
+#[test]
+fn groups_and_projects_are_a_deduped_union() {
+    let (csv, _, _) = inventory_csv(
+        &[
+            "--group",
+            "platform",
+            "--group",
+            "org/infra/platform",
+            "--project",
+            "org/infra/platform/api",
+        ],
+        "fixture-token",
+        "100",
+    );
+    let rows: Vec<_> = csv
+        .lines()
+        .skip(1)
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert_eq!(rows.len(), 4, "{csv}");
+    assert_eq!(csv.matches("org/infra/platform/api").count(), 1);
+    assert!(csv.contains("platform/root-app"));
+    assert!(csv.contains("org/infra/platform/edge/gateway"));
+    assert!(csv.contains("org/infra/platform/edge/mesh/sidecar"));
+}
+
+#[test]
+fn empty_groups_and_projects_scan_every_visible_project() {
+    let (csv, _, mock) = inventory_csv(&[], "fixture-token", "1");
+    assert!(csv.contains("team/app"));
+    assert!(csv.contains("other/public"));
+    assert!(!csv.contains("team/fork"));
+    assert!(!csv.contains("team/old"));
+    let requests = mock.requests.lock().unwrap();
+    assert!(requests.iter().any(|request| {
+        request.path.starts_with("/api/v4/projects?")
+            && request.path.contains("membership=false")
+            && request.path.contains("simple=true")
+            && request.path.contains("pagination=keyset")
+            && request.path.contains("archived=false")
+    }));
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.path.contains("id_after="))
+    );
+}
