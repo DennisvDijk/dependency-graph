@@ -501,6 +501,12 @@ pub struct AwsAccount {
     pub cache_clusters: Option<Value>,
     /// `xray get-service-graph`, the calls that really happened.
     pub service_graph: Option<Value>,
+    /// ECS task descriptions from the current account.
+    pub ecs_tasks: Vec<Value>,
+    /// EC2 network interfaces and their VPCs.
+    pub network_interfaces: Option<Value>,
+    /// Default-format VPC log events from CloudWatch Logs.
+    pub flow_events: Option<Value>,
 }
 
 /// Records from a live AWS account: the same security-group ties as from
@@ -620,6 +626,15 @@ pub fn account_records(account: &AwsAccount, env: Option<&str>) -> Vec<RawRecord
     if let Some(graph) = &account.service_graph {
         records.extend(xray_records(graph, env));
     }
+    if account.flow_events.is_some() && account.network_interfaces.is_some() {
+        // An empty successful scan must replace the previous flow file too.
+        records.push(RawRecord {
+            collector: "aws_flow_logs".into(),
+            kind: "network_flow_checkpoint".into(),
+            payload: serde_json::json!({}),
+        });
+        records.extend(super::flow_logs::aws_flows(account, env));
+    }
     records
 }
 
@@ -729,7 +744,7 @@ fn xray_target(name: &str, kind: &str) -> Option<super::cloud::Target> {
 }
 
 /// Files read by [`records_from_aws_dir`], named after the CLI call.
-pub const AWS_FIXTURE_FILES: [&str; 7] = [
+pub const AWS_FIXTURE_FILES: [&str; 10] = [
     "security-groups.json",
     "ecs-services.json",
     "lambda-functions.json",
@@ -737,6 +752,9 @@ pub const AWS_FIXTURE_FILES: [&str; 7] = [
     "db-clusters.json",
     "cache-clusters.json",
     "service-graph.json",
+    "ecs-tasks.json",
+    "network-interfaces.json",
+    "flow-events.json",
 ];
 
 /// Read saved AWS CLI output from a directory (for tests and dry runs).
@@ -757,6 +775,9 @@ pub fn records_from_aws_dir(
         db_clusters: read_json(dir, "db-clusters.json")?,
         cache_clusters: read_json(dir, "cache-clusters.json")?,
         service_graph: read_json(dir, "service-graph.json")?,
+        ecs_tasks: read_json(dir, "ecs-tasks.json")?.into_iter().collect(),
+        network_interfaces: read_json(dir, "network-interfaces.json")?,
+        flow_events: read_json(dir, "flow-events.json")?,
     };
     Ok(account_records(&account, env))
 }
@@ -772,6 +793,10 @@ pub struct AwsLive {
     pub env: Option<String>,
     /// Also read the X-Ray service graph.
     pub xray: bool,
+    /// Optional CloudWatch log group containing VPC flow logs.
+    pub flow_log_group: Option<String>,
+    /// Discover active VPC flow logs in CloudWatch when no group is specified.
+    pub flow_logs: bool,
 }
 
 /// Read a live AWS account with the `aws` CLI. Only list and describe calls
@@ -788,6 +813,9 @@ pub fn records_from_aws(
     use super::cloud::{run_json, strings};
     let mut records = Vec::new();
     let mut warnings = Vec::new();
+    let mut flow_complete = true;
+    let mut no_flow_groups = Vec::new();
+    let flow_enabled = live.flow_logs || live.flow_log_group.is_some();
     let regions: Vec<Option<&str>> = if live.regions.is_empty() {
         vec![None]
     } else {
@@ -819,8 +847,64 @@ pub fn records_from_aws(
             security_groups: Some(call(&["ec2", "describe-security-groups"])?),
             ..AwsAccount::default()
         };
-        if let Some(clusters) = soft(&["ecs", "list-clusters"]) {
+        let clusters = soft(&["ecs", "list-clusters"]);
+        if flow_enabled
+            && clusters
+                .as_ref()
+                .and_then(|v| v.get("clusterArns"))
+                .and_then(Value::as_array)
+                .is_none()
+        {
+            flow_complete = false;
+        }
+        if let Some(clusters) = clusters {
             for cluster in strings(clusters.get("clusterArns"), None) {
+                if flow_enabled {
+                    let tasks = soft(&[
+                        "ecs",
+                        "list-tasks",
+                        "--cluster",
+                        &cluster,
+                        "--desired-status",
+                        "RUNNING",
+                    ]);
+                    if tasks
+                        .as_ref()
+                        .and_then(|v| v.get("taskArns"))
+                        .and_then(Value::as_array)
+                        .is_none()
+                    {
+                        flow_complete = false;
+                    }
+                    if let Some(tasks) = tasks {
+                        let arns = strings(tasks.get("taskArns"), None);
+                        for batch in arns.chunks(100) {
+                            let mut parts = vec![
+                                "ecs",
+                                "describe-tasks",
+                                "--cluster",
+                                cluster.as_str(),
+                                "--tasks",
+                            ];
+                            parts.extend(batch.iter().map(String::as_str));
+                            let result = soft(&parts);
+                            if result
+                                .as_ref()
+                                .and_then(|v| v.get("tasks"))
+                                .and_then(Value::as_array)
+                                .is_none()
+                                || result
+                                    .as_ref()
+                                    .and_then(|v| v.get("failures"))
+                                    .and_then(Value::as_array)
+                                    .is_some_and(|v| !v.is_empty())
+                            {
+                                flow_complete = false;
+                            }
+                            account.ecs_tasks.extend(result);
+                        }
+                    }
+                }
                 let Some(services) = soft(&["ecs", "list-services", "--cluster", &cluster]) else {
                     continue;
                 };
@@ -854,7 +938,110 @@ pub fn records_from_aws(
                 &end,
             ]);
         }
+        if flow_enabled {
+            let mut groups = std::collections::BTreeSet::new();
+            if let Some(group) = &live.flow_log_group {
+                groups.insert(group.clone());
+            } else {
+                let discovered = soft(&["ec2", "describe-flow-logs"]);
+                if let Some(logs) = discovered
+                    .as_ref()
+                    .and_then(|v| v.get("FlowLogs"))
+                    .and_then(Value::as_array)
+                {
+                    let default_format = "${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr} ${srcport} ${dstport} ${protocol} ${packets} ${bytes} ${start} ${end} ${action} ${log-status}";
+                    let mut group_formats = std::collections::BTreeMap::<String, bool>::new();
+                    for log in logs {
+                        if log.get("FlowLogStatus").and_then(Value::as_str) != Some("ACTIVE")
+                            || log.get("LogDestinationType").and_then(Value::as_str)
+                                != Some("cloud-watch-logs")
+                        {
+                            continue;
+                        }
+                        if let Some(group) = log.get("LogGroupName").and_then(Value::as_str) {
+                            let valid =
+                                log.get("LogFormat")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|s| {
+                                        s.split_whitespace().eq(default_format.split_whitespace())
+                                    });
+                            group_formats
+                                .entry(group.to_owned())
+                                .and_modify(|v| *v &= valid)
+                                .or_insert(valid);
+                        } else {
+                            flow_complete = false;
+                        }
+                    }
+                    for (group, valid) in group_formats {
+                        if valid {
+                            groups.insert(group);
+                        } else {
+                            flow_complete = false;
+                        }
+                    }
+                } else {
+                    flow_complete = false;
+                }
+            }
+            if groups.is_empty() {
+                no_flow_groups.push(region.unwrap_or("default region").to_owned());
+            }
+            account.network_interfaces = soft(&["ec2", "describe-network-interfaces"]);
+            if account
+                .network_interfaces
+                .as_ref()
+                .and_then(|v| v.get("NetworkInterfaces"))
+                .and_then(Value::as_array)
+                .is_none()
+            {
+                flow_complete = false;
+            }
+            let start = ((now - chrono::Duration::hours(6)).timestamp_millis()).to_string();
+            let end = now.timestamp_millis().to_string();
+            let mut events = Vec::new();
+            for group in &groups {
+                let result = soft(&[
+                    "logs",
+                    "filter-log-events",
+                    "--log-group-name",
+                    group,
+                    "--start-time",
+                    &start,
+                    "--end-time",
+                    &end,
+                    "--max-items",
+                    "10000",
+                ]);
+                match result {
+                    Some(value)
+                        if value.get("NextToken").is_none() && value.get("nextToken").is_none() =>
+                    {
+                        if let Some(items) = value.get("events").and_then(Value::as_array) {
+                            events.extend(items.iter().cloned());
+                        } else {
+                            flow_complete = false;
+                        }
+                    }
+                    _ => {
+                        flow_complete = false;
+                    }
+                }
+            }
+            account.flow_events = Some(serde_json::json!({"events": events}));
+        }
         records.extend(account_records(&account, live.env.as_deref()));
+    }
+    if flow_enabled && flow_complete {
+        for region in no_flow_groups {
+            warnings.push(format!("aws flow logs: no eligible active CloudWatch log groups in {region}; check VPC Flow Logs and log format"));
+        }
+    }
+    if flow_enabled && !flow_complete {
+        records.retain(|record| record.collector != "aws_flow_logs");
+        warnings.push(
+            "aws flow logs: an input was incomplete; any previous flow records are retained".into(),
+        );
     }
     Ok((records, warnings))
 }

@@ -34,6 +34,8 @@ pub struct Cli {
 /// Top-level commands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Guide a discovery run and explain available evidence.
+    Discover(DiscoverArgs),
     /// Collect raw records from source systems.
     Collect(CollectArgs),
     /// Build a graph snapshot from raw records.
@@ -128,6 +130,35 @@ pub struct SuggestArgs {
     pub model_id: Option<String>,
 }
 
+/// Options for guided discovery.
+#[derive(Debug, clap::Args)]
+pub struct DiscoverArgs {
+    /// Include AWS discovery, including existing flow logs.
+    #[arg(long, conflicts_with = "repos_only")]
+    pub aws: bool,
+    /// Include Azure discovery, including existing VNet Traffic Analytics.
+    #[arg(long, conflicts_with = "repos_only")]
+    pub azure: bool,
+    /// Scan repository sources only, without live cloud or Prometheus calls.
+    #[arg(long, conflicts_with_all = ["aws", "azure", "prometheus"])]
+    pub repos_only: bool,
+    /// Include Istio metrics from the configured Prometheus endpoint.
+    #[arg(long, conflicts_with = "repos_only")]
+    pub prometheus: bool,
+    /// Use saved Prometheus responses (requires --prometheus).
+    #[arg(long, requires = "prometheus")]
+    pub prometheus_fixture: Option<PathBuf>,
+    /// Use a saved repository landscape instead of GitLab.
+    #[arg(long)]
+    pub fixture: Option<PathBuf>,
+    /// Use saved AWS data instead of live AWS (requires --aws).
+    #[arg(long, requires = "aws")]
+    pub aws_fixture: Option<PathBuf>,
+    /// Use saved Azure data instead of live Azure (requires --azure).
+    #[arg(long, requires = "azure")]
+    pub azure_fixture: Option<PathBuf>,
+}
+
 /// `depgraph collect`.
 #[derive(Debug, clap::Args)]
 pub struct CollectArgs {
@@ -159,6 +190,9 @@ pub struct CollectArgs {
     /// `aws.enabled` is false.
     #[arg(long)]
     pub aws: bool,
+    /// Discover AWS VPC flow logs for this run (also enables AWS collection).
+    #[arg(long)]
+    pub aws_flow_logs: bool,
     /// Saved `aws` CLI output (`security-groups.json`, `service-graph.json`, ...).
     #[arg(long)]
     pub aws_fixture: Option<PathBuf>,
@@ -166,9 +200,15 @@ pub struct CollectArgs {
     /// `azure.enabled` is false.
     #[arg(long)]
     pub azure: bool,
+    /// Discover Azure VNet flow analytics for this run (also enables Azure collection).
+    #[arg(long)]
+    pub azure_flow_logs: bool,
     /// Saved `az` CLI output (`asgs.json`, `nsgs.json`, `dependencies.json`).
     #[arg(long)]
     pub azure_fixture: Option<PathBuf>,
+    /// Skip implicit cloud configuration for guided discovery.
+    #[arg(skip)]
+    pub skip_config_cloud: bool,
 }
 
 /// `depgraph drift`.
@@ -574,6 +614,7 @@ where
 
 fn execute(cli: Cli) -> Result<(), Error> {
     match cli.command {
+        Command::Discover(args) => run_discover(args),
         Command::Collect(args) => run_collect(args),
         Command::Build(args) => run_build(args),
         Command::ModelSetup => crate::model_config::setup(),
@@ -623,6 +664,280 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::Stats(args) => run_stats(args),
         Command::Scorecard(args) => run_scorecard(args),
     }
+}
+
+fn command_available(name: &str) -> bool {
+    std::process::Command::new(name)
+        .arg("--version")
+        .output()
+        .is_ok_and(|result| result.status.success())
+}
+
+fn aws_scope(aws: &config::AwsConfig, fixture: bool) -> String {
+    if fixture {
+        return "saved AWS fixture".into();
+    }
+    let profile = aws.profile.as_deref().unwrap_or("AWS CLI default");
+    let regions = if aws.regions.is_empty() {
+        let env = std::env::var("AWS_REGION")
+            .ok()
+            .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
+            .filter(|s| !s.trim().is_empty());
+        let configured = || {
+            let mut cmd = std::process::Command::new("aws");
+            cmd.args(["configure", "get", "region"]);
+            if let Some(profile) = &aws.profile {
+                cmd.args(["--profile", profile]);
+            }
+            cmd.output()
+                .ok()
+                .filter(|out| out.status.success())
+                .and_then(|out| String::from_utf8(out.stdout).ok())
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+        };
+        env.or_else(configured)
+            .unwrap_or_else(|| "not detected (AWS CLI default)".into())
+    } else {
+        aws.regions.join(", ")
+    };
+    format!("profile {profile}, region {regions}")
+}
+
+fn azure_scope(azure: &config::AzureConfig, fixture: bool) -> String {
+    if fixture {
+        return "saved Azure fixture".into();
+    }
+    if !azure.subscriptions.is_empty() {
+        return format!("subscriptions {}", azure.subscriptions.join(", "));
+    }
+    let selected = std::process::Command::new("az")
+        .args(["account", "show", "--query", "name", "--output", "json"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| serde_json::from_slice::<String>(&out.stdout).ok())
+        .filter(|name| {
+            !name.trim().is_empty() && name.len() <= 200 && !name.chars().any(char::is_control)
+        });
+    match selected {
+        Some(name) => format!("subscription {name}"),
+        None => "current Azure CLI subscription (not detected)".into(),
+    }
+}
+
+fn run_discover(args: DiscoverArgs) -> Result<(), Error> {
+    use std::io::{IsTerminal, Write};
+    println!("Discovery scans repositories and can add cloud evidence.");
+    println!(
+        "AWS: {}. Default: current AWS profile and region; finds cloud resources and existing VPC flow logs.",
+        if command_available("aws") {
+            "CLI installed"
+        } else {
+            "CLI not found"
+        }
+    );
+    println!(
+        "Azure: {}. Default: current Azure CLI subscription; finds cloud resources and existing VNet Traffic Analytics.",
+        if command_available("az") {
+            "CLI installed"
+        } else {
+            "CLI not found"
+        }
+    );
+    println!(
+        "Cloud reads use your existing login and may incur CloudWatch or Azure Monitor charges. Nothing is enabled or created in the cloud."
+    );
+    println!("Network packets are not application calls; not every VM can be tied to a service.");
+    let guided = !(args.aws || args.azure || args.repos_only || args.prometheus);
+    if guided
+        && std::io::stdin().is_terminal()
+        && let Ok(project) = config::load_project(Path::new("."))
+    {
+        println!(
+            "AWS configured scope: {}",
+            aws_scope(&project.config.aws, false)
+        );
+        println!(
+            "Azure configured scope: {}",
+            azure_scope(&project.config.azure, false)
+        );
+        if project.config.prometheus.url != "https://prometheus.example.com"
+            && !project.config.prometheus.url.is_empty()
+        {
+            println!("Prometheus endpoint is configured; you can choose it separately.");
+        }
+    }
+    let (aws, azure) = if !guided {
+        (args.aws, args.azure)
+    } else {
+        if !std::io::stdin().is_terminal() {
+            return Err(Error::Usage("choose --repos-only, --prometheus, --aws, --azure, or combine sources; no cloud reads were started".into()));
+        }
+        println!("Choose: 1) repositories only  2) add AWS  3) add Azure  4) add both  0) cancel");
+        print!("Selection: ");
+        std::io::stdout().flush()?;
+        let mut choice = String::new();
+        std::io::stdin().read_line(&mut choice)?;
+        match choice.trim() {
+            "1" => (false, false),
+            "2" => (true, false),
+            "3" => (false, true),
+            "4" => (true, true),
+            "0" | "" => {
+                println!("Discovery cancelled; no data was read.");
+                return Ok(());
+            }
+            _ => {
+                return Err(Error::Usage(
+                    "invalid selection; run depgraph discover again".into(),
+                ));
+            }
+        }
+    };
+    let project = config::load_project(Path::new(".")).map_err(|err| {
+        Error::Config(format!(
+            "{err}. Run depgraph init to create starter configuration."
+        ))
+    })?;
+    let mut prometheus = args.prometheus;
+    if guided
+        && args.fixture.is_none()
+        && !project.config.prometheus.url.is_empty()
+        && project.config.prometheus.url != "https://prometheus.example.com"
+    {
+        println!(
+            "Prometheus is configured at {}. Query it for Istio calls? [y/N]",
+            project.config.prometheus.url
+        );
+        print!("Selection: ");
+        std::io::stdout().flush()?;
+        let mut choice = String::new();
+        std::io::stdin().read_line(&mut choice)?;
+        prometheus = match choice.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => true,
+            "" | "n" | "no" => false,
+            _ => {
+                return Err(Error::Usage(
+                    "invalid selection; run depgraph discover again".into(),
+                ));
+            }
+        };
+    }
+    if prometheus
+        && args.prometheus_fixture.is_none()
+        && project.config.prometheus.url == "https://prometheus.example.com"
+    {
+        return Err(Error::Config(
+            "Prometheus still uses the example URL; set prometheus.url in config/config.yaml"
+                .into(),
+        ));
+    }
+    if args.fixture.is_none() {
+        // Verify repository access before potentially chargeable cloud calls.
+        crate::gitlab::resolve_token(&project.config.gitlab.base_url)?;
+    }
+    if aws {
+        let scope = aws_scope(&project.config.aws, args.aws_fixture.is_some());
+        println!(
+            "AWS scope: {scope}; existing security groups, X-Ray when enabled, and eligible VPC flow logs."
+        );
+    }
+    if azure {
+        let scope = azure_scope(&project.config.azure, args.azure_fixture.is_some());
+        println!(
+            "Azure scope: {scope}; existing security groups, configured Application Insights and discoverable VNet Traffic Analytics."
+        );
+    }
+    println!(
+        "This run builds a fresh snapshot from the selected sources; failed sources do not contribute earlier data."
+    );
+    // A unique raw directory ensures opt-out doesn't accidentally reuse an older cloud scan.
+    let run_dir = PathBuf::from("data/discovery").join(format!(
+        "{}-{}",
+        chrono::Utc::now().timestamp_millis(),
+        std::process::id()
+    ));
+    run_collect(CollectArgs {
+        set: CollectSetArg::Full,
+        fixture: args.fixture,
+        output: Some(run_dir.clone()),
+        base_url: None,
+        group: Vec::new(),
+        project_path: Vec::new(),
+        prometheus_fixture: args.prometheus_fixture,
+        prometheus,
+        aws,
+        aws_flow_logs: aws,
+        aws_fixture: args.aws_fixture,
+        azure,
+        azure_flow_logs: azure,
+        azure_fixture: args.azure_fixture,
+        skip_config_cloud: true,
+    })?;
+    run_build(BuildArgs {
+        raw: Some(run_dir.join("raw")),
+        output: None,
+        aliases: None,
+    })?;
+    let graph: crate::models::GraphSnapshot =
+        serde_json::from_slice(&fs::read("data/snapshot.json")?)
+            .map_err(|_| Error::Store("could not read the discovery snapshot".into()))?;
+    let report: normalize::merge::UnresolvedReport =
+        serde_json::from_slice(&fs::read("data/unresolved.json")?)
+            .map_err(|_| Error::Store("could not read the unresolved report".into()))?;
+    let traffic = graph
+        .edges
+        .iter()
+        .filter(|e| e.edge_type == crate::models::EdgeType::NetworkTraffic)
+        .count();
+    let observed = graph
+        .edges
+        .iter()
+        .filter(|e| e.edge_type == crate::models::EdgeType::ObservedCalls)
+        .count();
+    println!(
+        "Discovery: {} nodes, {} ties, {} observed calls, {} network traffic edges; {} unresolved.",
+        graph.nodes.len(),
+        graph.edges.len(),
+        observed,
+        traffic,
+        report.records.len()
+    );
+    for (enabled, label, evidence) in [
+        (aws, "AWS", "aws-vpc-flow-logs"),
+        (azure, "Azure", "azure-vnet-traffic-analytics"),
+    ] {
+        if enabled {
+            let count = graph
+                .edges
+                .iter()
+                .filter(|edge| {
+                    edge.edge_type == crate::models::EdgeType::NetworkTraffic
+                        && edge
+                            .sources
+                            .iter()
+                            .any(|source| source.evidence_ref.as_deref() == Some(evidence))
+                })
+                .count();
+            println!(
+                "{label} network evidence: {count} traffic edges. See warnings for missing sources or permissions."
+            );
+        }
+    }
+    if !prometheus {
+        println!("Prometheus was not queried; Istio call evidence is not included in this run.");
+    }
+    if (aws || azure) && traffic == 0 {
+        println!(
+            "No network traffic edges were found. Logs may be unavailable, empty, unsupported or unmatched; check warnings above."
+        );
+    }
+    println!(
+        "Results: data/snapshot.json and data/unresolved.json. Packet direction does not prove call direction. Review unresolved names with depgraph suggest."
+    );
+    println!("Discovery raw data: {}", run_dir.join("raw").display());
+    Ok(())
 }
 
 fn run_collect(args: CollectArgs) -> Result<(), Error> {
@@ -734,16 +1049,18 @@ fn cloud_records(args: &CollectArgs) -> Result<Vec<crate::raw::RawRecord>, Error
         .as_ref()
         .map(|p| p.config.azure.clone())
         .unwrap_or_default();
-    let uses_config = args.fixture.is_none();
+    let uses_config = args.fixture.is_none() && !args.skip_config_cloud;
     let mut records = Vec::new();
     if let Some(dir) = &args.aws_fixture {
         records.extend(collectors::records_from_aws_dir(dir, aws.env.as_deref())?);
-    } else if args.aws || (uses_config && aws.enabled) {
+    } else if args.aws || args.aws_flow_logs || (uses_config && aws.enabled) {
         let live = collectors::AwsLive {
             profile: aws.profile.clone(),
             regions: aws.regions.clone(),
             env: aws.env.clone(),
             xray: aws.xray,
+            flow_log_group: aws.flow_log_group.clone(),
+            flow_logs: aws.flow_logs || args.aws_flow_logs,
         };
         let (found, warnings) = collectors::records_from_aws(&live, chrono::Utc::now())?;
         for warning in &warnings {
@@ -757,11 +1074,12 @@ fn cloud_records(args: &CollectArgs) -> Result<Vec<crate::raw::RawRecord>, Error
             dir,
             azure.env.as_deref(),
         )?);
-    } else if args.azure || (uses_config && azure.enabled) {
+    } else if args.azure || args.azure_flow_logs || (uses_config && azure.enabled) {
         let live = collectors::AzureLive {
             subscriptions: azure.subscriptions.clone(),
             workspaces: azure.log_analytics_workspaces.clone(),
             env: azure.env.clone(),
+            flow_logs: azure.flow_logs || args.azure_flow_logs,
         };
         let (found, warnings) = collectors::records_from_azure(&live)?;
         for warning in &warnings {

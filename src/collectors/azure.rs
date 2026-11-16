@@ -27,6 +27,12 @@ use crate::raw::RawRecord;
 pub const DEPENDENCY_QUERY: &str = "AppDependencies | where TimeGenerated > ago(7d) \
 | summarize Calls = count(), Errors = countif(Success == false) by AppRoleName, Target, DependencyType";
 
+/// VNet flow packets enriched with Azure VM identities by Traffic Analytics.
+pub const VNET_FLOW_QUERY: &str = "NTANetAnalytics | where TimeGenerated > ago(6h) \
+| where SubType == 'FlowLog' and FaSchemaVersion == '3' and FlowStatus == 'A' \
+| where isnotempty(SrcVm) and isnotempty(DestVm) \
+| project SrcVm, DestVm, SrcSubscription, DestSubscription, FlowEndTime, FlowStatus, PacketsSrcToDest, PacketsDestToSrc | take 10001";
+
 /// What the read-only `az` calls returned for one subscription.
 #[derive(Debug, Default)]
 pub struct AzureSubscription {
@@ -36,6 +42,8 @@ pub struct AzureSubscription {
     pub nsgs: Option<Value>,
     /// `az monitor log-analytics query` rows with [`DEPENDENCY_QUERY`], one per workspace.
     pub dependencies: Vec<Value>,
+    /// NTANetAnalytics query results from discovered workspaces.
+    pub network_flows: Vec<Value>,
 }
 
 /// Records from one subscription. `env` names its environment.
@@ -127,6 +135,16 @@ pub fn subscription_records(subscription: &AzureSubscription, env: Option<&str>)
             }));
         }
     }
+    if !subscription.network_flows.is_empty() {
+        records.push(RawRecord {
+            collector: "azure_flow_logs".into(),
+            kind: "network_flow_checkpoint".into(),
+            payload: json!({}),
+        });
+    }
+    for rows in &subscription.network_flows {
+        records.extend(super::flow_logs::azure_flows(rows, env));
+    }
     records
 }
 
@@ -194,7 +212,12 @@ fn record(kind: &str, payload: Value) -> RawRecord {
 }
 
 /// Files read by [`records_from_azure_dir`], named after the CLI call.
-pub const AZURE_FIXTURE_FILES: [&str; 3] = ["asgs.json", "nsgs.json", "dependencies.json"];
+pub const AZURE_FIXTURE_FILES: [&str; 4] = [
+    "asgs.json",
+    "nsgs.json",
+    "dependencies.json",
+    "vnet-flows.json",
+];
 
 /// Read saved `az` output from a directory (for tests and dry runs).
 ///
@@ -206,6 +229,7 @@ pub fn records_from_azure_dir(dir: &Path, env: Option<&str>) -> Result<Vec<RawRe
         asgs: read_json(dir, "asgs.json")?,
         nsgs: read_json(dir, "nsgs.json")?,
         dependencies: read_json(dir, "dependencies.json")?.into_iter().collect(),
+        network_flows: read_json(dir, "vnet-flows.json")?.into_iter().collect(),
     };
     Ok(subscription_records(&subscription, env))
 }
@@ -219,6 +243,8 @@ pub struct AzureLive {
     pub workspaces: Vec<String>,
     /// Environment of these subscriptions.
     pub env: Option<String>,
+    /// Discover VNet Traffic Analytics workspaces automatically.
+    pub flow_logs: bool,
 }
 
 /// Read Azure with the `az` CLI. A failed dependency query is a warning.
@@ -229,6 +255,9 @@ pub struct AzureLive {
 pub fn records_from_azure(live: &AzureLive) -> Result<(Vec<RawRecord>, Vec<String>), Error> {
     let mut records = Vec::new();
     let mut warnings = Vec::new();
+    let mut flow_complete = true;
+    let mut flow_issues = std::collections::BTreeSet::new();
+    let mut found_flow_workspace = false;
     let subscriptions: Vec<Option<&str>> = if live.subscriptions.is_empty() {
         vec![None]
     } else {
@@ -250,6 +279,7 @@ pub fn records_from_azure(live: &AzureLive) -> Result<(Vec<RawRecord>, Vec<Strin
             asgs: Some(call(&["network", "asg", "list"])?),
             nsgs: Some(call(&["network", "nsg", "list"])?),
             dependencies: Vec::new(),
+            network_flows: Vec::new(),
         };
         // Workspaces are not tied to a subscription: query them once.
         if index == 0 {
@@ -268,7 +298,108 @@ pub fn records_from_azure(live: &AzureLive) -> Result<(Vec<RawRecord>, Vec<Strin
                 }
             }
         }
+        if live.flow_logs {
+            match call(&["monitor", "log-analytics", "workspace", "list"]) {
+                Ok(workspaces) => {
+                    if let Some(workspaces) = workspaces.as_array() {
+                        for workspace in workspaces {
+                            let name = workspace.get("name").and_then(Value::as_str);
+                            let group = workspace.get("resourceGroup").and_then(Value::as_str);
+                            let id = workspace.get("customerId").and_then(Value::as_str);
+                            let (Some(name), Some(group), Some(id)) = (name, group, id) else {
+                                flow_complete = false;
+                                flow_issues.insert(
+                                    "workspace metadata is missing; check workspace access"
+                                        .to_owned(),
+                                );
+                                continue;
+                            };
+                            match call(&[
+                                "monitor",
+                                "log-analytics",
+                                "workspace",
+                                "table",
+                                "list",
+                                "--resource-group",
+                                group,
+                                "--workspace-name",
+                                name,
+                            ]) {
+                                Ok(tables) => {
+                                    let Some(tables) = tables.as_array() else {
+                                        flow_complete = false;
+                                        flow_issues.insert(format!("cannot read table list for workspace {name}; check Reader permissions"));
+                                        continue;
+                                    };
+                                    if !tables.iter().any(|table| {
+                                        table.get("name").and_then(Value::as_str).is_some_and(
+                                            |name| name.eq_ignore_ascii_case("NTANetAnalytics"),
+                                        )
+                                    }) {
+                                        continue;
+                                    }
+                                    found_flow_workspace = true;
+                                    match call(&[
+                                        "monitor",
+                                        "log-analytics",
+                                        "query",
+                                        "--workspace",
+                                        id,
+                                        "--analytics-query",
+                                        VNET_FLOW_QUERY,
+                                    ]) {
+                                        Ok(rows)
+                                            if rows
+                                                .as_array()
+                                                .is_some_and(|rows| rows.len() <= 10000) =>
+                                        {
+                                            data.network_flows.push(rows)
+                                        }
+                                        Ok(_) => {
+                                            flow_complete = false;
+                                            flow_issues.insert(format!("workspace {name} returned more than 10000 rows or invalid results"));
+                                        }
+                                        Err(_) => {
+                                            flow_complete = false;
+                                            flow_issues.insert(format!("cannot query VNet traffic in workspace {name}; check Log Analytics read permission"));
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    flow_complete = false;
+                                    flow_issues.insert(format!("cannot list tables in workspace {name}; check Reader permissions"));
+                                }
+                            }
+                        }
+                    } else {
+                        flow_complete = false;
+                        flow_issues.insert("workspace discovery returned invalid data".to_owned());
+                    }
+                }
+                Err(_) => {
+                    flow_complete = false;
+                    flow_issues.insert("cannot list Log Analytics workspaces; check subscription Reader permissions".to_owned());
+                }
+            }
+            // A successful scan with no eligible workspace must replace old flow records.
+            if data.network_flows.is_empty() {
+                data.network_flows.push(json!([]));
+            }
+        }
         records.extend(subscription_records(&data, live.env.as_deref()));
+    }
+    if live.flow_logs && flow_complete && !found_flow_workspace {
+        warnings.push("azure flow logs: no workspace with VNet Traffic Analytics found in the selected subscription; check that Traffic Analytics is enabled".into());
+    }
+    if live.flow_logs && !flow_complete {
+        for issue in flow_issues {
+            warnings.push(format!("azure flow logs: {issue}"));
+        }
+        records.retain(|record| record.collector != "azure_flow_logs");
+        warnings.push(
+            "azure flow logs: an input was incomplete; any previous flow records are retained"
+                .into(),
+        );
     }
     Ok((records, warnings))
 }
@@ -322,6 +453,7 @@ mod tests {
                  "destinationApplicationSecurityGroups": [{"id": id("asg-web")}]}
             ]}])),
             dependencies: Vec::new(),
+            network_flows: Vec::new(),
         };
         let records = subscription_records(&subscription, None);
         let candidates: Vec<String> = records

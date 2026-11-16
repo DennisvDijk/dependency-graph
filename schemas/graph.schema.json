@@ -248,6 +248,11 @@
           "type": "string"
         },
         {
+          "const": "network_traffic",
+          "description": "Network packets observed between components; direction is packet direction, not call initiation.",
+          "type": "string"
+        },
+        {
           "const": "candidate_calls",
           "description": "Suggested by static analysis and not yet confirmed.",
           "type": "string"

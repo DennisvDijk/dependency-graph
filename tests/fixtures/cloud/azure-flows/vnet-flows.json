@@ -1,0 +1,32 @@
+[
+  {
+    "SrcVm": "rg-app/orders-host",
+    "DestVm": "rg-app/billing-host",
+    "SrcSubscription": "11111111-1111-1111-1111-111111111111",
+    "DestSubscription": "11111111-1111-1111-1111-111111111111",
+    "FlowEndTime": "2026-11-16T20:01:00Z",
+    "FlowStatus": "A",
+    "PacketsSrcToDest": 3,
+    "PacketsDestToSrc": 2
+  },
+  {
+    "SrcVm": "rg-app/denied-host",
+    "DestVm": "rg-app/billing-host",
+    "SrcSubscription": "11111111-1111-1111-1111-111111111111",
+    "DestSubscription": "11111111-1111-1111-1111-111111111111",
+    "FlowEndTime": "2026-11-16T20:01:00Z",
+    "FlowStatus": "D",
+    "PacketsSrcToDest": 3,
+    "PacketsDestToSrc": 2
+  },
+  {
+    "SrcVm": "rg-app/orders-host",
+    "DestVm": "",
+    "SrcSubscription": "11111111-1111-1111-1111-111111111111",
+    "DestSubscription": "11111111-1111-1111-1111-111111111111",
+    "FlowEndTime": "2026-11-16T20:01:00Z",
+    "FlowStatus": "A",
+    "PacketsSrcToDest": 3,
+    "PacketsDestToSrc": 0
+  }
+]

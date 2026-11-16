@@ -28,6 +28,15 @@ depgraph deps orders-py --snapshot data/snapshot.json
 
 ## Turn it on for your account
 
+`depgraph discover` guides a run: choose the sources to read, see the selected
+scope, then inspect the resulting snapshot and unresolved report. Cloud reads
+are opt-in; they use the CLI's existing credentials and can incur query charges.
+For non-interactive use, pass `--aws`, `--azure`, `--prometheus`, or
+`--repos-only`. The raw input for each guided run is stored separately under
+`data/discovery/`, so a new run doesn't silently include earlier cloud data.
+A failed source contributes no earlier data to that fresh snapshot; review the
+warnings before relying on it.
+
 **1. Sign in with read-only access.**
 
 - AWS: any role with the `ReadOnlyAccess` managed policy works. The minimum is `ec2:DescribeSecurityGroups`, `ecs:List*`, `ecs:DescribeServices`, `lambda:ListFunctions`, `rds:Describe*`, `elasticache:DescribeCacheClusters`, `xray:GetServiceGraph`. Check with `aws sts get-caller-identity`.
@@ -99,3 +108,84 @@ guess_namespaces: true
 - **New services from the cloud.** Cloud resources tie to services that exist in your repos. An ECS service with no repo shows up in `unresolved.json` and doesn't become a node of its own.
 - **Network Firewall, WAF, NACLs, Azure Firewall, CIDR-only rules.** These rules don't say which service they're for.
 - **EKS / AKS workloads.** These come from the Kubernetes manifests in your repos (tutorial 8) and Istio, not from these readers.
+
+## Optional: VPC flow logs between ECS services
+
+To include network traffic, enable VPC Flow Logs separately in AWS and publish
+**default-format** records to CloudWatch Logs. To discover them for one run,
+without editing configuration, use:
+
+```bash
+depgraph collect --set full --aws-flow-logs
+depgraph build
+```
+
+For regular collection, opt in under `aws:` in `config/config.yaml`; depgraph
+discovers active flow logs and their log groups:
+
+```yaml
+aws:
+  enabled: true
+  env: prod
+  flow_logs: true
+  # flow_log_group: /aws/vpc/flow  # optional: limit collection to one group
+```
+
+On `depgraph collect --set full --aws`, depgraph reads up to 10,000 log events
+from the last six hours, lists running ECS tasks and network interfaces, and
+maps IP addresses only when both ends unambiguously match current service tasks
+in the same VPC for the whole logged interval. It needs `logs:FilterLogEvents`,
+`ec2:DescribeNetworkInterfaces`, `ec2:DescribeFlowLogs`, `ecs:ListTasks` and `ecs:DescribeTasks` in
+addition to the permissions above. CloudWatch Logs reads can incur charges.
+If a discovered group has a custom or unknown log format, or the result is
+truncated or incomplete, depgraph warns and emits no new flow records;
+previous raw data, if present, remains in place. Collector errors are also
+reported as warnings. Check those warnings before relying on completeness.
+
+The graph labels these edges `network_traffic`, not application calls. They
+show packet direction, so a request and its response can appear in opposite
+directions; they carry no request count and do not affect dependency drift or
+impact calculations. Only accepted, complete default-format VPC records and
+running ECS service tasks are included. This does not yet identify Lambda,
+RDS, ECS on EC2 without task ENIs, stopped tasks, cross-account identities,
+NAT-translated endpoints, custom flow-log formats, or S3 logs. Flow logging itself can have gaps; an absent edge doesn't prove there was
+no traffic. Model mappings still have to resolve to known repo components.
+
+To try the packet mapping without an AWS account, use the saved example:
+
+```bash
+depgraph collect --set full --fixture tests/fixtures/landscape \
+  --aws-fixture tests/fixtures/cloud/aws-flows --output data
+depgraph build
+```
+
+## Optional: Azure VNet flow evidence
+
+For one run, with no per-service configuration:
+
+```bash
+depgraph collect --set full --azure-flow-logs
+depgraph build
+```
+
+The reader discovers Log Analytics workspaces in the Azure CLI's selected
+subscription and queries those with the `NTANetAnalytics` table. It needs
+existing VNet flow logs with Traffic Analytics already enabled, workspace
+listing and table-list permissions, and read/query permission on their data;
+it doesn't enable logging or create resources. Azure Monitor queries can
+incur charges. The default AWS CLI region and Azure CLI subscription set the
+scope. Follow your CLI's usual account and region selection to change it.
+
+The graph shows accepted packet traffic between Azure VM infrastructure nodes
+using the VM identities enriched by Traffic Analytics. It does not claim that
+a VM's traffic belongs to a particular application: a VM can host many
+services. Packet directions are not dependency or call directions; each
+observed direction appears independently and does not affect drift or impact.
+Flows lacking unambiguous VM identity or packet data are left out. Environment
+is left unknown when not configured. Each workspace is capped at 10,000
+results; on an incomplete query the previous Azure flow data is retained and
+a warning is printed. For regular collection, set `azure.enabled: true` and
+`azure.flow_logs: true`; no workspace list or per-service mappings are needed.
+
+Azure NSG flow logs are being retired; the reader uses the VNet Traffic
+Analytics table instead. See [Microsoft's migration notice](https://learn.microsoft.com/en-us/azure/network-watcher/nsg-flow-logs-overview).
