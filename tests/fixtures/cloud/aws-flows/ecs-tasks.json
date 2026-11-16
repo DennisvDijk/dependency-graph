@@ -1,0 +1,44 @@
+{
+  "tasks": [
+    {
+      "lastStatus": "RUNNING",
+      "group": "service:orders-py-prod",
+      "startedAt": "2026-11-16T19:00:00Z",
+      "attachments": [
+        {
+          "type": "ElasticNetworkInterface",
+          "details": [
+            {
+              "name": "networkInterfaceId",
+              "value": "eni-a"
+            },
+            {
+              "name": "privateIPv4Address",
+              "value": "10.0.0.1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "lastStatus": "RUNNING",
+      "group": "service:billing-ex-prod",
+      "startedAt": "2026-11-16T19:00:00Z",
+      "attachments": [
+        {
+          "type": "ElasticNetworkInterface",
+          "details": [
+            {
+              "name": "networkInterfaceId",
+              "value": "eni-b"
+            },
+            {
+              "name": "privateIPv4Address",
+              "value": "10.0.0.2"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

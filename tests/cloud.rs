@@ -256,3 +256,166 @@ fn guessed_namespaces_are_used_only_when_switched_on() {
         "{unresolved}"
     );
 }
+
+#[test]
+fn vpc_flow_records_become_network_evidence_not_calls() {
+    let built = build(&["--aws-fixture", "{cloud}/aws-flows"], None);
+    assert!(
+        built
+            .edges
+            .contains("network_traffic component:orders-py -> component:billing-ex prod n/a cloud"),
+        "{:#?}",
+        built.edges
+    );
+    assert!(
+        built
+            .edges
+            .contains("network_traffic component:billing-ex -> component:orders-py prod n/a cloud"),
+        "{:#?}",
+        built.edges
+    );
+    let graph: Value =
+        serde_json::from_str(&fs::read_to_string(built.root.join("data/snapshot.json")).unwrap())
+            .unwrap();
+    let flows: Vec<_> = graph["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "network_traffic")
+        .collect();
+    assert_eq!(flows.len(), 2);
+    for flow in flows {
+        assert!(flow["attrs"].get("calls_7d").is_none());
+        assert!(flow["attrs"].get("calls_total").is_none());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn incomplete_flow_scan_preserves_previous_flow_records() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("config")).unwrap();
+    fs::create_dir_all(root.join("data/raw")).unwrap();
+    let config = fs::read_to_string(manifest().join("config/config.yaml"))
+        .unwrap()
+        .replace(
+            "  enabled: false\n  # profile: readonly",
+            "  enabled: false\n  flow_log_group: test-flow\n  # profile: readonly",
+        );
+    fs::write(root.join("config/config.yaml"), config).unwrap();
+    for name in [
+        "pilot.yaml",
+        "sdk_hints.yaml",
+        "aliases.yaml",
+        "environments.yaml",
+    ] {
+        fs::copy(
+            manifest().join("config").join(name),
+            root.join("config").join(name),
+        )
+        .unwrap();
+    }
+    let previous =
+        "{\"collector\":\"aws_flow_logs\",\"kind\":\"network_flow_checkpoint\",\"payload\":{}}\n";
+    fs::write(root.join("data/raw/aws_flow_logs.jsonl"), previous).unwrap();
+    let aws = root.join("aws");
+    fs::write(
+        &aws,
+        r##"#!/bin/sh
+case "$1 $2" in
+  'ec2 describe-security-groups') printf '%s' '{"SecurityGroups":[]}' ;;
+  'ecs list-clusters') printf '%s' '{"clusterArns":["cluster"]}' ;;
+  'ecs list-tasks') exit 1 ;;
+  'ecs list-services') printf '%s' '{"serviceArns":[]}' ;;
+  'ec2 describe-network-interfaces') printf '%s' '{"NetworkInterfaces":[]}' ;;
+  'logs filter-log-events') printf '%s' '{"events":[]}' ;;
+  *) printf '%s' '{}' ;;
+esac
+"##,
+    )
+    .unwrap();
+    fs::set_permissions(&aws, fs::Permissions::from_mode(0o755)).unwrap();
+    let result = depgraph(root)
+        .args(["collect", "--set", "full", "--fixture"])
+        .arg(manifest().join("tests/fixtures/landscape"))
+        .args(["--aws", "--output", "data"])
+        .env("PATH", root)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8_lossy(&result.stderr).contains("previous flow records are retained"));
+    assert_eq!(
+        fs::read_to_string(root.join("data/raw/aws_flow_logs.jsonl")).unwrap(),
+        previous
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn flow_log_groups_are_discovered_without_a_name() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("config")).unwrap();
+    let config = fs::read_to_string(manifest().join("config/config.yaml"))
+        .unwrap()
+        .replace("  flow_logs: false", "  flow_logs: true")
+        .replace(
+            "  # env: prod                # environment",
+            "  env: prod                  # environment",
+        );
+    fs::write(root.join("config/config.yaml"), config).unwrap();
+    for name in [
+        "pilot.yaml",
+        "sdk_hints.yaml",
+        "aliases.yaml",
+        "environments.yaml",
+    ] {
+        fs::copy(
+            manifest().join("config").join(name),
+            root.join("config").join(name),
+        )
+        .unwrap();
+    }
+    let aws = root.join("aws");
+    fs::write(&aws, r##"#!/bin/sh
+case "$1 $2" in
+  'ec2 describe-security-groups') printf '%s' '{"SecurityGroups":[]}' ;;
+  'ecs list-clusters') printf '%s' '{"clusterArns":["cluster"]}' ;;
+  'ecs list-tasks') printf '%s' '{"taskArns":["task1","task2"]}' ;;
+  'ecs describe-tasks') /bin/cat "$FLOW_FIXTURES/ecs-tasks.json" ;;
+  'ecs list-services') printf '%s' '{"serviceArns":[]}' ;;
+  'ec2 describe-flow-logs') printf '%s' '{"FlowLogs":[{"FlowLogStatus":"ACTIVE","LogDestinationType":"cloud-watch-logs","LogGroupName":"autodiscovered","LogFormat":"${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr} ${srcport} ${dstport} ${protocol} ${packets} ${bytes} ${start} ${end} ${action} ${log-status}"}]}' ;;
+  'ec2 describe-network-interfaces') /bin/cat "$FLOW_FIXTURES/network-interfaces.json" ;;
+  'logs filter-log-events') /bin/cat "$FLOW_FIXTURES/flow-events.json" ;;
+  *) printf '%s' '{}' ;;
+esac
+"##).unwrap();
+    fs::set_permissions(&aws, fs::Permissions::from_mode(0o755)).unwrap();
+    let result = depgraph(root)
+        .args(["collect", "--set", "full", "--fixture"])
+        .arg(manifest().join("tests/fixtures/landscape"))
+        .args(["--aws", "--output", "data"])
+        .env("PATH", root)
+        .env(
+            "FLOW_FIXTURES",
+            manifest().join("tests/fixtures/cloud/aws-flows"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let raw = fs::read_to_string(root.join("data/raw/aws_flow_logs.jsonl")).unwrap();
+    assert!(raw.contains("network_flow"), "{raw}");
+    assert!(raw.contains("orders-py-prod"), "{raw}");
+    assert!(raw.contains("billing-ex-prod"), "{raw}");
+}

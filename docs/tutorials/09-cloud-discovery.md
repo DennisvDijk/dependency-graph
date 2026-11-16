@@ -99,3 +99,49 @@ guess_namespaces: true
 - **New services from the cloud.** Cloud resources tie to services that exist in your repos. An ECS service with no repo shows up in `unresolved.json` and doesn't become a node of its own.
 - **Network Firewall, WAF, NACLs, Azure Firewall, CIDR-only rules.** These rules don't say which service they're for.
 - **EKS / AKS workloads.** These come from the Kubernetes manifests in your repos (tutorial 8) and Istio, not from these readers.
+
+## Optional: VPC flow logs between ECS services
+
+To include network traffic, enable VPC Flow Logs separately in AWS and publish
+**default-format** records to CloudWatch Logs. Then opt in under `aws:` in
+`config/config.yaml`; depgraph discovers active flow logs and their log groups:
+
+```yaml
+aws:
+  enabled: true
+  env: prod
+  flow_logs: true
+  # flow_log_group: /aws/vpc/flow  # optional: limit collection to one group
+```
+
+On `depgraph collect --set full --aws`, depgraph reads up to 10,000 log events
+from the last six hours, lists running ECS tasks and network interfaces, and
+maps IP addresses only when both ends unambiguously match current service tasks
+in the same VPC for the whole logged interval. It needs `logs:FilterLogEvents`,
+`ec2:DescribeNetworkInterfaces`, `ec2:DescribeFlowLogs`, `ecs:ListTasks` and `ecs:DescribeTasks` in
+addition to the permissions above. CloudWatch Logs reads can incur charges.
+If a discovered group has a custom or unknown log format, or the result is
+truncated or incomplete, depgraph warns and emits no new flow records;
+previous raw data, if present, remains in place. Collector errors are also
+reported as warnings. Check those warnings before relying on completeness.
+
+The graph labels these edges `network_traffic`, not application calls. They
+show packet direction, so a request and its response can appear in opposite
+directions; they carry no request count and do not affect dependency drift or
+impact calculations. Only accepted, complete default-format VPC records and
+running ECS service tasks are included. This does not yet identify Lambda,
+RDS, ECS on EC2 without task ENIs, stopped tasks, cross-account identities,
+NAT-translated endpoints, custom flow-log formats, S3 logs, or Azure flow
+logs. Flow logging itself can have gaps; an absent edge doesn't prove there was
+no traffic. Model mappings still have to resolve to known repo components.
+
+To try the packet mapping without an AWS account, use the saved example:
+
+```bash
+depgraph collect --set full --fixture tests/fixtures/landscape \
+  --aws-fixture tests/fixtures/cloud/aws-flows --output data
+depgraph build
+```
+
+Azure NSG flow logs are being retired; new Azure collection should use VNet
+flow logs. See [Microsoft's migration notice](https://learn.microsoft.com/en-us/azure/network-watcher/nsg-flow-logs-overview).

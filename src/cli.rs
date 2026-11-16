@@ -744,6 +744,8 @@ fn cloud_records(args: &CollectArgs) -> Result<Vec<crate::raw::RawRecord>, Error
             regions: aws.regions.clone(),
             env: aws.env.clone(),
             xray: aws.xray,
+            flow_log_group: aws.flow_log_group.clone(),
+            flow_logs: aws.flow_logs,
         };
         let (found, warnings) = collectors::records_from_aws(&live, chrono::Utc::now())?;
         for warning in &warnings {

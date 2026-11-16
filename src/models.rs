@@ -115,6 +115,8 @@ pub enum EdgeType {
     DeclaredDependsOn,
     /// Seen in traces or mesh telemetry for one environment.
     ObservedCalls,
+    /// Network packets observed between components; direction is packet direction, not call initiation.
+    NetworkTraffic,
     /// Suggested by static analysis and not yet confirmed.
     CandidateCalls,
     /// Component runs as this deployment.
@@ -134,6 +136,7 @@ impl EdgeType {
         match self {
             Self::DeclaredDependsOn => "declared_depends_on",
             Self::ObservedCalls => "observed_calls",
+            Self::NetworkTraffic => "network_traffic",
             Self::CandidateCalls => "candidate_calls",
             Self::DeployedAs => "deployed_as",
             Self::UsesLibrary => "uses_library",

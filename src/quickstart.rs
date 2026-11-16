@@ -26,6 +26,8 @@ aws:
   regions: []                # empty: the CLI's default region
   # env: prod                # environment of this account; empty: from names like orders-prod
   xray: true                 # also read the X-Ray service map (calls that really happen)
+  flow_logs: false           # opt in to discover CloudWatch VPC flow logs
+  # flow_log_group: /aws/vpc/flow  # optional: read just this group
 azure:
   enabled: false
   subscriptions: []          # empty: the az default subscription

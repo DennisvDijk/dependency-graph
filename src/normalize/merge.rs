@@ -89,6 +89,7 @@ pub fn merge_records(
     let mut unresolved = Vec::new();
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
     let mut observed: BTreeMap<ObservedKey, ObservedAgg> = BTreeMap::new();
+    let mut flows = Vec::new();
     let mut candidates: Vec<CandidateCall> = Vec::new();
     let mut soft_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut heuristics: BTreeMap<String, bool> = BTreeMap::new();
@@ -238,6 +239,8 @@ pub fn merge_records(
                 ));
             }
             "observed_call" => absorb_observed(record, &mut observed)?,
+            "network_flow" => flows.push(record.payload.clone()),
+            "network_flow_checkpoint" => {}
             "candidate_call" => {
                 candidates.push(CandidateCall {
                     source: required_str(&record.payload, "source")?.to_owned(),
@@ -530,6 +533,80 @@ pub fn merge_records(
         edges.push(deployed_edge(&from_id, &deployment_id, env, &stamp));
     }
     edges.append(&mut runtime_edges);
+    let mut flow_edges = Vec::new();
+    for flow in &flows {
+        let source = required_str(flow, "source")?;
+        let destination = required_str(flow, "destination")?;
+        let resolve = |name: &str| {
+            loose_match(
+                name,
+                |name| components.contains_key(name),
+                aliases,
+                environments,
+            )
+        };
+        let Some(from) = resolve(source) else {
+            unresolved.push(unresolved_row(
+                "network_flow",
+                source,
+                "source is not a known component",
+                0,
+            ));
+            continue;
+        };
+        let Some(to) = resolve(destination) else {
+            unresolved.push(unresolved_row(
+                "network_flow",
+                destination,
+                "destination is not a known component",
+                0,
+            ));
+            continue;
+        };
+        if from == to {
+            continue;
+        }
+        let source_env = text_field(flow, "env");
+        let env = match source_env.as_str() {
+            "dev" => Some(Env::Dev),
+            "acc" => Some(Env::Acc),
+            "prod" => Some(Env::Prod),
+            "" => environments.suggest_namespace(source),
+            other => environments.resolve(other),
+        };
+        let Some(env) = env else {
+            unresolved.push(unresolved_row(
+                "environment",
+                source,
+                "environment is not known for network flow",
+                0,
+            ));
+            continue;
+        };
+        let stamp =
+            Timestamp::parse(required_str(flow, "last_seen")?).map_err(Error::Validation)?;
+        let from_id = format!("component:{from}");
+        let to_id = format!("component:{to}");
+        flow_edges.push(Edge {
+            id: ids::edge_id(EdgeType::NetworkTraffic, &from_id, &to_id, Some(env)),
+            edge_type: EdgeType::NetworkTraffic,
+            from_id,
+            to_id,
+            env: Some(env),
+            sources: vec![EdgeSource {
+                kind: SourceKind::Cloud,
+                first_seen: stamp.clone(),
+                last_seen: stamp,
+                evidence_ref: Some("aws-vpc-flow-logs".into()),
+            }],
+            status: EdgeStatus::NotApplicable,
+            criticality: Default::default(),
+            criticality_source: Default::default(),
+            active: true,
+            attrs: EdgeAttrs::default(),
+        });
+    }
+    edges.extend(fold_same_id(flow_edges));
     inherit_criticality(&mut edges);
     assign_status(&mut edges);
     expire_edges(

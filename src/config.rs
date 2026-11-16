@@ -95,6 +95,12 @@ pub struct AwsConfig {
     /// Empty: an env word in each service name is used (`orders-prod`).
     #[serde(default)]
     pub env: Option<String>,
+    /// Discover default-format VPC flow log groups automatically; off by default.
+    #[serde(default)]
+    pub flow_logs: bool,
+    /// Optional explicit CloudWatch log group with default-format VPC flow logs.
+    #[serde(default)]
+    pub flow_log_group: Option<String>,
     /// Also read the X-Ray service graph for the calls that really happen.
     #[serde(default = "default_true")]
     pub xray: bool,
@@ -107,6 +113,8 @@ impl Default for AwsConfig {
             profile: None,
             regions: Vec::new(),
             env: None,
+            flow_log_group: None,
+            flow_logs: false,
             xray: true,
         }
     }

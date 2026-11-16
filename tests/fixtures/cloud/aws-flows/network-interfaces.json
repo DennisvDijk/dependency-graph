@@ -1,0 +1,12 @@
+{
+  "NetworkInterfaces": [
+    {
+      "NetworkInterfaceId": "eni-a",
+      "VpcId": "vpc-a"
+    },
+    {
+      "NetworkInterfaceId": "eni-b",
+      "VpcId": "vpc-a"
+    }
+  ]
+}

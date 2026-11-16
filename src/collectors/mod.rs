@@ -13,6 +13,7 @@ mod azure;
 mod base;
 mod cloud;
 mod datadog_status;
+mod flow_logs;
 mod gather;
 mod gitlab_deployments;
 mod gitlab_inventory;
