@@ -40,7 +40,10 @@ cargo run -- validate tests/fixtures/empty-graph.json
 cargo run -- inventory --output inventory.csv
 # narrow: cargo run -- inventory --group org/infra/platform --project org/other-team/ingress-gateway
 cargo run -- propose-catalog --from ./checkout --output ./proposed-catalog
-cargo run -- collect --set fast   # exits 2 until a later phase
+cargo run -- collect --set full --prometheus --output data
+cargo run -- build --raw data/raw --output data/snapshot.json
+cargo run -- drift --snapshot data/snapshot.json --output drift_report
+cargo run -- library-impact
 cargo run -- serve-mcp             # exits 2; OAuth is not implemented yet
 ```
 

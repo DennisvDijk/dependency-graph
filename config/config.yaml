@@ -32,6 +32,16 @@ prometheus:
   url: https://prometheus.example.com
   env_label: env
   window_days: 7
+  # Shorter than window_days: queries use [1d] and store a running counter (ADR-008).
+  retention_days: 15
+  health_paths:
+    - /health
+    - /healthz
+    - /ready
+    - /live
+  test_clients:
+    - k6
+  # token_env names an env var. Never put the token itself here.
 # ADR-003: Istio is the runtime source. Tempo stays off until its metric names are verified.
 runtime_source: istio
 tempo:

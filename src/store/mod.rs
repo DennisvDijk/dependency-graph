@@ -7,5 +7,5 @@
 mod base;
 mod json_store;
 
-pub use base::{CollectorMeta, DeploymentMismatch, GraphStore, Meta};
+pub use base::{CollectorMeta, Coverage, DeploymentMismatch, GraphStore, Meta};
 pub use json_store::JsonStore;

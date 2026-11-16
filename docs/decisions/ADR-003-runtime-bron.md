@@ -22,5 +22,5 @@ De standaardaanname was: geen mesh, en OpenTelemetry onbekend. Dennis corrigeert
 
 - Hubble en Cilium zijn niet de mesh. Er komt geen Hubble-collector tenzij dit besluit wijzigt.
 - Jaeger is niet gekozen.
-- De runtime-collector blijft een stub. Hij leest Prometheus niet en opent geen socket.
+- De runtime-collector was in deze ADR nog een stub. [ADR-008](ADR-008-runtime-istio.md) bouwt hem: read-only Prometheus, namespace naar env, en een `[1d]`-terugval als de retentie korter is dan 7 dagen.
 - De Kubernetes-API is niet de manier waarop de pilot gedeclareerde workloads leest. Die staan in git. Zie [ADR-004](ADR-004-pilot-en-datadog.md).

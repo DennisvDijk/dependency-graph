@@ -261,7 +261,122 @@ fn records_from_file(project_path: &str, path: &str, text: &str) -> Vec<RawRecor
             _ => {}
         }
     }
+    records.extend(candidate_records(text));
     records
+}
+
+/// Candidate calls from Istio and NetworkPolicy manifests.
+///
+/// These are candidates, never observations. A host inside the cluster becomes
+/// the service's first label. Other hosts become a kebab-case name.
+#[must_use]
+pub fn candidate_records(text: &str) -> Vec<RawRecord> {
+    let mut records = Vec::new();
+    for doc in text.split("\n---\n") {
+        let kind = yaml_kind(doc).unwrap_or_default();
+        if !matches!(
+            kind.as_str(),
+            "VirtualService" | "DestinationRule" | "AuthorizationPolicy" | "NetworkPolicy"
+        ) {
+            continue;
+        }
+        let source = if kind == "NetworkPolicy" {
+            kubernetes_app_names(doc)
+                .into_iter()
+                .find(|name| crate::ids::is_kebab_case(name))
+        } else {
+            manifest_source(doc)
+        };
+        let Some(source) = source else {
+            continue;
+        };
+        let mut destinations = match kind.as_str() {
+            "AuthorizationPolicy" => principals(doc),
+            "NetworkPolicy" => extra_app_names(doc, &source),
+            _ => hosts(doc),
+        };
+        destinations.sort();
+        destinations.dedup();
+        for destination in destinations {
+            if destination == source || !crate::ids::is_kebab_case(&destination) {
+                continue;
+            }
+            records.push(record(
+                "k8s_workloads",
+                "candidate_call",
+                json!({"source": source, "destination": destination}),
+            ));
+        }
+    }
+    records
+}
+
+fn manifest_source(doc: &str) -> Option<String> {
+    yaml_metadata_name(doc)
+        .filter(|name| crate::ids::is_kebab_case(name))
+        .or_else(|| {
+            kubernetes_app_names(doc)
+                .into_iter()
+                .find(|name| crate::ids::is_kebab_case(name))
+        })
+}
+
+fn hosts(doc: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in doc.lines() {
+        let trimmed = line.trim().trim_start_matches("- ").trim();
+        let Some(value) = trimmed.strip_prefix("host:") else {
+            continue;
+        };
+        names.push(host_to_name(value.trim().trim_matches(['"', '\''])));
+    }
+    names
+}
+
+fn host_to_name(host: &str) -> String {
+    let host = host.split(':').next().unwrap_or(host);
+    if host.ends_with(".svc.cluster.local") {
+        return host.split('.').next().unwrap_or(host).to_owned();
+    }
+    if crate::ids::is_kebab_case(host) {
+        return host.to_owned();
+    }
+    let mut out = String::new();
+    for byte in host.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            out.push((byte as char).to_ascii_lowercase());
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_owned()
+}
+
+fn principals(doc: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in doc.lines() {
+        let trimmed = line.trim().trim_start_matches("- ").trim();
+        let Some(value) = trimmed
+            .strip_prefix("principals:")
+            .or_else(|| trimmed.strip_prefix("principal:"))
+        else {
+            continue;
+        };
+        let value = value.trim().trim_matches(['"', '\'']);
+        if value.is_empty() {
+            continue;
+        }
+        let name = value.rsplit('/').next().unwrap_or(value);
+        names.push(name.to_owned());
+    }
+    names
+}
+
+fn extra_app_names(doc: &str, source: &str) -> Vec<String> {
+    kubernetes_app_names(doc)
+        .into_iter()
+        .filter(|name| name != source && crate::ids::is_kebab_case(name))
+        .collect()
 }
 
 fn records_from_deployment_list(items: &[FixtureDeployment]) -> Vec<RawRecord> {

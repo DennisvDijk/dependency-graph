@@ -166,8 +166,20 @@ pub struct PrometheusConfig {
     pub url: String,
     /// Label that carries the environment.
     pub env_label: String,
-    /// Query window in days.
+    /// Query window in days. Istio queries use this unless retention is shorter.
     pub window_days: u32,
+    /// How long Prometheus keeps samples. Below `window_days`, queries use `[1d]`.
+    #[serde(default)]
+    pub retention_days: Option<u32>,
+    /// Request paths dropped as health checks. Matched against `request_path` or `path`.
+    #[serde(default)]
+    pub health_paths: Vec<String>,
+    /// Source workloads dropped as known test clients.
+    #[serde(default)]
+    pub test_clients: Vec<String>,
+    /// Environment variable that holds a bearer token. The token is not stored here.
+    #[serde(default)]
+    pub token_env: Option<String>,
 }
 
 /// Runtime edge source selected for a later phase.
@@ -257,10 +269,11 @@ pub struct EnvMapping {
     pub k8s_namespaces: Vec<String>,
 }
 
-/// Case-insensitive index of source environment names.
+/// Case-insensitive index of source environment names and namespaces.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EnvIndex {
     by_name: BTreeMap<String, Env>,
+    by_namespace: BTreeMap<String, Env>,
 }
 
 impl EnvIndex {
@@ -268,6 +281,12 @@ impl EnvIndex {
     #[must_use]
     pub fn resolve(&self, name: &str) -> Option<Env> {
         self.by_name.get(&name.to_ascii_lowercase()).copied()
+    }
+
+    /// Resolve a Kubernetes namespace. Unknown namespaces are not guessed.
+    #[must_use]
+    pub fn resolve_namespace(&self, name: &str) -> Option<Env> {
+        self.by_namespace.get(&name.to_ascii_lowercase()).copied()
     }
 }
 
@@ -355,7 +374,10 @@ impl Environments {
                 insert_namespace(&mut namespaces, namespace, env)?;
             }
         }
-        Ok(EnvIndex { by_name })
+        Ok(EnvIndex {
+            by_name,
+            by_namespace: namespaces,
+        })
     }
 }
 
@@ -893,6 +915,13 @@ mod tests {
         );
         assert_eq!(project.config.prometheus.env_label, "env");
         assert_eq!(project.config.prometheus.window_days, 7);
+        assert_eq!(project.config.prometheus.retention_days, Some(15));
+        assert_eq!(
+            project.config.prometheus.health_paths,
+            vec!["/health", "/healthz", "/ready", "/live"]
+        );
+        assert_eq!(project.config.prometheus.test_clients, vec!["k6"]);
+        assert!(project.config.prometheus.token_env.is_none());
         assert_eq!(project.config.runtime_source, RuntimeSource::Istio);
         assert!(!project.config.tempo.enabled);
         assert_eq!(project.config.tempo.url, "https://tempo.example.com");

@@ -5,6 +5,8 @@ dev:
   otel:
     - dev
     - development
+  # k8s_namespaces:
+  #   - payments-dev
   k8s_namespaces: []
 acc:
   gitlab:
@@ -13,6 +15,8 @@ acc:
   otel:
     - acc
     - staging
+  # k8s_namespaces:
+  #   - payments-acc
   k8s_namespaces: []
 prod:
   gitlab:
@@ -20,4 +24,6 @@ prod:
   otel:
     - prod
     - production
+  # k8s_namespaces:
+  #   - payments-prod
   k8s_namespaces: []

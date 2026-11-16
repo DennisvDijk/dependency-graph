@@ -20,7 +20,12 @@ mod sbom_links;
 pub use crate::raw::RawRecord;
 pub use base::{CollectSet, Collector, all, collect};
 pub use gather::{
-    GatherSet, GitlabScope, KubectlRead, LiveRead, records_from_fixture, records_from_gitlab,
+    GatherSet, GitlabScope, KubectlRead, LiveRead, candidate_records, records_from_fixture,
+    records_from_gitlab,
+};
+pub use runtime_edges::{
+    RuntimeFilter, query_prometheus, query_window, records_from_prometheus_bodies,
+    records_from_prometheus_dir,
 };
 
 #[cfg(test)]

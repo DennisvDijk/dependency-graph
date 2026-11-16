@@ -1,9 +1,8 @@
 //! CycloneDX SBOM links.
 //!
-//! F0-1 expects CycloneDX JSON as a GitLab job artifact. ADR-001 question 8:
-//! there are no internal libraries. While `libraries.enabled` is false this
-//! collector must not emit `Library` nodes or `uses_library` edges. It does
-//! not download artifacts.
+//! ADR-009: digest, sha, and tag linking is skipped. There are no internal
+//! libraries, and `libraries.enabled` is false. This collector must not emit
+//! `Library` nodes or `uses_library` edges.
 
 use crate::collectors::base::Collector;
 use crate::error::Error;

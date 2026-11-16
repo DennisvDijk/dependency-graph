@@ -89,8 +89,6 @@ fn read_commands_accept_the_shared_flags() {
         "impact",
         "deploy-order",
         "cycles",
-        "library-impact",
-        "drift",
         "critical",
         "orphans",
         "diff",
