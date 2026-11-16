@@ -71,6 +71,15 @@ fn suggestions_are_review_only_and_ignore_ambiguous_names() {
 
 #[test]
 fn openai_compatible_proposals_are_checked_against_the_input() {
+    test_compatible_endpoint(false);
+}
+
+#[test]
+fn openai_key_can_come_from_a_mounted_secret_file() {
+    test_compatible_endpoint(true);
+}
+
+fn test_compatible_endpoint(use_file: bool) {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     let dir = tempfile::tempdir().unwrap();
@@ -144,8 +153,21 @@ fn openai_compatible_proposals_are_checked_against_the_input() {
         let response = serde_json::json!({"choices":[{"message":{"content":"{\"legacy-sg\":\"orders-py\",\"invented\":\"orders-py\"}"}}]}).to_string();
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
     });
-    let output = Command::cargo_bin("depgraph")
-        .unwrap()
+    let key_file = dir.path().join("mounted-secret");
+    fs::write(&key_file, "test-token\n").unwrap();
+    let mut command = Command::cargo_bin("depgraph").unwrap();
+    command
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("APPDATA", dir.path())
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("OPENAI_API_KEY_FILE");
+    if use_file {
+        command.env("OPENAI_API_KEY_FILE", &key_file);
+    } else {
+        command.env("OPENAI_API_KEY", "test-token");
+    }
+    let output = command
         .args(["suggest", "--unresolved"])
         .arg(&unresolved)
         .arg("--snapshot")
@@ -154,7 +176,6 @@ fn openai_compatible_proposals_are_checked_against_the_input() {
         .arg(dir.path().join("absent.yaml"))
         .args(["--llm", "--model-id", "test-model"])
         .env("OPENAI_BASE_URL", format!("http://{address}/v1"))
-        .env("OPENAI_API_KEY", "test-token")
         .output()
         .unwrap();
     assert!(

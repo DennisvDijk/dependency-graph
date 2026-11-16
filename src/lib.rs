@@ -18,6 +18,7 @@ pub mod gitlab;
 pub mod ids;
 pub mod inventory;
 pub mod mcp;
+pub mod model_config;
 pub mod models;
 pub mod normalize;
 pub mod propose;

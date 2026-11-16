@@ -40,6 +40,8 @@ pub enum Command {
     Build(BuildArgs),
     /// Propose aliases and namespace mappings for review.
     Suggest(SuggestArgs),
+    /// Set up an OpenAI-compatible model and optional system-stored key.
+    ModelSetup,
     /// Generate the static site.
     Site(SiteArgs),
     /// Publish a snapshot or a drift issue.
@@ -574,6 +576,7 @@ fn execute(cli: Cli) -> Result<(), Error> {
     match cli.command {
         Command::Collect(args) => run_collect(args),
         Command::Build(args) => run_build(args),
+        Command::ModelSetup => crate::model_config::setup(),
         Command::Suggest(args) => crate::suggest::run(
             &args.unresolved,
             &args.snapshot,

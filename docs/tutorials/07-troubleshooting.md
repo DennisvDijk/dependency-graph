@@ -43,7 +43,7 @@ changes the graph. Ambiguous and unrecognized names can remain unresolved.
 An older `unresolved.csv` may remain on disk after upgrading; it is no longer
 updated and should not be used as the current report.
 
-For optional AI suggestions, set `OPENAI_BASE_URL` to your OpenAI-compatible
+For optional AI suggestions without interactive setup, set `OPENAI_BASE_URL` to your OpenAI-compatible
 API base URL (for example `https://models.example.com/v1`), set
 `OPENAI_API_KEY` in your environment if the endpoint needs a key, and run
 `depgraph suggest --llm --model-id <model-name>`. You can set `OPENAI_MODEL`
@@ -53,3 +53,22 @@ for local endpoints on localhost. No endpoint is contacted unless `--llm` is
 specified. Unmatched names and known component names are sent to the endpoint;
 its operator's privacy and billing terms apply. AI output is marked for review
 and cannot change your configuration. Do not commit API keys to the repository.
+
+### Save model settings on a developer computer
+
+Run `depgraph model-setup` once in an interactive terminal. Enter your API base
+URL and model, then paste the key at the hidden prompt (or leave it blank for a
+provider that needs no key). The URL and model are saved in your user settings;
+the key is stored in macOS Keychain, Windows Credential Manager, or the Linux
+Secret Service. Linux requires an available, unlocked desktop secret service.
+If no supported store is available, setup fails rather than saving plaintext.
+Run `depgraph suggest --llm` to use these settings. Run setup again to change
+them; an old key for a different endpoint stays in your system secret store
+until you remove it there. A stored key is only used for its saved endpoint.
+
+For headless jobs, supply `OPENAI_BASE_URL` and `OPENAI_MODEL`, plus either
+`OPENAI_API_KEY_FILE` pointing to an orchestrator-mounted secret file, or
+`OPENAI_API_KEY` injected by your secrets manager. Do not set both key inputs.
+Explicit key inputs take precedence over the system store. An endpoint override
+cannot reuse a saved key for a different endpoint. No value is printed. Mount
+secret files with appropriate access controls and never commit their contents.

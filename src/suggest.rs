@@ -163,31 +163,7 @@ pub fn run(
         }
     }
     if llm && !remaining.is_empty() {
-        let model = model_id
-            .map(str::to_owned)
-            .or_else(|| std::env::var("OPENAI_MODEL").ok())
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| Error::Usage("--llm requires --model-id or OPENAI_MODEL".into()))?;
-        let base = std::env::var("OPENAI_BASE_URL").map_err(|_| {
-            Error::Usage("--llm requires OPENAI_BASE_URL for your OpenAI-compatible API".into())
-        })?;
-        let mut url = reqwest::Url::parse(&base)
-            .map_err(|_| Error::Usage("OPENAI_BASE_URL must be a valid URL".into()))?;
-        if url.query().is_some()
-            || url.fragment().is_some()
-            || !url.username().is_empty()
-            || url.password().is_some()
-        {
-            return Err(Error::Usage(
-                "OPENAI_BASE_URL must not contain credentials, a query, or a fragment".into(),
-            ));
-        }
-        let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-        if url.scheme() != "https" && !(url.scheme() == "http" && local) {
-            return Err(Error::Usage(
-                "OPENAI_BASE_URL must use HTTPS, except for localhost".into(),
-            ));
-        }
+        let (mut url, model, key) = crate::model_config::resolve(model_id)?;
         let path = format!("{}/chat/completions", url.path().trim_end_matches('/'));
         url.set_path(&path);
         let prompt = format!(
@@ -208,9 +184,7 @@ pub fn run(
                 .build()
                 .map_err(|_| Error::Store("could not create model client".into()))?;
             let mut call = client.post(url).json(&request);
-            if let Ok(key) = std::env::var("OPENAI_API_KEY")
-                && !key.is_empty()
-            {
+            if let Some(key) = key {
                 call = call.bearer_auth(key);
             }
             let response = call.send().await.map_err(|_| {
