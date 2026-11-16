@@ -30,6 +30,20 @@ kubernetes:
     # kubeconfig_env is the variable name. Never put kubeconfig contents here.
     - name: main
       kubeconfig_env: DEPGRAPH_KUBECONFIG_MAIN
+# Opt-in live cloud discovery: off until you turn it on. depgraph runs the
+# `aws` / `az` CLI with list, describe and read-only query calls only, using
+# the login that CLI already has. No keys here. docs/tutorials/09-cloud-discovery.md
+aws:
+  enabled: false
+  # profile: readonly        # AWS CLI profile name; empty uses the default chain
+  regions: []                # empty: the CLI's default region
+  # env: prod                # environment of this account; empty: from names like orders-prod
+  xray: true                 # also read the X-Ray service map (calls that really happen)
+azure:
+  enabled: false
+  subscriptions: []          # empty: the az default subscription
+  log_analytics_workspaces: []  # workspace ids with Application Insights data
+  # env: prod
 prometheus:
   url: https://prometheus.example.com
   env_label: env

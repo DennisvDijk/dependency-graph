@@ -1,0 +1,22 @@
+{
+  "Services": [
+    {"ReferenceId": 0, "Name": "client", "Type": "client", "Edges": [{"ReferenceId": 1, "SummaryStatistics": {"TotalCount": 9000}}]},
+    {"ReferenceId": 1, "Name": "orders-py-prod", "Type": "AWS::ECS::Container", "Edges": [
+      {"ReferenceId": 2, "SummaryStatistics": {"TotalCount": 1200, "ErrorStatistics": {"TotalCount": 2}, "FaultStatistics": {"TotalCount": 1}}},
+      {"ReferenceId": 3, "SummaryStatistics": {"TotalCount": 40}},
+      {"ReferenceId": 6, "SummaryStatistics": {"TotalCount": 300}},
+      {"ReferenceId": 7, "SummaryStatistics": {"TotalCount": 80}}
+    ]},
+    {"ReferenceId": 2, "Name": "orders-aurora.cluster-abc.eu-west-1.rds.amazonaws.com", "Type": "Database::SQL", "Edges": []},
+    {"ReferenceId": 3, "Name": "api.mailgun.net", "Type": "remote", "Edges": []},
+    {"ReferenceId": 4, "Name": "notifications-prod", "Type": "AWS::Lambda::Function", "Edges": [
+      {"ReferenceId": 5, "SummaryStatistics": {"TotalCount": 75, "ErrorStatistics": {"TotalCount": 0}, "FaultStatistics": {"TotalCount": 0}}}
+    ]},
+    {"ReferenceId": 5, "Name": "keycloak-prod", "Type": "AWS::ECS::Container", "Edges": []},
+    {"ReferenceId": 6, "Name": "orders-events", "Type": "AWS::SQS::Queue", "Edges": []},
+    {"ReferenceId": 7, "Name": "S3", "Type": "AWS::S3::Bucket", "Edges": []},
+    {"ReferenceId": 8, "Name": "legacy-batch-prod", "Type": "AWS::EC2::Instance", "Edges": [
+      {"ReferenceId": 1, "SummaryStatistics": {"TotalCount": 12}}
+    ]}
+  ]
+}

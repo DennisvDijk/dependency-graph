@@ -1,4 +1,5 @@
-//! AWS security groups from Terraform and CloudFormation.
+//! AWS security groups from Terraform and CloudFormation, and (opt-in) from
+//! a live account through the `aws` CLI, plus the X-Ray service map.
 //!
 //! A security group belongs to the service it is attached to (ECS service,
 //! Lambda function, RDS instance or cluster, ElastiCache), or else to the
@@ -480,6 +481,382 @@ fn cfn_refs(value: Option<&Value>) -> Vec<String> {
         .flatten()
         .filter_map(cfn_ref)
         .collect()
+}
+
+/// What the read-only AWS CLI calls returned for one account and region.
+/// Each field is the JSON document of one call; a missing one is skipped.
+#[derive(Debug, Default)]
+pub struct AwsAccount {
+    /// `ec2 describe-security-groups`.
+    pub security_groups: Option<Value>,
+    /// `ecs describe-services`, one document per batch.
+    pub ecs_services: Vec<Value>,
+    /// `lambda list-functions`.
+    pub lambda_functions: Option<Value>,
+    /// `rds describe-db-instances`.
+    pub db_instances: Option<Value>,
+    /// `rds describe-db-clusters`.
+    pub db_clusters: Option<Value>,
+    /// `elasticache describe-cache-clusters`.
+    pub cache_clusters: Option<Value>,
+    /// `xray get-service-graph`, the calls that really happened.
+    pub service_graph: Option<Value>,
+}
+
+/// Records from a live AWS account: the same security-group ties as from
+/// Terraform, plus the calls X-Ray saw. `env` names the environment of the
+/// account (`prod`); without it, an env word in the service name is used.
+#[must_use]
+pub fn account_records(account: &AwsAccount, env: Option<&str>) -> Vec<RawRecord> {
+    let mut model = Model::default();
+    let list = |value: Option<&Value>, key: &str| -> Vec<Value> {
+        value
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    for group in list(account.security_groups.as_ref(), "SecurityGroups") {
+        let Some(id) = group.get("GroupId").and_then(Value::as_str) else {
+            continue;
+        };
+        let tags: BTreeMap<String, String> = group
+            .get("Tags")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|tag| {
+                Some((
+                    tag.get("Key")?.as_str()?.to_owned(),
+                    tag.get("Value")?.as_str()?.to_owned(),
+                ))
+            })
+            .collect();
+        let own = group
+            .get("GroupName")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| id.to_owned());
+        if own == "default" {
+            continue;
+        }
+        let hint = tag_hint(&tags).unwrap_or_else(|| own.clone());
+        model.groups.insert(id.to_owned(), hint);
+        model.names.insert(id.to_owned(), own);
+        model.defined.insert(id.to_owned());
+        for (field, inbound) in [("IpPermissions", true), ("IpPermissionsEgress", false)] {
+            for permission in group
+                .get(field)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                for other in
+                    super::cloud::strings(permission.get("UserIdGroupPairs"), Some("GroupId"))
+                {
+                    if inbound {
+                        model.rules.insert((other, id.to_owned()));
+                    } else {
+                        model.rules.insert((id.to_owned(), other));
+                    }
+                }
+            }
+        }
+    }
+    for batch in &account.ecs_services {
+        for service in list(Some(batch), "services") {
+            let refs = super::cloud::strings(
+                service.pointer("/networkConfiguration/awsvpcConfiguration/securityGroups"),
+                None,
+            );
+            let name = service
+                .get("serviceName")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            attach(&mut model, refs, name.map(Owner::Service));
+        }
+    }
+    for function in list(account.lambda_functions.as_ref(), "Functions") {
+        let refs = super::cloud::strings(function.pointer("/VpcConfig/SecurityGroupIds"), None);
+        let name = function
+            .get("FunctionName")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        attach(&mut model, refs, name.map(Owner::Service));
+    }
+    // A cluster member names its cluster, so instances of one Aurora cluster
+    // become one database.
+    for cluster in list(account.db_clusters.as_ref(), "DBClusters") {
+        let refs =
+            super::cloud::strings(cluster.get("VpcSecurityGroups"), Some("VpcSecurityGroupId"));
+        let name = cluster
+            .get("DBClusterIdentifier")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        attach(&mut model, refs, name.map(Owner::Database));
+    }
+    for instance in list(account.db_instances.as_ref(), "DBInstances") {
+        let refs = super::cloud::strings(
+            instance.get("VpcSecurityGroups"),
+            Some("VpcSecurityGroupId"),
+        );
+        let name = instance
+            .get("DBClusterIdentifier")
+            .or(instance.get("DBInstanceIdentifier"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        attach(&mut model, refs, name.map(Owner::Database));
+    }
+    for cache in list(account.cache_clusters.as_ref(), "CacheClusters") {
+        let refs = super::cloud::strings(cache.get("SecurityGroups"), Some("SecurityGroupId"));
+        let name = cache
+            .get("ReplicationGroupId")
+            .or(cache.get("CacheClusterId"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        attach(&mut model, refs, name.map(Owner::Database));
+    }
+    let mut records = emit("aws", &model);
+    if let Some(graph) = &account.service_graph {
+        records.extend(xray_records(graph, env));
+    }
+    records
+}
+
+/// Calls in an X-Ray service graph. `client` nodes are callers outside
+/// the estate and are skipped; AWS data stores become resource nodes.
+fn xray_records(graph: &Value, env: Option<&str>) -> Vec<RawRecord> {
+    use super::cloud::{Evidence, Seen, Target, count, observed};
+    let services: Vec<&Value> = graph
+        .get("Services")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().collect())
+        .unwrap_or_default();
+    let by_ref: BTreeMap<i64, (&str, &str)> = services
+        .iter()
+        .filter_map(|service| {
+            Some((
+                service.get("ReferenceId")?.as_i64()?,
+                (
+                    service.get("Name")?.as_str()?,
+                    service.get("Type").and_then(Value::as_str).unwrap_or(""),
+                ),
+            ))
+        })
+        .collect();
+    let mut records = Vec::new();
+    for service in &services {
+        let (Some(source), kind) = (
+            service.get("Name").and_then(Value::as_str),
+            service.get("Type").and_then(Value::as_str).unwrap_or(""),
+        ) else {
+            continue;
+        };
+        if kind == "client"
+            || xray_target(source, kind).is_none_or(|t| !matches!(t, Target::Service(_)))
+        {
+            continue;
+        }
+        for edge in service
+            .get("Edges")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some((name, kind)) = edge
+                .get("ReferenceId")
+                .and_then(Value::as_i64)
+                .and_then(|id| by_ref.get(&id))
+            else {
+                continue;
+            };
+            let Some(target) = xray_target(name, kind) else {
+                continue;
+            };
+            let stats = edge.get("SummaryStatistics");
+            let calls = count(stats.and_then(|s| s.get("TotalCount")));
+            let errors = count(stats.and_then(|s| s.pointer("/ErrorStatistics/TotalCount")))
+                + count(stats.and_then(|s| s.pointer("/FaultStatistics/TotalCount")));
+            records.extend(observed(&Seen {
+                source,
+                target,
+                calls,
+                errors,
+                env,
+                window: "6h",
+                evidence: Evidence::Xray,
+            }));
+        }
+    }
+    records
+}
+
+/// What an X-Ray node is. `None` for nodes that add nothing (S3, STS).
+fn xray_target(name: &str, kind: &str) -> Option<super::cloud::Target> {
+    use super::cloud::Target;
+    let resource = |kind| {
+        Some(Target::Resource(
+            kind,
+            name.split('.').next().unwrap_or(name).to_owned(),
+        ))
+    };
+    match kind {
+        "client" => None,
+        k if k.starts_with("AWS::RDS")
+            || k.starts_with("AWS::DynamoDB")
+            || k.starts_with("AWS::ElastiCache")
+            || k.starts_with("Database::") =>
+        {
+            resource("database")
+        }
+        "AWS::SQS::Queue" | "AWS::SQS" => resource("queue"),
+        "AWS::SNS::Topic" | "AWS::SNS" => resource("topic"),
+        "remote" if name.contains('.') => Some(Target::External(name.to_owned())),
+        "remote" | "" => Some(Target::Service(name.to_owned())),
+        k if k.starts_with("AWS::ECS")
+            || k.starts_with("AWS::EC2")
+            || k.starts_with("AWS::EKS")
+            || k.starts_with("AWS::Lambda")
+            || k.starts_with("AWS::ElasticBeanstalk")
+            || k.starts_with("AWS::ApiGateway")
+            || k.starts_with("AWS::AppRunner")
+            || k.starts_with("AWS::StepFunctions") =>
+        {
+            Some(Target::Service(name.to_owned()))
+        }
+        _ => None,
+    }
+}
+
+/// Files read by [`records_from_aws_dir`], named after the CLI call.
+pub const AWS_FIXTURE_FILES: [&str; 7] = [
+    "security-groups.json",
+    "ecs-services.json",
+    "lambda-functions.json",
+    "db-instances.json",
+    "db-clusters.json",
+    "cache-clusters.json",
+    "service-graph.json",
+];
+
+/// Read saved AWS CLI output from a directory (for tests and dry runs).
+///
+/// # Errors
+///
+/// Returns an error when a file exists but is not JSON.
+pub fn records_from_aws_dir(
+    dir: &std::path::Path,
+    env: Option<&str>,
+) -> Result<Vec<RawRecord>, crate::error::Error> {
+    use super::cloud::read_json;
+    let account = AwsAccount {
+        security_groups: read_json(dir, "security-groups.json")?,
+        ecs_services: read_json(dir, "ecs-services.json")?.into_iter().collect(),
+        lambda_functions: read_json(dir, "lambda-functions.json")?,
+        db_instances: read_json(dir, "db-instances.json")?,
+        db_clusters: read_json(dir, "db-clusters.json")?,
+        cache_clusters: read_json(dir, "cache-clusters.json")?,
+        service_graph: read_json(dir, "service-graph.json")?,
+    };
+    Ok(account_records(&account, env))
+}
+
+/// How to reach the account. Profile and regions are names, not secrets.
+#[derive(Debug, Clone, Default)]
+pub struct AwsLive {
+    /// `--profile` for the AWS CLI. `None` uses its default chain.
+    pub profile: Option<String>,
+    /// Regions to read. Empty uses the CLI's default region.
+    pub regions: Vec<String>,
+    /// Environment of this account.
+    pub env: Option<String>,
+    /// Also read the X-Ray service graph.
+    pub xray: bool,
+}
+
+/// Read a live AWS account with the `aws` CLI. Only list and describe calls
+/// are made. A call other than `describe-security-groups` that fails (no
+/// permission, service not used) becomes a warning.
+///
+/// # Errors
+///
+/// Returns an error when the CLI is missing or security groups cannot be read.
+pub fn records_from_aws(
+    live: &AwsLive,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(Vec<RawRecord>, Vec<String>), crate::error::Error> {
+    use super::cloud::{run_json, strings};
+    let mut records = Vec::new();
+    let mut warnings = Vec::new();
+    let regions: Vec<Option<&str>> = if live.regions.is_empty() {
+        vec![None]
+    } else {
+        live.regions
+            .iter()
+            .map(|region| Some(region.as_str()))
+            .collect()
+    };
+    for region in regions {
+        let call = |parts: &[&str]| -> Result<Value, crate::error::Error> {
+            let mut args: Vec<String> = parts.iter().map(|part| (*part).to_owned()).collect();
+            args.extend(["--output".to_owned(), "json".to_owned()]);
+            if let Some(profile) = &live.profile {
+                args.extend(["--profile".to_owned(), profile.clone()]);
+            }
+            if let Some(region) = region {
+                args.extend(["--region".to_owned(), region.to_owned()]);
+            }
+            run_json("aws", &args)
+        };
+        let mut soft = |parts: &[&str]| match call(parts) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                warnings.push(format!("aws {}: {err}", region.unwrap_or("default region")));
+                None
+            }
+        };
+        let mut account = AwsAccount {
+            security_groups: Some(call(&["ec2", "describe-security-groups"])?),
+            ..AwsAccount::default()
+        };
+        if let Some(clusters) = soft(&["ecs", "list-clusters"]) {
+            for cluster in strings(clusters.get("clusterArns"), None) {
+                let Some(services) = soft(&["ecs", "list-services", "--cluster", &cluster]) else {
+                    continue;
+                };
+                let arns = strings(services.get("serviceArns"), None);
+                for batch in arns.chunks(10) {
+                    let mut parts = vec![
+                        "ecs",
+                        "describe-services",
+                        "--cluster",
+                        cluster.as_str(),
+                        "--services",
+                    ];
+                    parts.extend(batch.iter().map(String::as_str));
+                    account.ecs_services.extend(soft(&parts));
+                }
+            }
+        }
+        account.lambda_functions = soft(&["lambda", "list-functions"]);
+        account.db_instances = soft(&["rds", "describe-db-instances"]);
+        account.db_clusters = soft(&["rds", "describe-db-clusters"]);
+        account.cache_clusters = soft(&["elasticache", "describe-cache-clusters"]);
+        if live.xray {
+            let end = now.timestamp().to_string();
+            let start = (now - chrono::Duration::hours(6)).timestamp().to_string();
+            account.service_graph = soft(&[
+                "xray",
+                "get-service-graph",
+                "--start-time",
+                &start,
+                "--end-time",
+                &end,
+            ]);
+        }
+        records.extend(account_records(&account, live.env.as_deref()));
+    }
+    Ok((records, warnings))
 }
 
 #[cfg(test)]

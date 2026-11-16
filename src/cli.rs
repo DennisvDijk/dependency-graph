@@ -131,6 +131,20 @@ pub struct CollectArgs {
     /// Query `prometheus.url` with read-only GETs.
     #[arg(long)]
     pub prometheus: bool,
+    /// Read the AWS account once with the `aws` CLI (read-only), even when
+    /// `aws.enabled` is false.
+    #[arg(long)]
+    pub aws: bool,
+    /// Saved `aws` CLI output (`security-groups.json`, `service-graph.json`, ...).
+    #[arg(long)]
+    pub aws_fixture: Option<PathBuf>,
+    /// Read Azure once with the `az` CLI (read-only), even when
+    /// `azure.enabled` is false.
+    #[arg(long)]
+    pub azure: bool,
+    /// Saved `az` CLI output (`asgs.json`, `nsgs.json`, `dependencies.json`).
+    #[arg(long)]
+    pub azure_fixture: Option<PathBuf>,
 }
 
 /// `depgraph drift`.
@@ -584,9 +598,13 @@ fn run_collect(args: CollectArgs) -> Result<(), Error> {
         collectors::CollectSet::Fast => collectors::GatherSet::Fast,
         collectors::CollectSet::Full => collectors::GatherSet::Full,
     };
-    let prometheus_only =
-        args.fixture.is_none() && (args.prometheus_fixture.is_some() || args.prometheus);
+    let prometheus_only = args.fixture.is_none()
+        && (args.prometheus_fixture.is_some()
+            || args.prometheus
+            || args.aws_fixture.is_some()
+            || args.azure_fixture.is_some());
     let runtime = prometheus_records(&args)?;
+    let cloud = cloud_records(&args)?;
     let mut records = if let Some(fixture) = &args.fixture {
         collectors::records_from_fixture(fixture, set)?
     } else if prometheus_only {
@@ -631,6 +649,7 @@ fn run_collect(args: CollectArgs) -> Result<(), Error> {
         records
     };
     records.extend(runtime);
+    records.extend(cloud);
     let output = args.output.unwrap_or_else(|| PathBuf::from("data"));
     write_raw_dir(&output.join("raw"), &records)?;
     println!(
@@ -669,6 +688,57 @@ fn prometheus_records(args: &CollectArgs) -> Result<Vec<crate::raw::RawRecord>, 
         &filter,
         token.as_deref(),
     ))
+}
+
+/// Opt-in AWS and Azure reads: a saved fixture, `--aws`/`--azure`, or
+/// `enabled: true` in config. Nothing runs when none of these is set.
+fn cloud_records(args: &CollectArgs) -> Result<Vec<crate::raw::RawRecord>, Error> {
+    let project = config::load_project(Path::new(".")).ok();
+    let aws = project
+        .as_ref()
+        .map(|p| p.config.aws.clone())
+        .unwrap_or_default();
+    let azure = project
+        .as_ref()
+        .map(|p| p.config.azure.clone())
+        .unwrap_or_default();
+    let uses_config = args.fixture.is_none();
+    let mut records = Vec::new();
+    if let Some(dir) = &args.aws_fixture {
+        records.extend(collectors::records_from_aws_dir(dir, aws.env.as_deref())?);
+    } else if args.aws || (uses_config && aws.enabled) {
+        let live = collectors::AwsLive {
+            profile: aws.profile.clone(),
+            regions: aws.regions.clone(),
+            env: aws.env.clone(),
+            xray: aws.xray,
+        };
+        let (found, warnings) = collectors::records_from_aws(&live, chrono::Utc::now())?;
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
+        eprintln!("aws: {} records", found.len());
+        records.extend(found);
+    }
+    if let Some(dir) = &args.azure_fixture {
+        records.extend(collectors::records_from_azure_dir(
+            dir,
+            azure.env.as_deref(),
+        )?);
+    } else if args.azure || (uses_config && azure.enabled) {
+        let live = collectors::AzureLive {
+            subscriptions: azure.subscriptions.clone(),
+            workspaces: azure.log_analytics_workspaces.clone(),
+            env: azure.env.clone(),
+        };
+        let (found, warnings) = collectors::records_from_azure(&live)?;
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
+        eprintln!("azure: {} records", found.len());
+        records.extend(found);
+    }
+    Ok(records)
 }
 
 fn live_reader(
@@ -781,11 +851,47 @@ fn run_build(args: BuildArgs) -> Result<(), Error> {
     for line in namespace_hints(&built.unresolved, &environments) {
         eprintln!("{line}");
     }
+    for line in guessed_namespaces(&records, &environments) {
+        eprintln!("{line}");
+    }
     match crate::store::archive_snapshot(&output) {
         Ok(path) => println!("archived {}", path.display()),
         Err(err) => eprintln!("warning: snapshot was not archived: {err}"),
     }
     Ok(())
+}
+
+/// With `guess_namespaces: true`, list every namespace whose environment was
+/// guessed, so the guesses can be checked.
+fn guessed_namespaces(
+    records: &[crate::raw::RawRecord],
+    environments: &config::EnvIndex,
+) -> Vec<String> {
+    let mut guessed: std::collections::BTreeMap<String, crate::models::Env> = Default::default();
+    for record in records {
+        for field in ["namespace", "source_namespace", "destination_namespace"] {
+            if let Some(namespace) = record.payload.get(field).and_then(|value| value.as_str())
+                && let Some(env) = environments.guessed_namespace(namespace)
+            {
+                guessed.insert(namespace.to_owned(), env);
+            }
+        }
+    }
+    if guessed.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "note: guess_namespaces is on; {} namespace(s) were guessed from their name:",
+        guessed.len()
+    )];
+    for (namespace, env) in &guessed {
+        lines.push(format!("  {namespace} -> {env}"));
+    }
+    lines.push(
+        "  map a wrong guess under k8s_namespaces in config/environments.yaml; a mapping always wins."
+            .to_string(),
+    );
+    lines
 }
 
 /// Setup hints for calls dropped because their namespace is not mapped.

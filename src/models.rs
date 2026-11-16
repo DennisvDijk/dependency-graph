@@ -161,6 +161,8 @@ pub enum SourceKind {
     SbomHint,
     /// Static contract or source scan.
     Static,
+    /// A cloud provider's own service map: AWS X-Ray or Azure Application Insights.
+    Cloud,
 }
 
 /// Agreement between declared and observed edges.

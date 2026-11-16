@@ -9,7 +9,9 @@
 //! None of these stubs contact a source system.
 
 mod aws;
+mod azure;
 mod base;
+mod cloud;
 mod datadog_status;
 mod gather;
 mod gitlab_deployments;
@@ -19,6 +21,13 @@ mod runtime_edges;
 mod sbom_links;
 
 pub use crate::raw::RawRecord;
+pub use aws::{
+    AWS_FIXTURE_FILES, AwsAccount, AwsLive, account_records, records_from_aws, records_from_aws_dir,
+};
+pub use azure::{
+    AZURE_FIXTURE_FILES, AzureLive, AzureSubscription, DEPENDENCY_QUERY, records_from_azure,
+    records_from_azure_dir, subscription_records,
+};
 pub use base::{CollectSet, Collector, all, collect};
 pub use gather::{
     GatherSet, GitlabScope, KubectlRead, LiveRead, candidate_records, records_from_fixture,

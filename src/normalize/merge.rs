@@ -658,6 +658,15 @@ const NAME_NOISE: &[&str] = &[
     "prod",
     "production",
     "prd",
+    "asg",
+    "nsg",
+    "vm",
+    "vmss",
+    "aks",
+    "aci",
+    "func",
+    "webapp",
+    "rg",
 ];
 
 /// Find a known name inside a cloud resource name: try the name as is (and
@@ -840,6 +849,14 @@ struct ObservedKey {
     external_host: String,
     protocol: String,
     window: String,
+    /// Environment named by a cloud collector, when there is no namespace.
+    env: String,
+    /// Names come from a cloud service map and are matched with `loose_match`.
+    loose: bool,
+    /// A resource kind (`database`) when the destination is not a component.
+    destination_kind: String,
+    /// Where a cloud observation came from (`aws-xray`, `azure-app-insights`).
+    evidence: String,
 }
 
 struct ObservedAgg {
@@ -879,6 +896,14 @@ fn absorb_observed(
         external_host: text_field(&record.payload, "external_host"),
         protocol: text_field(&record.payload, "protocol"),
         window: text_field(&record.payload, "window"),
+        env: text_field(&record.payload, "env"),
+        loose: record
+            .payload
+            .get("loose")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+        destination_kind: text_field(&record.payload, "destination_kind"),
+        evidence: text_field(&record.payload, "evidence"),
     };
     let calls = json_u64(&record.payload, "calls");
     let errors = json_u64(&record.payload, "errors");
@@ -959,7 +984,13 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
     } = build;
     let mut edges = Vec::new();
     for (key, agg) in observed.iter() {
-        let source = canonical_name(&key.source, aliases);
+        let is_component = |name: &str| components.contains_key(name);
+        let source = if key.loose {
+            loose_match(&key.source, is_component, aliases, environments)
+                .unwrap_or_else(|| canonical_name(&key.source, aliases))
+        } else {
+            canonical_name(&key.source, aliases)
+        };
         let source_id = format!("component:{source}");
         if !components.contains_key(&source) {
             unresolved.push(unresolved_row(
@@ -971,6 +1002,15 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
             continue;
         }
         let env = match observed_env(key, environments) {
+            Err(_) if key.loose && key.source_namespace.is_empty() => {
+                unresolved.push(unresolved_row(
+                    "environment",
+                    &key.source,
+                    "environment is not known; set env in the cloud config",
+                    agg.calls,
+                ));
+                continue;
+            }
             Ok(env) => env,
             Err(message) => {
                 unresolved.push(unresolved_row(
@@ -1004,8 +1044,37 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
             );
             inferred.insert(id.clone());
             id
+        } else if !key.destination_kind.is_empty() {
+            let kind = key.destination_kind.as_str();
+            if ResourceKind::parse(kind).is_none() || !ids::is_kebab_case(&key.destination) {
+                unresolved.push(unresolved_row(
+                    "observed_call",
+                    &key.destination,
+                    "resource name is not kebab-case",
+                    agg.calls,
+                ));
+                continue;
+            }
+            let name = loose_match(
+                &key.destination,
+                |name| resources.contains_key(&(kind.to_owned(), name.to_owned())),
+                aliases,
+                environments,
+            )
+            .unwrap_or_else(|| key.destination.clone());
+            let id = format!("resource:{kind}:{name}");
+            if !resources.contains_key(&(kind.to_owned(), name.clone())) {
+                resources.insert((kind.to_owned(), name), "runtime_edges".to_owned());
+                inferred.insert(id.clone());
+            }
+            id
         } else {
-            let destination = canonical_name(&key.destination, aliases);
+            let destination = if key.loose {
+                loose_match(&key.destination, is_component, aliases, environments)
+                    .unwrap_or_else(|| canonical_name(&key.destination, aliases))
+            } else {
+                canonical_name(&key.destination, aliases)
+            };
             if !components.contains_key(&destination) {
                 unresolved.push(unresolved_row(
                     "observed_call",
@@ -1165,6 +1234,20 @@ fn merge_measurement(existing: &mut Edge, extra: &Edge) {
 }
 
 fn observed_env(key: &ObservedKey, environments: &EnvIndex) -> Result<Env, String> {
+    if key.loose && key.source_namespace.is_empty() {
+        // Cloud service maps have no namespace: use the configured env, else
+        // an env word at either end of the service name (`orders-py-prod`).
+        let named = match key.env.to_ascii_lowercase().as_str() {
+            "" => None,
+            "dev" => Some(Env::Dev),
+            "acc" => Some(Env::Acc),
+            "prod" => Some(Env::Prod),
+            other => environments.resolve(other),
+        };
+        return named
+            .or_else(|| environments.suggest_namespace(&key.source.replace(['_', '.'], "-")))
+            .ok_or_else(|| key.source.clone());
+    }
     let source = environments.resolve_namespace(&key.source_namespace);
     if key.external {
         return source.ok_or_else(|| key.source_namespace.clone());
@@ -1216,10 +1299,18 @@ fn observed_edge(
         to_id: to_id.to_owned(),
         env: Some(env),
         sources: vec![EdgeSource {
-            kind: SourceKind::Istio,
+            kind: if key.evidence.is_empty() {
+                SourceKind::Istio
+            } else {
+                SourceKind::Cloud
+            },
             first_seen: last_seen.clone(),
             last_seen,
-            evidence_ref: Some(format!("prometheus:istio_requests_total[{}]", key.window)),
+            evidence_ref: Some(if key.evidence.is_empty() {
+                format!("prometheus:istio_requests_total[{}]", key.window)
+            } else {
+                format!("{}[{}]", key.evidence, key.window)
+            }),
         }],
         status: EdgeStatus::ObservedOnly,
         criticality: Default::default(),

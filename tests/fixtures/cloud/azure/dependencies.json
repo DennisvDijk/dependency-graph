@@ -1,0 +1,8 @@
+[
+  {"AppRoleName": "billing-ex-prod", "Target": "billing-sql.database.windows.net | billing-db", "DependencyType": "SQL", "Calls": "530", "Errors": "2"},
+  {"AppRoleName": "billing-ex-prod", "Target": "notifications-prod.azurewebsites.net", "DependencyType": "HTTP", "Calls": "210", "Errors": "0"},
+  {"AppRoleName": "billing-ex-prod", "Target": "sb://shop.servicebus.windows.net/ | invoice-events", "DependencyType": "Azure Service Bus", "Calls": "95", "Errors": "0"},
+  {"AppRoleName": "billing-ex-prod", "Target": "api.stripe.com", "DependencyType": "HTTP", "Calls": "60", "Errors": "1"},
+  {"AppRoleName": "billing-ex-prod", "Target": "RenderInvoice", "DependencyType": "InProc", "Calls": "530", "Errors": "0"},
+  {"AppRoleName": "edge-proxy-rs", "Target": "orders-py", "DependencyType": "HTTP", "Calls": "44", "Errors": "0"}
+]

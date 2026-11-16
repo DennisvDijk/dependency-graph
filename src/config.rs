@@ -70,6 +70,64 @@ pub struct Config {
     /// MR check policy. Blocking is off until a team opts in.
     #[serde(default)]
     pub mr_check: MrCheckConfig,
+    /// Opt-in live AWS read with the `aws` CLI. Off by default.
+    #[serde(default)]
+    pub aws: AwsConfig,
+    /// Opt-in live Azure read with the `az` CLI. Off by default.
+    #[serde(default)]
+    pub azure: AzureConfig,
+}
+
+/// Live AWS discovery. No key fields: the `aws` CLI's own login is used.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AwsConfig {
+    /// Read the account on every `depgraph collect`. `--aws` does it once.
+    #[serde(default)]
+    pub enabled: bool,
+    /// AWS CLI profile name. Empty uses the default credential chain.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Regions to read. Empty uses the CLI's default region.
+    #[serde(default)]
+    pub regions: Vec<String>,
+    /// Environment of this account (`dev`, `acc`, `prod` or a mapped name).
+    /// Empty: an env word in each service name is used (`orders-prod`).
+    #[serde(default)]
+    pub env: Option<String>,
+    /// Also read the X-Ray service graph for the calls that really happen.
+    #[serde(default = "default_true")]
+    pub xray: bool,
+}
+
+impl Default for AwsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            profile: None,
+            regions: Vec::new(),
+            env: None,
+            xray: true,
+        }
+    }
+}
+
+/// Live Azure discovery. No key fields: the `az` CLI's own login is used.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AzureConfig {
+    /// Read Azure on every `depgraph collect`. `--azure` does it once.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Subscription ids or names. Empty uses the `az` default subscription.
+    #[serde(default)]
+    pub subscriptions: Vec<String>,
+    /// Log Analytics workspace ids that hold Application Insights data.
+    #[serde(default)]
+    pub log_analytics_workspaces: Vec<String>,
+    /// Environment of these subscriptions. Empty: an env word in the name.
+    #[serde(default)]
+    pub env: Option<String>,
 }
 
 /// GitLab connection settings. `base_url` is a placeholder until a human confirms it.
@@ -405,6 +463,11 @@ pub struct Environments {
     pub acc: EnvMapping,
     /// Production.
     pub prod: EnvMapping,
+    /// Opt-in: use the guess for an unmapped namespace (`shop-prod` -> prod)
+    /// instead of leaving its calls out. Off by default (ADR-008). The build
+    /// lists every guessed namespace so it can be checked.
+    #[serde(default)]
+    pub guess_namespaces: bool,
 }
 
 /// Names used by each source system for one canonical environment.
@@ -427,6 +490,7 @@ pub struct EnvMapping {
 pub struct EnvIndex {
     by_name: BTreeMap<String, Env>,
     by_namespace: BTreeMap<String, Env>,
+    guess: bool,
 }
 
 impl EnvIndex {
@@ -436,10 +500,30 @@ impl EnvIndex {
         self.by_name.get(&name.to_ascii_lowercase()).copied()
     }
 
-    /// Resolve a Kubernetes namespace. Unknown namespaces are not guessed.
+    /// Resolve a Kubernetes namespace. Unknown namespaces are not guessed,
+    /// unless `guess_namespaces` is on.
     #[must_use]
     pub fn resolve_namespace(&self, name: &str) -> Option<Env> {
-        self.by_namespace.get(&name.to_ascii_lowercase()).copied()
+        self.by_namespace
+            .get(&name.to_ascii_lowercase())
+            .copied()
+            .or_else(|| {
+                if self.guess {
+                    self.suggest_namespace(name)
+                } else {
+                    None
+                }
+            })
+    }
+
+    /// The guessed environment, when `guess_namespaces` is on and the
+    /// namespace is not mapped. Used to list guesses after a build.
+    #[must_use]
+    pub fn guessed_namespace(&self, name: &str) -> Option<Env> {
+        if !self.guess || self.by_namespace.contains_key(&name.to_ascii_lowercase()) {
+            return None;
+        }
+        self.suggest_namespace(name)
     }
 
     /// Suggest an environment for an unmapped namespace, for a setup hint only.
@@ -562,6 +646,7 @@ impl Environments {
         Ok(EnvIndex {
             by_name,
             by_namespace: namespaces,
+            guess: self.guess_namespaces,
         })
     }
 }
@@ -1227,6 +1312,27 @@ prod:
         assert_eq!(index.suggest_namespace("prod-to-dev"), None);
         assert_eq!(index.suggest_namespace("shop-prod"), Some(Env::Prod));
         assert_eq!(index.resolve_namespace("shop-prod"), None);
+        assert_eq!(index.guessed_namespace("shop-prod"), None);
+    }
+
+    #[test]
+    fn guessing_namespaces_is_opt_in() {
+        let yaml = r"
+guess_namespaces: true
+dev:
+  gitlab: [development]
+acc:
+  gitlab: [staging]
+prod:
+  gitlab: [production]
+  k8s_namespaces: [shop]
+";
+        let index = parse_environments(yaml).unwrap().index().unwrap();
+        assert_eq!(index.resolve_namespace("shop-prod"), Some(Env::Prod));
+        assert_eq!(index.guessed_namespace("shop-prod"), Some(Env::Prod));
+        assert_eq!(index.resolve_namespace("shop"), Some(Env::Prod));
+        assert_eq!(index.guessed_namespace("shop"), None);
+        assert_eq!(index.resolve_namespace("qa"), None);
     }
 
     #[test]

@@ -17,6 +17,20 @@ gitlab:
   per_page: 100
   max_concurrency: 4
   bot_token_env: DEPGRAPH_GITLAB_BOT_TOKEN
+# Opt-in live cloud discovery: off until you turn it on. depgraph runs the
+# `aws` / `az` CLI with list, describe and read-only query calls only, using
+# the login that CLI already has. No keys here. docs/tutorials/09-cloud-discovery.md
+aws:
+  enabled: false
+  # profile: readonly        # AWS CLI profile name; empty uses the default chain
+  regions: []                # empty: the CLI's default region
+  # env: prod                # environment of this account; empty: from names like orders-prod
+  xray: true                 # also read the X-Ray service map (calls that really happen)
+azure:
+  enabled: false
+  subscriptions: []          # empty: the az default subscription
+  log_analytics_workspaces: []  # workspace ids with Application Insights data
+  # env: prod
 kubernetes:
   live_read: false
   clusters:
@@ -58,7 +72,10 @@ mcp:
   bind: 127.0.0.1:8080
 "#;
 
-const ENVIRONMENTS: &str = r#"dev:
+const ENVIRONMENTS: &str = r#"# Set to true to use the guess for unmapped namespaces (shop-prod -> prod);
+# `depgraph build` lists every guess. A mapping below always wins.
+guess_namespaces: false
+dev:
   gitlab: [development]
   otel: [dev, development]
   k8s_namespaces: []

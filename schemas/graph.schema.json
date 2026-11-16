@@ -401,6 +401,11 @@
           "const": "static",
           "description": "Static contract or source scan.",
           "type": "string"
+        },
+        {
+          "const": "cloud",
+          "description": "A cloud provider's own service map: AWS X-Ray or Azure Application Insights.",
+          "type": "string"
         }
       ]
     },
