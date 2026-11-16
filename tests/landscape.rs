@@ -106,6 +106,8 @@ fn every_node_is_expected() {
         .map(|node| text(&node["id"]))
         .collect();
     let expected: BTreeSet<String> = [
+        "component:billing-ex",
+        "component:edge-proxy-rs",
         "component:keycloak",
         "component:notifications",
         "component:orders-py",
@@ -114,6 +116,8 @@ fn every_node_is_expected() {
         "deployment:orders-py@prod",
         "resource:database:redis-cache",
         "resource:external-api:api-openai-com",
+        "resource:external-api:api-stripe-com",
+        "resource:firewall-rule:billing-egress",
         "resource:firewall-rule:orders-egress",
         "resource:infra:infra-network",
         "resource:infra:orders-py",
@@ -144,6 +148,13 @@ fn every_edge_is_expected() {
         "observed_calls component:orders-py -> component:keycloak acc both unknown istio",
         "observed_calls component:orders-py -> component:notifications prod both soft istio",
         "observed_calls component:orders-py -> resource:external-api:api-openai-com prod observed_only unknown istio",
+        // Elixir service: firewall rule endpoints and docker-compose depends_on
+        // are candidates (allowed or wired, not seen). CIDRs and the
+        // `postgres` compose service add nothing.
+        "declared_depends_on component:billing-ex -> resource:firewall-rule:billing-egress - n/a unknown static",
+        "candidate_calls component:billing-ex -> resource:external-api:api-stripe-com - candidate unknown static",
+        "candidate_calls component:billing-ex -> component:notifications - candidate unknown static",
+        "candidate_calls component:billing-ex -> component:orders-py - candidate unknown static",
         // GitLab deployments; `staging` maps to acc.
         "deployed_as component:orders-py -> deployment:orders-py@prod prod n/a unknown static",
         "deployed_as component:orders-py -> deployment:orders-py@acc acc n/a unknown static",
@@ -183,6 +194,10 @@ fn helm_templates_add_nothing_and_unmapped_namespaces_are_reported() {
     assert!(!unresolved.contains("{{"), "{unresolved}");
     assert!(
         unresolved.contains("environment,qa,namespace is not mapped,5"),
+        "{unresolved}"
+    );
+    assert!(
+        unresolved.contains("candidate_call,postgres,name is not a known component"),
         "{unresolved}"
     );
     assert!(
@@ -256,4 +271,38 @@ fn consumers_of_the_network_stack_include_the_python_service() {
         .assert()
         .success()
         .stdout(predicate::str::contains("component:orders-py"));
+}
+
+#[test]
+fn languages_and_containers_come_from_file_names() {
+    let built = build();
+    let attrs = |id: &str| -> Value {
+        built.graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == id)
+            .unwrap()["attrs"]
+            .clone()
+    };
+    assert_eq!(
+        attrs("component:orders-py")["languages"],
+        serde_json::json!(["python", "terraform"])
+    );
+    assert_eq!(
+        attrs("component:billing-ex")["languages"],
+        serde_json::json!(["elixir"])
+    );
+    // `target/` is build output and is ignored.
+    assert_eq!(
+        attrs("component:edge-proxy-rs")["languages"],
+        serde_json::json!(["rust"])
+    );
+    assert_eq!(attrs("component:edge-proxy-rs")["container"], true);
+    assert!(attrs("component:keycloak").get("languages").is_none());
+    depgraph(&built.root)
+        .args(["show", "billing-ex", "--snapshot", "data/snapshot.json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("  languages: elixir"));
 }

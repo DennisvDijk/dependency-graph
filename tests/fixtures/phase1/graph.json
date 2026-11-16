@@ -16,7 +16,7 @@
     "k8s_workloads": {
       "status": "ok",
       "finished_at": "2026-01-15T00:00:00Z",
-      "count": 4
+      "count": 5
     }
   },
   "nodes": [
@@ -31,6 +31,9 @@
       "id": "component:payments-api",
       "type": "component",
       "attrs": {
+        "languages": [
+          "terraform"
+        ],
         "owner": "ai-platform"
       }
     },

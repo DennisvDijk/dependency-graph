@@ -15,6 +15,9 @@ Start with `depgraph doctor`. Every `fail` line ends with a `next:` line that sa
 | Impact treats a `dependsOn` as 0.5, not as hard | By design: `dependsOn` is *unknown* until a failed chaos experiment marks it hard | Mark what you can live without in `depgraph/soft-dependencies`; hard needs experiment evidence |
 | A soft dependency shows no edge | The name in `depgraph/soft-dependencies` does not resolve | It accepts a name, project path or `component:default/<name>`; check `unresolved.csv` for a `soft_dependency` row |
 | A network policy or firewall rule is not linked to my service | No `app.kubernetes.io/name` label, and the repo holds several services | Add the label to the manifest |
+| A StatefulSet, CronJob or DaemonSet does not show up | No `app.kubernetes.io/name` label on it | Add the label; the name comes from there, not from `metadata.name` |
+| `languages` is missing on a node | The repo has no recognized build file at any depth, or only inside a build folder | Expected for deploy-only repos; see [tutorial 8](08-terraform-python-open-source.md#python-elixir-rust-and-other-languages) |
+| `unresolved.csv` lists `postgres`, `redis` or similar as `candidate_call` | A docker-compose `depends_on` points at a local helper, not a service | Harmless. Declare real databases as catalog `Resource`s |
 | `path_score` is 0 | The edge has no observed calls (declared only, or no Prometheus data for that env) | Expected. Scores need Istio traffic. |
 | A Helm-deployed or open-source app is missing, or has no owner | Helm templates are not rendered | Add a `catalog-info.yaml` in its deploy repo ([tutorial 8](08-terraform-python-open-source.md#open-source-apps-you-run)) |
 | A Terraform stack shows as one node | By design: one `resource:infra` node per repo | Split stacks into repos if you need them apart |

@@ -1,0 +1,8 @@
+services:
+  billing-ex:
+    build: .
+    depends_on:
+      - orders-py
+      - postgres
+  postgres:
+    image: postgres:16

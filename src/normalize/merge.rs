@@ -95,6 +95,8 @@ pub fn merge_records(
     // GitLab project path -> components defined in it. A manifest resource
     // without its own workload label belongs to the component of its repo.
     let mut project_components: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // GitLab project path -> (languages, has a Dockerfile or compose file).
+    let mut stacks: BTreeMap<String, (BTreeSet<String>, bool)> = BTreeMap::new();
 
     for record in records {
         *counts.entry(record.collector.clone()).or_insert(0) += 1;
@@ -236,7 +238,22 @@ pub fn merge_records(
                         .and_then(|value| value.as_str())
                         .unwrap_or("")
                         .to_owned(),
+                    external: record
+                        .payload
+                        .get("external")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
                 });
+            }
+            "project_facts" => {
+                let project_path = text_field(&record.payload, "project_path");
+                let entry = stacks.entry(project_path).or_default();
+                entry.0.extend(string_list(&record.payload, "languages"));
+                entry.1 |= record
+                    .payload
+                    .get("container")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
             }
             other => unresolved.push(unresolved_row("record", other, "ignored record kind", 0)),
         }
@@ -255,10 +272,32 @@ pub fn merge_records(
         generated_at,
     });
 
+    let mut component_stack: BTreeMap<&str, (BTreeSet<String>, bool)> = BTreeMap::new();
+    for (project_path, names) in &project_components {
+        let Some((languages, container)) = stacks.get(project_path) else {
+            continue;
+        };
+        for name in names {
+            let entry = component_stack.entry(name.as_str()).or_default();
+            entry.0.extend(languages.iter().cloned());
+            entry.1 |= *container;
+        }
+    }
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     for name in components.keys() {
         let mut attrs = BTreeMap::new();
+        if let Some((languages, container)) = component_stack.get(name.as_str()) {
+            if !languages.is_empty() {
+                attrs.insert(
+                    "languages".into(),
+                    serde_json::Value::from(languages.iter().cloned().collect::<Vec<_>>()),
+                );
+            }
+            if *container {
+                attrs.insert("container".into(), serde_json::Value::Bool(true));
+            }
+        }
         if let Some((owner, system)) = owners.get(name) {
             if !owner.is_empty() {
                 attrs.insert("owner".into(), serde_json::Value::String(owner.clone()));
@@ -699,6 +738,7 @@ struct CandidateCall {
     source: String,
     destination: String,
     namespace: String,
+    external: bool,
 }
 
 fn absorb_observed(
@@ -870,7 +910,8 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
     for candidate in candidates.iter() {
         let source = canonical_name(&candidate.source, aliases);
         let destination = canonical_name(&candidate.destination, aliases);
-        if !components.contains_key(&source) || !components.contains_key(&destination) {
+        let destination_known = candidate.external || components.contains_key(&destination);
+        if !components.contains_key(&source) || !destination_known {
             let missing = if components.contains_key(&source) {
                 &candidate.destination
             } else {
@@ -900,9 +941,19 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
                 }
             }
         };
+        let to_id = if candidate.external {
+            let id = format!("resource:external-api:{destination}");
+            resources
+                .entry(("external-api".to_owned(), destination.clone()))
+                .or_insert_with(|| "k8s_workloads".to_owned());
+            inferred.insert(id.clone());
+            id
+        } else {
+            format!("component:{destination}")
+        };
         edges.push(candidate_edge(
             &format!("component:{source}"),
-            &format!("component:{destination}"),
+            &to_id,
             env,
             generated_at,
         ));

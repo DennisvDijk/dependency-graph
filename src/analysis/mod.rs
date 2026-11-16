@@ -60,6 +60,25 @@ pub struct ReadRequest {
 pub fn show(request: &ReadRequest) -> Result<(), Error> {
     let graph = load_graph(request)?;
     let node = find_node(&graph, request.target.as_deref())?;
+    if request.format == OutputFormat::Table {
+        println!("{}", node.id);
+        for (key, value) in &node.attrs {
+            let text = match value {
+                serde_json::Value::String(text) => text.clone(),
+                serde_json::Value::Array(items) => items
+                    .iter()
+                    .map(|item| {
+                        item.as_str()
+                            .map_or_else(|| item.to_string(), str::to_owned)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                other => other.to_string(),
+            };
+            println!("  {key}: {text}");
+        }
+        println!();
+    }
     println!(
         "{}",
         render(
@@ -329,6 +348,7 @@ fn render(
         OutputFormat::Json => {
             let value = json!({
                 "node": node.map(|node| &node.id),
+                "attrs": node.map(|node| &node.attrs),
                 "edges": edges.iter().map(|edge| json!({
                     "type": edge.edge_type.as_str(),
                     "from": edge.from_id,

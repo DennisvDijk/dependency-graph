@@ -316,6 +316,8 @@ fn component_context(state: &McpState, component: &str, env: Option<Env>) -> Res
         "catalog_path": node.attrs.get("catalog_path").cloned().unwrap_or(json!("catalog-info.yaml")),
         "manifest_paths": node.attrs.get("manifest_paths").cloned().unwrap_or(json!([])),
         "owner": attr("owner"),
+        "languages": node.attrs.get("languages").cloned().unwrap_or(json!([])),
+        "container": node.attrs.get("container").cloned().unwrap_or(json!(false)),
         "dependencies": deps,
         "consumers": consumers
     }))

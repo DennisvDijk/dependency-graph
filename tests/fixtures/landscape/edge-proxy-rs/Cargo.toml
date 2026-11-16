@@ -1,0 +1,3 @@
+[package]
+name = "edge-proxy-rs"
+version = "0.1.0"

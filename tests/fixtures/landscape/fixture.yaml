@@ -7,3 +7,7 @@ projects:
     dir: third-party
   - path: example-group/platform/infra-network
     dir: infra-network
+  - path: example-group/shop/billing-ex
+    dir: billing-ex
+  - path: example-group/platform/edge-proxy-rs
+    dir: edge-proxy-rs

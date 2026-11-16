@@ -8,7 +8,7 @@ Pick the path that matches what you want to do:
 |---|---|---|
 | See what it does, on sample data, before anything else | [1. Try it in five minutes](01-try-it.md) | 5 min |
 | Get my service into the graph correctly | [2. Add your service](02-add-your-service.md) | 10 min |
-| Cover Terraform stacks, Python projects, and open-source apps we run (Keycloak, Redis…) | [8. Terraform, Python and open-source apps](08-terraform-python-open-source.md) | 10 min |
+| Cover Terraform, firewall rules, Docker, services in any language (Python, Elixir, Rust…) and open-source apps we run | [8. Terraform, firewalls, Docker, any language and open-source apps](08-terraform-python-open-source.md) | 15 min |
 | Answer "who breaks if I change this?" and similar questions | [3. Ask the graph questions](03-ask-questions.md) | 10 min |
 | Let Cursor, Claude, VS Code or opencode use the graph | [4. Connect your AI agent](04-ai-agent.md) | 5 min |
 | Get a comment on merge requests that touch an API with prod consumers | [5. Merge request check](05-mr-check.md) | 15 min |

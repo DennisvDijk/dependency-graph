@@ -1,13 +1,16 @@
-# 8. Terraform, Python and open-source apps
+# 8. Terraform, firewalls, Docker, any language and open-source apps
 
-Not everything is a service your team wrote. This tutorial covers the three other things most landscapes have: infrastructure in Terraform, Python projects, and open-source apps you run but did not write (Keycloak, Redis, Grafana, an ingress controller…).
+Not everything is a Kubernetes Deployment your team wrote. This tutorial covers the rest of a typical landscape: Terraform, firewall rules, Docker and docker-compose, services in Python, Elixir, Rust or any other language, and open-source apps you run but did not write (Keycloak, Redis, Grafana, an ingress controller…).
 
 The short version:
 
 | What | Shows up as | Without a `catalog-info.yaml` | With one |
 |---|---|---|---|
 | Terraform repo | `resource:infra:<repo-name>` | Yes, one node per repo that has `.tf` files | Owner, and services can `dependsOn` it |
-| Python service | `component:<name>`, like any service | Yes, from its Kubernetes `Deployment` label | Owner, system, declared deps |
+| Service in any language (Python, Elixir, Rust, Go, Java, Node…) | `component:<name>`, with `languages` on the node | Yes, from its workload label | Owner, system, declared deps |
+| Kubernetes workload | `component:<name>` | `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `CronJob`, Argo `Rollout` with an `app.kubernetes.io/name` label | — |
+| Firewall rule (YAML, `kind: FirewallRule`) | `resource:firewall-rule:<name>`, plus a candidate edge per allowed destination | Yes | — |
+| Docker / docker-compose | `container: true` on the node; compose `depends_on` becomes candidate edges | Yes | — |
 | Python package (pip library) | Not tracked | — | — (see [limits](#what-is-not-covered-yet)) |
 | Open-source app you deploy | `component:<name>` | From plain-YAML `Deployment`s and Istio traffic only | Recommended: owner, system, a stable name |
 | SaaS / external API | `resource:external-api:<host>` | Yes, from Istio egress traffic | — |
@@ -52,19 +55,61 @@ Tips:
 - Infra, network-policy and firewall edges are structural: they have status `n/a` and never show up in drift, since no runtime call ever "confirms" a VPC.
 - Use `spec.type: database`, `queue`, `topic` and so on for a single managed resource with its own repo, such as an RDS instance. These are the kinds from ADR-007: `database`, `topic`, `queue`, `external-api`, `model-endpoint`, `identity-provider`, `network-policy`, `firewall-rule`, `infra`, `other`.
 
-## Python
+## Python, Elixir, Rust and other languages
 
-To depgraph a Python service is just a service: the language does not matter. It is found through:
+To depgraph a service is a service; the language does not change how it is found. It is found through:
 
 1. its `catalog-info.yaml` (recommended; same file as in [tutorial 2](02-add-your-service.md)),
 2. the `app.kubernetes.io/name` label on its `Deployment` manifest,
 3. the Istio traffic it sends and receives.
 
-Make the names match: `metadata.name` = `app.kubernetes.io/name` = OpenTelemetry `service.name`. For a Python service that last one is usually `OTEL_SERVICE_NAME=orders-py` in the deployment's environment.
+Make the names match: `metadata.name` = `app.kubernetes.io/name` = OpenTelemetry `service.name`. That last one is usually `OTEL_SERVICE_NAME=orders-py` in the deployment's environment, in Python, Elixir (`opentelemetry` hex package), Rust (`opentelemetry` crate) alike.
+
+depgraph also records **which languages a repo uses**, from file names only: `requirements.txt` / `pyproject.toml` → python, `mix.exs` → elixir, `Cargo.toml` → rust, `go.mod` → go, `package.json` → javascript, `pom.xml` / `build.gradle` → java, `Gemfile` → ruby, `*.csproj` → dotnet, `*.tf` → terraform. Build and dependency folders (`target/`, `deps/`, `_build/`, `node_modules/`, `vendor/`, `.venv/`) are skipped. You see it in `depgraph show <name>` and in the MCP `show` tool:
+
+```text
+$ depgraph show billing-ex
+component:billing-ex
+  container: true
+  languages: elixir
+```
 
 Batch jobs and workers: use `spec.type: job`. They rarely receive traffic, so expect them to show their outgoing calls only.
 
 `propose-catalog` works on Python repos too: it reads the manifests, not the Python code.
+
+## Firewall rules
+
+A YAML file with `kind: FirewallRule` becomes `resource:firewall-rule:<name>`. When it says what it connects, depgraph also draws the connection:
+
+```yaml
+kind: FirewallRule
+metadata:
+  name: billing-egress
+spec:
+  from:
+    - app: billing-ex                              # or just: billing-ex
+  to:
+    - host: api.stripe.com:443                     # -> resource:external-api:api-stripe-com
+    - notifications.shop-prod.svc.cluster.local    # -> component:notifications
+    - 0.0.0.0/0                                    # CIDRs and wildcards are skipped
+```
+
+- The rule is linked to its `from` service. Without `from` it is linked by its `app.kubernetes.io/name` label, or to the only service in the repo.
+- `from` / `source` / `sources` and `to` / `destination` / `destinations` are all accepted, as a single value or a list. List entries may be plain strings or maps with `app`, `component`, `service`, `name` or `host`.
+- Each `from → to` pair becomes a **candidate** edge: the network allows it, nobody has seen it yet. If Istio sees the call, the observed edge appears next to it.
+- Does your firewall-as-code use a different format (a vendor's export, a CSV, a different YAML shape)? Send one sample file; mapping it is a small change in `src/collectors/gather.rs` (`firewall_endpoints`).
+
+## Docker and docker-compose
+
+- A `Dockerfile` (or compose file) in a repo sets `container: true` on the repo's components.
+- Image names come from the `depgraph/image-repository` catalog annotation; depgraph does not parse `FROM` lines.
+- In `docker-compose.yml` / `compose.yaml`, each `depends_on` becomes a candidate edge **when both services are components** in the graph. Local-only helpers such as `postgres` are not services, so they end up in `unresolved.csv` and not in the graph. Declare a real database as a catalog `Resource` instead.
+- Containers outside Kubernetes (plain Docker hosts) have no Istio traffic, so they only get declared and candidate edges.
+
+## Kubernetes clusters
+
+depgraph assumes one cluster with one namespace set per environment (ADR-001 question 3). Clusters are not nodes; an environment is `dev`, `acc` or `prod`, mapped from namespaces in `config/environments.yaml`. Several clusters per environment work as long as their namespace names do not collide. A cluster as a first-class node (for "what runs on cluster X?") is not built yet.
 
 ## Open-source apps you run
 
@@ -139,4 +184,6 @@ The build prints one hint, for the `qa` namespace, which the sample leaves unmap
 
 - **Python, npm or other package dependencies** (who uses library X at version Y). Libraries are switched off on purpose (ADR-001 question 8, ADR-009), so `depgraph library-impact` answers `libraries disabled`. If you need this, it is a new phase: read `requirements.txt` / `pyproject.toml` / SBOMs and turn libraries back on.
 - **Resources inside a Terraform stack.** One node per repo, by design.
+- **Clusters as nodes.** See [Kubernetes clusters](#kubernetes-clusters).
+- **Firewall formats other than `kind: FirewallRule` YAML.** Send a sample.
 - **Rendered Helm output.** Use a catalog file, as above.
