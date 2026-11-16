@@ -90,6 +90,41 @@ pub struct TreeItem {
     pub item_type: String,
 }
 
+/// A GitLab deployment, reduced to the fields the normalizer needs.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GitlabDeployment {
+    /// Git ref, often a tag.
+    #[serde(default, rename = "ref")]
+    pub reference: String,
+    /// Commit SHA.
+    #[serde(default)]
+    pub sha: String,
+    /// Creation time.
+    #[serde(default)]
+    pub created_at: String,
+    /// Environment name, flattened from `environment.name` when present.
+    #[serde(default)]
+    pub environment: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitlabDeploymentWire {
+    #[serde(default, rename = "ref")]
+    reference: String,
+    #[serde(default)]
+    sha: String,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
+    environment: Option<GitlabEnvironment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitlabEnvironment {
+    #[serde(default)]
+    name: String,
+}
+
 /// A CI job, used only to notice SBOM artifacts.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Job {
@@ -403,6 +438,37 @@ impl GitLabClient {
         } else {
             Ok(Some(file.content))
         }
+    }
+
+    /// Successful-looking deployments for one project.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on HTTP failure.
+    pub async fn deployments(&self, project_id: u64) -> Result<Vec<GitlabDeployment>, Error> {
+        let path = format!(
+            "/api/v4/projects/{project_id}/deployments?per_page={}&page=1&order_by=created_at&sort=desc",
+            self.per_page
+        );
+        let (status, _, bytes) = self.request(reqwest::Method::GET, &path, None).await?;
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        if !status.is_success() {
+            return Err(http_error("deployments", status, &bytes));
+        }
+        let wire: Vec<GitlabDeploymentWire> = serde_json::from_slice(&bytes).map_err(|err| {
+            Error::GitLab(format!("gitlab deployments payload was not JSON: {err}"))
+        })?;
+        Ok(wire
+            .into_iter()
+            .map(|item| GitlabDeployment {
+                reference: item.reference,
+                sha: item.sha,
+                created_at: item.created_at,
+                environment: item.environment.map(|env| env.name).unwrap_or_default(),
+            })
+            .collect())
     }
 
     /// Recent jobs. Used to notice CycloneDX artifacts.

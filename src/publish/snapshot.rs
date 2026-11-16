@@ -2,13 +2,26 @@
 //!
 //! This does not push to the source GitLab projects.
 
-use crate::error::Error;
+use std::fs;
+use std::path::Path;
 
-/// Publish the current snapshot.
+use crate::error::Error;
+use crate::models::{GraphSnapshot, to_canonical_json};
+
+/// Write a canonical snapshot file.
 ///
 /// # Errors
 ///
-/// Returns [`Error::NotImplemented`] in F0-1.
-pub fn publish_snapshot() -> Result<(), Error> {
-    Err(Error::NotImplemented("publish snapshot"))
+/// Returns an error when the file cannot be written.
+pub fn write_snapshot(graph: &GraphSnapshot, path: &Path) -> Result<(), Error> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        path,
+        to_canonical_json(graph).map_err(|err| Error::Store(err.to_string()))?,
+    )?;
+    Ok(())
 }

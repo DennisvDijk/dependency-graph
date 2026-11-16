@@ -51,7 +51,7 @@ Een alias wijst altijd naar precies één componentnaam, zonder het `component:`
 
 ## Buiten scope, types blijven
 
-`Library`-nodes en `uses_library`-edges blijven geldige ids. `libraries.enabled` staat uit: er zijn geen interne libraries, en collectors mogen ze niet schrijven. Voorgestelde resource-kinds `network-policy`, `firewall-rule` en `infra` staan in ADR-003 en ADR-004 en zitten nog niet in de parser.
+`Library`-nodes en `uses_library`-edges blijven geldige ids. `libraries.enabled` staat uit: er zijn geen interne libraries, en collectors mogen ze niet schrijven. Resource-kinds `network-policy`, `firewall-rule` en `infra` zijn geaccepteerd in ADR-006. De parser kent ze. Er is geen apart model voor regels of providers.
 
 ## Geheimen
 

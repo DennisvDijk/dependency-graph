@@ -56,16 +56,11 @@ fn validate_rejects_a_secret_without_echoing_it() {
 #[test]
 fn stubs_exit_2() {
     depgraph()
-        .args(["collect", "--set", "fast"])
+        .args(["impact", "payments-api"])
         .assert()
         .failure()
         .code(2)
         .stderr(predicate::str::contains("not implemented in F0-1"));
-    depgraph()
-        .args(["show", "--env", "prod", "--format", "json"])
-        .assert()
-        .failure()
-        .code(2);
     depgraph()
         .args(["publish", "drift-issue"])
         .assert()
@@ -91,9 +86,6 @@ fn help_lists_validate() {
 #[test]
 fn read_commands_accept_the_shared_flags() {
     let commands = [
-        "show",
-        "deps",
-        "consumers",
         "impact",
         "deploy-order",
         "cycles",

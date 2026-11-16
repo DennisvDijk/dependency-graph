@@ -1,0 +1,153 @@
+{
+  "schema_version": "0.1.0",
+  "run_id": "local",
+  "generated_at": "2026-01-15T00:00:00Z",
+  "sources": {
+    "gitlab_deployments": {
+      "status": "ok",
+      "finished_at": "2026-01-15T00:00:00Z",
+      "count": 2
+    },
+    "gitlab_inventory": {
+      "status": "ok",
+      "finished_at": "2026-01-15T00:00:00Z",
+      "count": 3
+    },
+    "k8s_workloads": {
+      "status": "ok",
+      "finished_at": "2026-01-15T00:00:00Z",
+      "count": 4
+    }
+  },
+  "nodes": [
+    {
+      "id": "component:billing-api",
+      "type": "component",
+      "attrs": {}
+    },
+    {
+      "id": "component:payments-api",
+      "type": "component",
+      "attrs": {}
+    },
+    {
+      "id": "deployment:payments-api@prod",
+      "type": "deployment",
+      "attrs": {
+        "version": "1.4.0"
+      }
+    },
+    {
+      "id": "resource:database:payments-db",
+      "type": "resource",
+      "attrs": {}
+    },
+    {
+      "id": "resource:firewall-rule:payments-egress",
+      "type": "resource",
+      "attrs": {}
+    },
+    {
+      "id": "resource:infra:payments-api",
+      "type": "resource",
+      "attrs": {}
+    },
+    {
+      "id": "resource:network-policy:payments-net",
+      "type": "resource",
+      "attrs": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:2de7140d89feef0fb45b9bf14a0b33b5f06ac387cae438ce473a99e794912439",
+      "type": "deployed_as",
+      "from_id": "component:payments-api",
+      "to_id": "deployment:payments-api@prod",
+      "env": "prod",
+      "sources": [
+        {
+          "kind": "static",
+          "first_seen": "2026-01-15T00:00:00Z",
+          "last_seen": "2026-01-15T00:00:00Z"
+        }
+      ],
+      "status": "n/a",
+      "criticality": "unknown",
+      "active": true,
+      "attrs": {}
+    },
+    {
+      "id": "edge:6aaec4d166acdcc592284a22feecf0cab4312bafc2f78939ce9f6d6a323479b1",
+      "type": "declared_depends_on",
+      "from_id": "component:payments-api",
+      "to_id": "component:billing-api",
+      "env": null,
+      "sources": [
+        {
+          "kind": "catalog",
+          "first_seen": "2026-01-15T00:00:00Z",
+          "last_seen": "2026-01-15T00:00:00Z"
+        }
+      ],
+      "status": "declared_only",
+      "criticality": "unknown",
+      "active": true,
+      "attrs": {}
+    },
+    {
+      "id": "edge:71062de310a00bb158255fa31245b6b98ed5f813b21d385ba59fae8c4ac1aa43",
+      "type": "declared_depends_on",
+      "from_id": "component:payments-api",
+      "to_id": "resource:database:payments-db",
+      "env": null,
+      "sources": [
+        {
+          "kind": "catalog",
+          "first_seen": "2026-01-15T00:00:00Z",
+          "last_seen": "2026-01-15T00:00:00Z"
+        }
+      ],
+      "status": "declared_only",
+      "criticality": "unknown",
+      "active": true,
+      "attrs": {}
+    },
+    {
+      "id": "edge:c17a5d9fd91294cf8c12f75601f865fb6cef247542b891b0c0448635b21407c0",
+      "type": "declared_depends_on",
+      "from_id": "component:payments-api",
+      "to_id": "resource:infra:payments-api",
+      "env": null,
+      "sources": [
+        {
+          "kind": "catalog",
+          "first_seen": "2026-01-15T00:00:00Z",
+          "last_seen": "2026-01-15T00:00:00Z"
+        }
+      ],
+      "status": "declared_only",
+      "criticality": "unknown",
+      "active": true,
+      "attrs": {}
+    },
+    {
+      "id": "edge:d7092ae7358c8e97e33279cb5e147697a88e5b4c16b4089a646d0d609eb301a4",
+      "type": "declared_depends_on",
+      "from_id": "component:payments-api",
+      "to_id": "resource:network-policy:payments-net",
+      "env": null,
+      "sources": [
+        {
+          "kind": "catalog",
+          "first_seen": "2026-01-15T00:00:00Z",
+          "last_seen": "2026-01-15T00:00:00Z"
+        }
+      ],
+      "status": "declared_only",
+      "criticality": "unknown",
+      "active": true,
+      "attrs": {}
+    }
+  ]
+}

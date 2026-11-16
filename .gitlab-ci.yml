@@ -13,9 +13,9 @@
 #   full    30 3 * * *    COLLECT_SET=full
 #   weekly  0 7 * * 1     COLLECT_SET=full  SCHEDULE_KIND=weekly
 #
-# F0-1: collect, build, publish, site, and drift-issue exit 2
-# ("not implemented in F0-1"). Scheduled jobs assert that exit code so the
-# empty pipeline stays green. Replace the assertion when the command exists.
+# Schedules run the real commands. They need GITLAB_TOKEN or glab auth on the
+# runner. drift-issue stays a local note until there is a previous snapshot
+# to compare; measuring drift on real data is for Dennis.
 
 stages:
   - test
@@ -51,12 +51,9 @@ test:
     - cargo test --all-targets --all-features
     - cargo build --release --locked
     - ./target/release/depgraph validate tests/fixtures/empty-graph.json
-    - |
-      set +e
-      ./target/release/depgraph collect --set fast
-      code=$?
-      set -e
-      test "$code" -eq 2
+    - ./target/release/depgraph collect --set full --fixture tests/fixtures/phase1 --output data
+    - ./target/release/depgraph build --raw data/raw --output data/snapshot.json --aliases tests/fixtures/phase1/aliases.yaml
+    - ./target/release/depgraph site --snapshot data/snapshot.json --output public
 
 collect:
   <<: *rust_job
@@ -64,54 +61,41 @@ collect:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
   script:
-    - |
-      test -n "${COLLECT_SET}"
-      set +e
-      ./target/release/depgraph collect --set "${COLLECT_SET}"
-      code=$?
-      set -e
-      test "$code" -eq 2
+    - test -n "${COLLECT_SET}"
+    - ./target/release/depgraph collect --set "${COLLECT_SET}" --output data
+  artifacts:
+    paths:
+      - data
 
 build:
   <<: *rust_job
   stage: build
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
+  needs: ["collect"]
   script:
-    - |
-      set +e
-      ./target/release/depgraph build
-      code=$?
-      set -e
-      test "$code" -eq 2
+    - ./target/release/depgraph build --raw data/raw --output data/snapshot.json
+  artifacts:
+    paths:
+      - data
 
 publish-snapshot:
   <<: *rust_job
   stage: publish
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
+  needs: ["build"]
   script:
-    - |
-      set +e
-      ./target/release/depgraph publish snapshot
-      code=$?
-      set -e
-      test "$code" -eq 2
+    - ./target/release/depgraph publish snapshot --snapshot data/snapshot.json --output data/published.json
 
 pages:
   <<: *rust_job
   stage: publish
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
+  needs: ["build"]
   script:
-    - |
-      set +e
-      ./target/release/depgraph site
-      code=$?
-      set -e
-      test "$code" -eq 2
-      mkdir -p public
-      printf '%s\n' '<!DOCTYPE html><meta charset="utf-8"><title>depgraph</title><p>The site is not implemented in F0-1.</p>' > public/index.html
+    - ./target/release/depgraph site --snapshot data/snapshot.json --output public
   artifacts:
     paths:
       - public
@@ -122,9 +106,5 @@ drift-issue:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_KIND == "weekly"
   script:
-    - |
-      set +e
-      ./target/release/depgraph publish drift-issue
-      code=$?
-      set -e
-      test "$code" -eq 2
+    - mkdir -p data
+    - printf '%s\n' 'Drift against production data is to be measured by Dennis.' > data/drift.md

@@ -10,5 +10,5 @@ mod snapshot;
 
 pub use drift_issue::drift_issue;
 pub use mr_comment::mr_comment;
-pub use pages::site;
-pub use snapshot::publish_snapshot;
+pub use pages::write_site;
+pub use snapshot::write_snapshot;
