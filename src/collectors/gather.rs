@@ -198,11 +198,42 @@ fn records_from_catalog(project_path: &str, yaml: &str) -> Vec<RawRecord> {
         .pointer("/spec/dependsOn")
         .cloned()
         .unwrap_or(json!([]));
+    let soft = annotation_list(&value, "depgraph/soft-dependencies");
+    let heuristics = annotation_list(&value, "depgraph/heuristics");
+    let owner = value
+        .pointer("/spec/owner")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
+    let system = value
+        .pointer("/spec/system")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
     vec![record(
         &collector,
         "component",
-        json!({"name": name, "depends_on": depends_on, "project_path": project_path}),
+        json!({
+            "name": name,
+            "depends_on": depends_on,
+            "project_path": project_path,
+            "soft_dependencies": soft,
+            "heuristics": heuristics,
+            "owner": owner,
+            "system": system,
+        }),
     )]
+}
+
+fn annotation_list(value: &Value, key: &str) -> Vec<String> {
+    let key = key.replace("~", "~0").replace("/", "~1");
+    value
+        .pointer(&format!("/metadata/annotations/{key}"))
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn records_from_tree(project_path: &str, root: &Path) -> Result<Vec<RawRecord>, Error> {

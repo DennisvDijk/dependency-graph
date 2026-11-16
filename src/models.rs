@@ -184,6 +184,34 @@ pub enum EdgeStatus {
     NotApplicable,
 }
 
+/// Where a hard/soft label came from. A heuristic is evidence, not a cause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CriticalitySource {
+    /// `depgraph/soft-dependencies` in catalog-info.yaml.
+    Declared,
+    /// A fault-injection result that was ingested, not executed here.
+    Experiment,
+    /// Fallback, circuit breaker, or async. Evidence only.
+    Heuristic,
+    /// Not classified.
+    #[default]
+    Unknown,
+}
+
+impl CriticalitySource {
+    /// Wire value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Declared => "declared",
+            Self::Experiment => "experiment",
+            Self::Heuristic => "heuristic",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// How hard a dependency is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
@@ -289,6 +317,9 @@ pub struct Edge {
     /// Hard, soft, or unknown. Defaults to `unknown`.
     #[serde(default)]
     pub criticality: Criticality,
+    /// Which source produced `criticality`. Defaults to `unknown` and is omitted then.
+    #[serde(default, skip_serializing_if = "criticality_source_unknown")]
+    pub criticality_source: CriticalitySource,
     /// Inactive edges stay in the snapshot until expiry. Defaults to `true`.
     #[serde(default = "default_active")]
     pub active: bool,
@@ -299,6 +330,10 @@ pub struct Edge {
 
 fn default_active() -> bool {
     true
+}
+
+fn criticality_source_unknown(source: &CriticalitySource) -> bool {
+    *source == CriticalitySource::Unknown
 }
 
 /// Per-collector summary stored on the snapshot. Messages stay in `meta.json`.

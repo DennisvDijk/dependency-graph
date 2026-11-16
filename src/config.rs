@@ -64,6 +64,12 @@ pub struct Config {
     /// Optional IdP preset. `generic` is the default resource server.
     #[serde(default)]
     pub auth: AuthConfig,
+    /// Path-score hardness factors. Assumptions, not measurements.
+    #[serde(default)]
+    pub scoring: ScoringConfig,
+    /// MR check policy. Blocking is off until a team opts in.
+    #[serde(default)]
+    pub mr_check: MrCheckConfig,
 }
 
 /// GitLab connection settings. `base_url` is a placeholder until a human confirms it.
@@ -162,6 +168,72 @@ pub struct AuthConfig {
     pub allowed_roles: Vec<String>,
     /// Group object ids that may call the API. Empty means no group restriction.
     pub allowed_groups: Vec<String>,
+}
+
+/// Hardness factors stored as text so the config struct stays `Eq`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ScoringConfig {
+    /// Factor for a hard edge.
+    pub hard: String,
+    /// Factor for an unknown edge.
+    pub unknown: String,
+    /// Factor for a soft edge.
+    pub soft: String,
+}
+
+impl Default for ScoringConfig {
+    fn default() -> Self {
+        Self {
+            hard: "1.0".into(),
+            unknown: "0.5".into(),
+            soft: "0.2".into(),
+        }
+    }
+}
+
+impl ScoringConfig {
+    /// Parse the factors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a factor is not a finite number from 0 to 1.
+    pub fn hardness(&self) -> Result<crate::score::Hardness, Error> {
+        Ok(crate::score::Hardness {
+            hard: parse_factor("scoring.hard", &self.hard)?,
+            unknown: parse_factor("scoring.unknown", &self.unknown)?,
+            soft: parse_factor("scoring.soft", &self.soft)?,
+        })
+    }
+}
+
+fn parse_factor(field: &str, value: &str) -> Result<f64, Error> {
+    let number: f64 = value
+        .parse()
+        .map_err(|_| Error::Config(format!("{field} must be a number")))?;
+    if !(0.0..=1.0).contains(&number) {
+        return Err(Error::Config(format!("{field} must be between 0 and 1")));
+    }
+    Ok(number)
+}
+
+/// Opt-in gate for merge requests. Off in the example config.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct MrCheckConfig {
+    /// When true, a contract change with observed prod consumers needs approval.
+    pub blocking: bool,
+    /// A label that records an explicit override.
+    pub override_label: String,
+}
+
+impl Default for MrCheckConfig {
+    fn default() -> Self {
+        Self {
+            blocking: false,
+            override_label: "depgraph-override".into(),
+        }
+    }
 }
 
 impl Default for AuthConfig {
@@ -1029,6 +1101,8 @@ mod tests {
         );
         assert_eq!(project.config.edge_expiry_days, 30);
         assert_eq!(project.config.retention_days, 90);
+        assert!(!project.config.mr_check.blocking);
+        assert_eq!(project.config.scoring.hard, "1.0");
         assert_eq!(project.config.mcp.issuer, "https://idp.example.com");
         assert_eq!(project.config.mcp.audience, "http://127.0.0.1:8080");
         assert_eq!(project.config.mcp.bind, "127.0.0.1:8080");

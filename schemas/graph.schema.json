@@ -20,6 +20,31 @@
         }
       ]
     },
+    "CriticalitySource": {
+      "description": "Where a hard/soft label came from. A heuristic is evidence, not a cause.",
+      "oneOf": [
+        {
+          "const": "declared",
+          "description": "`depgraph/soft-dependencies` in catalog-info.yaml.",
+          "type": "string"
+        },
+        {
+          "const": "experiment",
+          "description": "A fault-injection result that was ingested, not executed here.",
+          "type": "string"
+        },
+        {
+          "const": "heuristic",
+          "description": "Fallback, circuit breaker, or async. Evidence only.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Not classified.",
+          "type": "string"
+        }
+      ]
+    },
     "Edge": {
       "additionalProperties": false,
       "description": "A directed relationship. `env` is null when the edge is not environment-specific.",
@@ -38,6 +63,10 @@
           "$ref": "#/$defs/Criticality",
           "default": "unknown",
           "description": "Hard, soft, or unknown. Defaults to `unknown`."
+        },
+        "criticality_source": {
+          "$ref": "#/$defs/CriticalitySource",
+          "description": "Which source produced `criticality`. Defaults to `unknown` and is omitted then."
         },
         "env": {
           "anyOf": [

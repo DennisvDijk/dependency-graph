@@ -67,6 +67,15 @@ contract_paths:
   - schema/**
 edge_expiry_days: 30
 retention_days: 90
+# Path scores use these factors. They are assumptions for ranking, not probabilities.
+scoring:
+  hard: "1.0"
+  unknown: "0.5"
+  soft: "0.2"
+# Blocking MR check is off. A team opts in only after explicit approval.
+mr_check:
+  blocking: false
+  override_label: depgraph-override
 # ADR-010: generic OAuth resource server. Set provider: entra to derive Entra v2 endpoints.
 # Tenant and client ids below are placeholders. DEPGRAPH_ENTRA_TENANT_ID and
 # DEPGRAPH_ENTRA_CLIENT_ID override them and are never written here.

@@ -225,7 +225,11 @@ fn call_tool(state: &McpState, params: &Value) -> Result<Value, String> {
                 .map_err(|err| err.to_string())?
         ),
         "impact" => {
-            json!(algo::impact(&state.snapshot, component, env).map_err(|err| err.to_string())?)
+            let hardness = crate::score::Hardness::default();
+            json!(
+                crate::score::ranked_impact(&state.snapshot, component, env, hardness)
+                    .map_err(|err| err.to_string())?
+            )
         }
         "deploy_order" => {
             let set = args
@@ -243,12 +247,36 @@ fn call_tool(state: &McpState, params: &Value) -> Result<Value, String> {
         "cycles" => json!(algo::cycles(&state.snapshot, env)),
         "library_impact" => json!({"message": algo::library_impact_disabled()}),
         "drift" => json!({"env": env.map(|value| value.as_str()).unwrap_or("prod")}),
-        "critical_nodes" => json!(algo::critical_nodes(&state.snapshot, env)),
+        "critical_nodes" => {
+            let ranked = algo::critical_nodes(&state.snapshot, env);
+            let hardness = crate::score::Hardness::default();
+            json!(ranked
+                .iter()
+                .map(|node| json!({
+                    "id": node.id,
+                    "in_degree": node.in_degree,
+                    "betweenness": node.betweenness,
+                    "articulation": node.articulation,
+                    "weight_score": crate::score::weight_score(&state.snapshot, &node.id, env, hardness),
+                }))
+                .collect::<Vec<_>>())
+        }
         "orphans" => json!(algo::orphans(&state.snapshot)),
         "diff" => {
             json!({"note": "pass two snapshots to the CLI; the server diffs against an empty addition set"})
         }
         "component_context" => component_context(state, component, env)?,
+        "scorecard" => json!(
+            crate::score::scorecard(&state.snapshot)
+                .into_iter()
+                .map(|row| json!({
+                    "owner": row.owner,
+                    "components": row.components,
+                    "with_system": row.with_system,
+                    "with_telemetry": row.with_telemetry,
+                }))
+                .collect::<Vec<_>>()
+        ),
         _ => return Err(format!("unknown tool {name}")),
     };
     Ok(json!({

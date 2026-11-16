@@ -8,6 +8,7 @@
 
 pub mod analysis;
 pub mod catalog;
+pub mod classify;
 pub mod cli;
 pub mod collectors;
 pub mod config;
@@ -25,6 +26,8 @@ pub mod quickstart;
 pub mod raw;
 pub mod redact;
 pub mod repo_scan;
+pub mod score;
 pub mod store;
+pub mod timeline;
 
 pub use error::Error;

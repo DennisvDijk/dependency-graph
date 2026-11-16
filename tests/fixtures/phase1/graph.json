@@ -23,12 +23,16 @@
     {
       "id": "component:billing-api",
       "type": "component",
-      "attrs": {}
+      "attrs": {
+        "owner": "ai-platform"
+      }
     },
     {
       "id": "component:payments-api",
       "type": "component",
-      "attrs": {}
+      "attrs": {
+        "owner": "ai-platform"
+      }
     },
     {
       "id": "deployment:payments-api@prod",

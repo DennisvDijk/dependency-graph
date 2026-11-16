@@ -96,6 +96,12 @@ pub enum Command {
     Runs(RunsArgs),
     /// Delete archived runs older than retention_days.
     Retain(RetainArgs),
+    /// Deployments and incidents on one timeline.
+    Timeline(TimelineArgs),
+    /// Edge count and local query p95.
+    Stats(StatsArgs),
+    /// Data-quality scorecard per owner.
+    Scorecard(ScorecardArgs),
 }
 
 /// `depgraph collect`.
@@ -173,6 +179,12 @@ pub struct MrCheckArgs {
     /// Print the note and do not call GitLab.
     #[arg(long)]
     pub dry_run: bool,
+    /// Opt in to the blocking check for this run. The config flag stays off.
+    #[arg(long)]
+    pub blocking: bool,
+    /// Label already on the merge request. Repeatable.
+    #[arg(long)]
+    pub label: Vec<String>,
 }
 
 /// `depgraph publish drift-issue`.
@@ -247,6 +259,39 @@ pub struct RetainArgs {
     pub now: Option<String>,
 }
 
+/// `depgraph timeline`.
+#[derive(Debug, clap::Args)]
+pub struct TimelineArgs {
+    /// Canonical environment.
+    #[arg(long, value_enum)]
+    pub env: EnvArg,
+    /// Include events at or after this RFC 3339 time.
+    #[arg(long)]
+    pub since: String,
+    /// Deployment fixture. Not a live GitLab call.
+    #[arg(long)]
+    pub deployments: PathBuf,
+    /// Incident fixture. Not a live Datadog call.
+    #[arg(long)]
+    pub incidents: Option<PathBuf>,
+}
+
+/// `depgraph stats`.
+#[derive(Debug, clap::Args)]
+pub struct StatsArgs {
+    /// Snapshot to measure.
+    #[arg(long)]
+    pub snapshot: Option<PathBuf>,
+}
+
+/// `depgraph scorecard`.
+#[derive(Debug, clap::Args)]
+pub struct ScorecardArgs {
+    /// Snapshot to score.
+    #[arg(long)]
+    pub snapshot: Option<PathBuf>,
+}
+
 /// `depgraph build`.
 #[derive(Debug, clap::Args)]
 pub struct BuildArgs {
@@ -289,6 +334,18 @@ pub struct ReadArgs {
     /// How many edges to walk. Omit to walk the whole reachable graph.
     #[arg(long)]
     pub depth: Option<usize>,
+    /// Archived run key for the left side of `diff`.
+    #[arg(long = "from")]
+    pub from_run: Option<String>,
+    /// Archived run key for the right side of `diff`.
+    #[arg(long = "to")]
+    pub to_run: Option<String>,
+    /// Date for `at`. Uses the newest stored run at or before this time.
+    #[arg(long)]
+    pub date: Option<String>,
+    /// Directory of archived runs. Defaults to `data/runs`.
+    #[arg(long)]
+    pub runs: Option<PathBuf>,
 }
 
 /// `depgraph site`.
@@ -516,6 +573,9 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::Completions(args) => run_completions(args),
         Command::Runs(args) => run_runs(args),
         Command::Retain(args) => run_retain(args),
+        Command::Timeline(args) => run_timeline(args),
+        Command::Stats(args) => run_stats(args),
+        Command::Scorecard(args) => run_scorecard(args),
     }
 }
 
@@ -883,10 +943,24 @@ fn run_mr_check(args: MrCheckArgs) -> Result<(), Error> {
         aliases: &project.aliases,
         contract_paths: &project.config.contract_paths,
         changed_files: &args.changed_file,
+        blocking: args.blocking || project.config.mr_check.blocking,
+        override_label: &project.config.mr_check.override_label,
+        labels: &args.label,
     });
     if args.dry_run {
         println!("{}", note.body);
+        if note.requires_approval {
+            return Err(Error::Validation(
+                "blocking MR check: extra approval or the override label is required".into(),
+            ));
+        }
         return Ok(());
+    }
+    if note.requires_approval {
+        eprintln!("{}", note.body);
+        return Err(Error::Validation(
+            "blocking MR check: extra approval or the override label is required".into(),
+        ));
     }
     let iid = args
         .mr_iid
@@ -1045,6 +1119,76 @@ fn run_retain(args: RetainArgs) -> Result<(), Error> {
     Ok(())
 }
 
+fn run_timeline(args: TimelineArgs) -> Result<(), Error> {
+    let deployments: Vec<crate::timeline::DeploymentFixture> =
+        yaml_serde::from_str(&fs::read_to_string(&args.deployments)?)
+            .map_err(|err| Error::Config(format!("deployments fixture: {err}")))?;
+    let incidents = if let Some(path) = &args.incidents {
+        yaml_serde::from_str(&fs::read_to_string(path)?)
+            .map_err(|err| Error::Config(format!("incidents fixture: {err}")))?
+    } else {
+        Vec::new()
+    };
+    let environments =
+        config::parse_environments(&fs::read_to_string("config/environments.yaml")?)?.index()?;
+    let events = crate::timeline::correlate(
+        &deployments,
+        &incidents,
+        args.env.into_env(),
+        &args.since,
+        |name| {
+            environments.resolve(name).or(match name {
+                "dev" => Some(crate::models::Env::Dev),
+                "acc" => Some(crate::models::Env::Acc),
+                "prod" => Some(crate::models::Env::Prod),
+                _ => None,
+            })
+        },
+    );
+    for event in events {
+        println!(
+            "{}\t{}\t{}\t{}",
+            event.at, event.env, event.kind, event.summary
+        );
+    }
+    Ok(())
+}
+
+fn run_stats(args: StatsArgs) -> Result<(), Error> {
+    let path = args
+        .snapshot
+        .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
+    let graph: crate::models::GraphSnapshot = serde_json::from_str(&fs::read_to_string(&path)?)
+        .map_err(|err| Error::Validation(err.to_string()))?;
+    let stats = crate::score::measure(&graph);
+    println!("active_edges {}", stats.active_edges);
+    for (env, count) in &stats.active_edges_by_env {
+        println!("active_edges_{env} {count}");
+    }
+    println!("query_p95_ms {:.3}", stats.query_p95_ms);
+    println!(
+        "next: paste these into docs/decisions/ADR-011-graph-database.md when measuring a real snapshot"
+    );
+    Ok(())
+}
+
+fn run_scorecard(args: ScorecardArgs) -> Result<(), Error> {
+    let path = args
+        .snapshot
+        .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
+    let graph: crate::models::GraphSnapshot = serde_json::from_str(&fs::read_to_string(&path)?)
+        .map_err(|err| Error::Validation(err.to_string()))?;
+    println!("owner\tcomponents\twith_system\twith_telemetry");
+    for row in crate::score::scorecard(&graph) {
+        println!(
+            "{}\t{}\t{}\t{}",
+            row.owner, row.components, row.with_system, row.with_telemetry
+        );
+    }
+    println!("note: this is an improvement aid, not a ranking for blame");
+    Ok(())
+}
+
 fn probe_glab() -> crate::doctor::GlabStatus {
     match std::process::Command::new("glab")
         .args(["auth", "status"])
@@ -1188,6 +1332,10 @@ fn read_request(command: &'static str, args: ReadArgs) -> ReadRequest {
         format: args.format.into_format(),
         snapshot: args.snapshot,
         depth: args.depth,
+        from_run: args.from_run,
+        to_run: args.to_run,
+        date: args.date,
+        runs: args.runs,
     }
 }
 

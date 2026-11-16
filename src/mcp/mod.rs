@@ -77,6 +77,10 @@ pub const TOOLS: &[Tool] = &[
         name: "component_context",
         read_only: true,
     },
+    Tool {
+        name: "scorecard",
+        read_only: true,
+    },
 ];
 
 /// Start the MCP server on `bind`.
@@ -122,6 +126,7 @@ mod tests {
                 "orphans",
                 "diff",
                 "component_context",
+                "scorecard",
             ]
         );
         assert!(TOOLS.iter().all(|tool| tool.read_only));

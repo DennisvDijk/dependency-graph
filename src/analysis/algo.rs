@@ -516,6 +516,7 @@ mod tests {
             } else {
                 Criticality::Hard
             },
+            criticality_source: Default::default(),
             active,
             attrs: EdgeAttrs::default(),
         }

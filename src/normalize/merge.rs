@@ -87,6 +87,10 @@ pub fn merge_records(
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
     let mut observed: BTreeMap<ObservedKey, ObservedAgg> = BTreeMap::new();
     let mut candidates: Vec<CandidateCall> = Vec::new();
+    let mut soft_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut heuristics: BTreeMap<String, bool> = BTreeMap::new();
+    let mut experiments: BTreeMap<(String, String), bool> = BTreeMap::new();
+    let mut owners: BTreeMap<String, (String, String)> = BTreeMap::new();
 
     for record in records {
         *counts.entry(record.collector.clone()).or_insert(0) += 1;
@@ -108,12 +112,38 @@ pub fn merge_records(
                     .and_then(|value| value.as_array())
                     .cloned()
                     .unwrap_or_default();
-                let entry = components.entry(name).or_default();
+                let entry = components.entry(name.clone()).or_default();
                 for dep in deps {
                     if let Some(dep) = dep.as_str() {
                         entry.insert(dep.to_owned());
                     }
                 }
+                let soft = string_list(&record.payload, "soft_dependencies");
+                if !soft.is_empty() {
+                    soft_deps.entry(name.clone()).or_default().extend(soft);
+                }
+                if string_list(&record.payload, "heuristics")
+                    .iter()
+                    .any(|token| crate::classify::is_soft_heuristic(token))
+                {
+                    heuristics.insert(name.clone(), true);
+                }
+                let owner = text_field(&record.payload, "owner");
+                let system = text_field(&record.payload, "system");
+                if !owner.is_empty() || !system.is_empty() {
+                    owners.entry(name).or_insert((owner, system));
+                }
+            }
+            "chaos_experiment" => {
+                let client = canonical_name(required_str(&record.payload, "client")?, aliases);
+                let dependency =
+                    canonical_name(required_str(&record.payload, "dependency")?, aliases);
+                let survived = record
+                    .payload
+                    .get("survived")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                experiments.insert((client, dependency), survived);
             }
             "resource" => {
                 let kind = required_str(&record.payload, "resource_kind")?;
@@ -209,10 +239,19 @@ pub fn merge_records(
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     for name in components.keys() {
+        let mut attrs = BTreeMap::new();
+        if let Some((owner, system)) = owners.get(name) {
+            if !owner.is_empty() {
+                attrs.insert("owner".into(), serde_json::Value::String(owner.clone()));
+            }
+            if !system.is_empty() {
+                attrs.insert("system".into(), serde_json::Value::String(system.clone()));
+            }
+        }
         nodes.push(Node {
             id: ids::component_id(name).map_err(Error::Validation)?,
             node_type: NodeType::Component,
-            attrs: BTreeMap::new(),
+            attrs,
         });
     }
     for (kind, name) in resources.keys() {
@@ -242,7 +281,26 @@ pub fn merge_records(
         let from_id = format!("component:{from}");
         for dep in deps {
             match resolve_ref(dep, &component_ids, &resource_ids) {
-                Some(to_id) => edges.push(depends_edge(&from_id, &to_id, generated_at)),
+                Some(to_id) => {
+                    let dep_name = dep.rsplit('/').next().unwrap_or(dep);
+                    let evidence = crate::classify::Evidence {
+                        declared_soft: soft_deps
+                            .get(from)
+                            .is_some_and(|names| names.iter().any(|name| name == dep_name)),
+                        experiment_survived: experiments
+                            .get(&(from.clone(), dep_name.to_owned()))
+                            .copied(),
+                        heuristic: heuristics.get(from).copied().unwrap_or(false),
+                    };
+                    let (criticality, criticality_source) = crate::classify::classify(evidence);
+                    edges.push(depends_edge(
+                        &from_id,
+                        &to_id,
+                        generated_at,
+                        criticality,
+                        criticality_source,
+                    ));
+                }
                 None => unresolved.push(unresolved_row(
                     "depends_on",
                     dep,
@@ -257,7 +315,13 @@ pub fn merge_records(
         let to_id = format!("resource:{kind}:{name}");
         if component_ids.contains(&from_id) && resources.contains_key(&(kind.clone(), name.clone()))
         {
-            edges.push(depends_edge(&from_id, &to_id, generated_at));
+            edges.push(depends_edge(
+                &from_id,
+                &to_id,
+                generated_at,
+                Default::default(),
+                Default::default(),
+            ));
         }
     }
 
@@ -427,7 +491,13 @@ fn resolve_ref(
     }
 }
 
-fn depends_edge(from_id: &str, to_id: &str, generated_at: &Timestamp) -> Edge {
+fn depends_edge(
+    from_id: &str,
+    to_id: &str,
+    generated_at: &Timestamp,
+    criticality: crate::models::Criticality,
+    criticality_source: crate::models::CriticalitySource,
+) -> Edge {
     let edge_type = EdgeType::DeclaredDependsOn;
     Edge {
         id: ids::edge_id(edge_type, from_id, to_id, None),
@@ -442,7 +512,8 @@ fn depends_edge(from_id: &str, to_id: &str, generated_at: &Timestamp) -> Edge {
             evidence_ref: None,
         }],
         status: EdgeStatus::DeclaredOnly,
-        criticality: Default::default(),
+        criticality,
+        criticality_source,
         active: true,
         attrs: EdgeAttrs::default(),
     }
@@ -464,6 +535,7 @@ fn deployed_edge(from_id: &str, to_id: &str, env: Env, stamp: &Timestamp) -> Edg
         }],
         status: EdgeStatus::NotApplicable,
         criticality: Default::default(),
+        criticality_source: Default::default(),
         active: true,
         attrs: EdgeAttrs::default(),
     }
@@ -593,6 +665,19 @@ fn absorb_observed(
         }
     }
     Ok(())
+}
+
+fn string_list(payload: &serde_json::Value, field: &str) -> Vec<String> {
+    payload
+        .get(field)
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn text_field(payload: &serde_json::Value, field: &str) -> String {
@@ -843,6 +928,7 @@ fn observed_edge(
         }],
         status: EdgeStatus::ObservedOnly,
         criticality: Default::default(),
+        criticality_source: Default::default(),
         active: true,
         attrs,
     }
@@ -864,6 +950,7 @@ fn candidate_edge(from_id: &str, to_id: &str, env: Option<Env>, generated_at: &T
         }],
         status: EdgeStatus::Candidate,
         criticality: Default::default(),
+        criticality_source: Default::default(),
         active: true,
         attrs: EdgeAttrs::default(),
     }

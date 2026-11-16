@@ -42,6 +42,14 @@ pub struct ReadRequest {
     pub snapshot: Option<PathBuf>,
     /// Walk limit. `None` walks until the graph ends.
     pub depth: Option<usize>,
+    /// Left run key for `diff`.
+    pub from_run: Option<String>,
+    /// Right run key for `diff`.
+    pub to_run: Option<String>,
+    /// Date for stored time travel.
+    pub date: Option<String>,
+    /// Archive directory.
+    pub runs: Option<PathBuf>,
 }
 
 /// Show one node.
@@ -127,6 +135,36 @@ fn component_set(graph: &GraphSnapshot, target: Option<&str>) -> Vec<String> {
     }
 }
 
+fn render_scored(format: OutputFormat, visits: &[crate::score::ScoredVisit]) -> String {
+    match format {
+        OutputFormat::Json => serde_json::to_string_pretty(&json!({
+            "visits": visits.iter().map(|visit| json!({
+                "id": visit.id,
+                "depth": visit.depth,
+                "path_score": visit.path_score,
+            })).collect::<Vec<_>>()
+        }))
+        .unwrap_or_else(|_| "{}".into()),
+        OutputFormat::Mermaid => {
+            let mut lines = vec!["flowchart LR".to_owned()];
+            for visit in visits {
+                lines.push(format!("  {}", mermaid_id(&visit.id)));
+            }
+            lines.join("\n")
+        }
+        OutputFormat::Table => {
+            let mut lines = vec!["depth\tpath_score\tid".to_owned()];
+            for visit in visits {
+                lines.push(format!(
+                    "{}\t{}\t{}",
+                    visit.depth, visit.path_score, visit.id
+                ));
+            }
+            lines.join("\n")
+        }
+    }
+}
+
 fn render_visits(format: OutputFormat, visits: &[algo::Visit]) -> String {
     match format {
         OutputFormat::Json => serde_json::to_string_pretty(&json!({"visits": visits.iter().map(|visit| json!({"id": visit.id, "depth": visit.depth})).collect::<Vec<_>>()})).unwrap_or_else(|_| "{}".into()),
@@ -208,9 +246,15 @@ fn render_ids(format: OutputFormat, ids: &[String]) -> String {
     }
 }
 
-fn render_critical(format: OutputFormat, ranked: &[algo::CriticalNode]) -> String {
+fn render_critical(
+    format: OutputFormat,
+    graph: &GraphSnapshot,
+    env: Option<Env>,
+    hardness: crate::score::Hardness,
+    ranked: &[algo::CriticalNode],
+) -> String {
     match format {
-        OutputFormat::Json => serde_json::to_string_pretty(&json!({"nodes": ranked.iter().map(|node| json!({"id": node.id, "in_degree": node.in_degree, "betweenness": node.betweenness, "articulation": node.articulation})).collect::<Vec<_>>()})).unwrap_or_else(|_| "{}".into()),
+        OutputFormat::Json => serde_json::to_string_pretty(&json!({"nodes": ranked.iter().map(|node| json!({"id": node.id, "in_degree": node.in_degree, "betweenness": node.betweenness, "articulation": node.articulation, "weight_score": crate::score::weight_score(graph, &node.id, env, hardness)})).collect::<Vec<_>>()})).unwrap_or_else(|_| "{}".into()),
         OutputFormat::Mermaid => "flowchart LR".to_owned(),
         OutputFormat::Table => {
             let mut lines = vec!["id\tin_degree\tbetweenness\tarticulation".to_owned()];
@@ -349,8 +393,12 @@ pub fn impact(request: &ReadRequest) -> Result<(), Error> {
         .target
         .as_deref()
         .ok_or_else(|| Error::Validation("missing target".to_owned()))?;
-    let visits = algo::impact(&graph, name, request.env)?;
-    println!("{}", render_visits(request.format, &visits));
+    let hardness = crate::config::load_project(Path::new("."))
+        .ok()
+        .and_then(|project| project.config.scoring.hardness().ok())
+        .unwrap_or_default();
+    let ranked = crate::score::ranked_impact(&graph, name, request.env, hardness)?;
+    println!("{}", render_scored(request.format, &ranked));
     Ok(())
 }
 
@@ -504,11 +552,25 @@ fn push_section(lines: &mut Vec<String>, title: &str, edges: &[&Edge]) {
 ///
 /// Returns [`Error::NotImplemented`] in F0-1.
 pub fn diff(request: &ReadRequest) -> Result<(), Error> {
-    let left = load_graph(request)?;
-    let against = request.against.as_deref().ok_or_else(|| {
-        Error::Validation("diff needs a second snapshot in the second argument".to_owned())
-    })?;
-    let right = read_snapshot(Path::new(against))?;
+    let (left, right) = if let (Some(from), Some(to)) = (&request.from_run, &request.to_run) {
+        let runs = request
+            .runs
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("data/runs"));
+        (
+            crate::store::load_run(&runs, from)?,
+            crate::store::load_run(&runs, to)?,
+        )
+    } else {
+        let left = load_graph(request)?;
+        let against = request.against.as_deref().ok_or_else(|| {
+            Error::Validation(
+                "diff needs a second snapshot or --from and --to. next: depgraph diff --from <run> --to <run>"
+                    .into(),
+            )
+        })?;
+        (left, read_snapshot(Path::new(against))?)
+    };
     let diff = algo::diff(&left, &right);
     println!("{}", render_diff(request.format, &diff));
     Ok(())
@@ -522,11 +584,35 @@ pub fn diff(request: &ReadRequest) -> Result<(), Error> {
 ///
 /// Returns an error when the snapshot or the timestamp cannot be read.
 pub fn at(request: &ReadRequest) -> Result<(), Error> {
+    if let Some(date) = &request.date {
+        let stamp = Timestamp::parse(date).map_err(Error::Validation)?;
+        let runs = request
+            .runs
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("data/runs"));
+        let graph = crate::store::run_at(&runs, &stamp)?;
+        println!(
+            "run {} ({} nodes, {} edges)",
+            graph.generated_at.as_str(),
+            graph.nodes.len(),
+            graph.edges.len()
+        );
+        println!(
+            "{}",
+            render(
+                request.format,
+                &graph,
+                None,
+                &graph.edges.iter().collect::<Vec<_>>()
+            )
+        );
+        return Ok(());
+    }
     let graph = load_graph(request)?;
     let raw = request
         .target
         .as_deref()
-        .ok_or_else(|| Error::Validation("at needs an RFC 3339 timestamp".to_owned()))?;
+        .ok_or_else(|| Error::Validation("at needs an RFC 3339 timestamp or --date".to_owned()))?;
     let stamp = Timestamp::parse(raw).map_err(Error::Validation)?;
     let edges = algo::edges_at(&graph, &stamp);
     println!(
@@ -561,6 +647,13 @@ pub fn orphans(request: &ReadRequest) -> Result<(), Error> {
 pub fn critical(request: &ReadRequest) -> Result<(), Error> {
     let graph = load_graph(request)?;
     let ranked = algo::critical_nodes(&graph, request.env);
-    println!("{}", render_critical(request.format, &ranked));
+    let hardness = crate::config::load_project(Path::new("."))
+        .ok()
+        .and_then(|project| project.config.scoring.hardness().ok())
+        .unwrap_or_default();
+    println!(
+        "{}",
+        render_critical(request.format, &graph, request.env, hardness, &ranked)
+    );
     Ok(())
 }
