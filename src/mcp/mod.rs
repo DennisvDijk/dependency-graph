@@ -1,12 +1,14 @@
-//! Read-only MCP server surface.
+//! Read-only MCP server.
 //!
-//! ADR-005 makes this a core requirement (former plan task F3-6). OAuth 2.1,
-//! Streamable HTTP, Protected Resource Metadata (RFC 9728), and audience-bound
-//! tokens (RFC 8707) are not implemented. PKCE stays with the authorization
-//! server. JWT checks against an external IdP JWKS land with the real server,
-//! in phase 3 or earlier if asked.
-//!
-//! Every tool is read-only. None of them write to a source system.
+//! ADR-005. Streamable HTTP, Protected Resource Metadata (RFC 9728), and
+//! audience-bound tokens (RFC 8707). PKCE stays with the authorization server.
+//! The access token is validated here and is not forwarded.
+
+mod auth;
+mod server;
+
+pub use auth::JwksCache;
+pub use server::{McpState, router, serve};
 
 use crate::error::Error;
 
@@ -65,17 +67,34 @@ pub const TOOLS: &[Tool] = &[
         name: "diff",
         read_only: true,
     },
+    Tool {
+        name: "component_context",
+        read_only: true,
+    },
 ];
 
-/// Start the MCP server.
+/// Start the MCP server on `bind`.
 ///
 /// # Errors
 ///
-/// Returns [`Error::NotImplemented`] in F0-1. The process does not bind a port
-/// and does not perform OAuth.
-pub fn serve() -> Result<(), Error> {
-    let _ = TOOLS;
-    Err(Error::NotImplemented("serve-mcp"))
+/// Returns an error when the bind address is refused or insecure mode is
+/// pointed at a public address.
+pub fn serve_blocking(
+    bind: &str,
+    insecure: bool,
+    issuer: &str,
+    audience: &str,
+    jwks_url: &str,
+    snapshot: &std::path::Path,
+    aliases: crate::config::Aliases,
+) -> Result<(), Error> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(Error::Io)?;
+    runtime.block_on(serve(
+        bind, insecure, issuer, audience, jwks_url, snapshot, aliases,
+    ))
 }
 
 #[cfg(test)]
@@ -99,14 +118,24 @@ mod tests {
                 "critical_nodes",
                 "orphans",
                 "diff",
+                "component_context",
             ]
         );
         assert!(TOOLS.iter().all(|tool| tool.read_only));
     }
 
     #[test]
-    fn serve_is_a_stub() {
-        let error = serve().unwrap_err();
-        assert!(error.to_string().contains("not implemented in F0-1"));
+    fn insecure_local_refuses_a_public_bind() {
+        let error = serve_blocking(
+            "0.0.0.0:9",
+            true,
+            "https://idp.example.com",
+            "http://127.0.0.1:8080",
+            "https://idp.example.com/jwks",
+            std::path::Path::new("missing-snapshot.json"),
+            crate::config::Aliases::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("non-loopback"));
     }
 }

@@ -58,6 +58,9 @@ pub struct Config {
     pub edge_expiry_days: u32,
     /// Days a snapshot is kept.
     pub retention_days: u32,
+    /// MCP resource server. OAuth stays with the external issuer.
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 /// GitLab connection settings. `base_url` is a placeholder until a human confirms it.
@@ -97,6 +100,10 @@ pub struct GitlabConfig {
     pub visibility: Option<String>,
     /// Catalog file name looked up in each project.
     pub catalog_file: String,
+    /// Environment variable that holds the bot token for MR notes and drift issues.
+    /// The token is not stored here.
+    #[serde(default = "default_bot_token_env")]
+    pub bot_token_env: String,
     /// Page size for list endpoints. GitLab allows at most 100.
     pub per_page: u32,
     /// Parallel requests one collector may have in flight.
@@ -105,6 +112,35 @@ pub struct GitlabConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_bot_token_env() -> String {
+    "DEPGRAPH_GITLAB_BOT_TOKEN".to_owned()
+}
+
+/// MCP server settings. Values are placeholders until an IdP is connected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct McpConfig {
+    /// Issuer that signs access tokens.
+    pub issuer: String,
+    /// Expected audience / resource indicator (RFC 8707).
+    pub audience: String,
+    /// JWKS URL. Keys are cached and refreshed when a `kid` is unknown.
+    pub jwks_url: String,
+    /// Listen address. `--insecure-local` only allows a loopback address.
+    pub bind: String,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            issuer: "https://idp.example.com".to_owned(),
+            audience: "http://127.0.0.1:8080".to_owned(),
+            jwks_url: "https://idp.example.com/.well-known/jwks.json".to_owned(),
+            bind: "127.0.0.1:8080".to_owned(),
+        }
+    }
 }
 
 impl GitlabConfig {
@@ -900,6 +936,10 @@ mod tests {
         assert!(project.config.gitlab.exclude_archived);
         assert!(project.config.gitlab.min_last_activity.is_none());
         assert!(project.config.gitlab.visibility.is_none());
+        assert_eq!(
+            project.config.gitlab.bot_token_env,
+            "DEPGRAPH_GITLAB_BOT_TOKEN"
+        );
         assert_eq!(project.config.gitlab.catalog_file, "catalog-info.yaml");
         assert_eq!(project.config.gitlab.per_page, 100);
         assert_eq!(project.config.gitlab.max_concurrency, 4);
@@ -944,6 +984,9 @@ mod tests {
         );
         assert_eq!(project.config.edge_expiry_days, 30);
         assert_eq!(project.config.retention_days, 90);
+        assert_eq!(project.config.mcp.issuer, "https://idp.example.com");
+        assert_eq!(project.config.mcp.audience, "http://127.0.0.1:8080");
+        assert_eq!(project.config.mcp.bind, "127.0.0.1:8080");
         assert!(project.aliases.aliases.is_empty());
         assert!(project.pilot.apps.is_empty());
         assert!(project.sdk_hints.hints.is_empty());

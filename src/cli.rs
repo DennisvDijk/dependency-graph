@@ -75,8 +75,10 @@ pub enum Command {
     ResolveEnv(ResolveEnvArgs),
     /// Draft catalog-info.yaml files from a local checkout.
     ProposeCatalog(ProposeCatalogArgs),
-    /// Serve the read-only MCP endpoint. OAuth is not implemented.
-    ServeMcp,
+    /// Serve the read-only MCP endpoint.
+    ServeMcp(ServeMcpArgs),
+    /// Comment on a merge request with prod consumers and contract changes.
+    MrCheck(MrCheckArgs),
 }
 
 /// `depgraph collect`.
@@ -119,6 +121,60 @@ pub struct DriftArgs {
     pub output: Option<PathBuf>,
 }
 
+/// `depgraph serve-mcp`.
+#[derive(Debug, clap::Args)]
+pub struct ServeMcpArgs {
+    /// Disable auth. The bind address must be loopback.
+    #[arg(long)]
+    pub insecure_local: bool,
+    /// Listen address. Defaults to `mcp.bind`.
+    #[arg(long)]
+    pub bind: Option<String>,
+    /// Snapshot to serve. Defaults to `data/snapshot.json`.
+    #[arg(long)]
+    pub snapshot: Option<PathBuf>,
+}
+
+/// `depgraph mr-check`.
+#[derive(Debug, clap::Args)]
+pub struct MrCheckArgs {
+    /// Snapshot path. Defaults to `data/snapshot.json`.
+    #[arg(long)]
+    pub snapshot: Option<PathBuf>,
+    /// GitLab project path. Defaults to `CI_PROJECT_PATH`.
+    #[arg(long)]
+    pub project: Option<String>,
+    /// GitLab origin. Defaults to config.
+    #[arg(long)]
+    pub base_url: Option<String>,
+    /// Merge request IID. Defaults to `CI_MERGE_REQUEST_IID`.
+    #[arg(long)]
+    pub mr_iid: Option<u64>,
+    /// Changed file. Repeat for each path.
+    #[arg(long)]
+    pub changed_file: Vec<String>,
+    /// Print the note and do not call GitLab.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// `depgraph publish drift-issue`.
+#[derive(Debug, clap::Args)]
+pub struct DriftIssueArgs {
+    /// Snapshot path. Defaults to `data/snapshot.json`.
+    #[arg(long)]
+    pub snapshot: Option<PathBuf>,
+    /// GitLab project path.
+    #[arg(long)]
+    pub project: Option<String>,
+    /// GitLab origin. Defaults to config.
+    #[arg(long)]
+    pub base_url: Option<String>,
+    /// Print the issue body and do not call GitLab.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
 /// `depgraph build`.
 #[derive(Debug, clap::Args)]
 pub struct BuildArgs {
@@ -139,7 +195,7 @@ pub enum PublishCommand {
     /// Publish the graph snapshot.
     Snapshot(SnapshotArgs),
     /// Open or update the drift issue.
-    DriftIssue,
+    DriftIssue(DriftIssueArgs),
 }
 
 /// Flags shared by read commands.
@@ -158,6 +214,9 @@ pub struct ReadArgs {
     /// Graph snapshot to read.
     #[arg(long)]
     pub snapshot: Option<PathBuf>,
+    /// How many edges to walk. Omit to walk the whole reachable graph.
+    #[arg(long)]
+    pub depth: Option<usize>,
 }
 
 /// `depgraph site`.
@@ -353,7 +412,7 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::Site(args) => run_site(args),
         Command::Publish { target } => match target {
             PublishCommand::Snapshot(args) => run_publish_snapshot(args),
-            PublishCommand::DriftIssue => publish::drift_issue(),
+            PublishCommand::DriftIssue(args) => run_drift_issue(args),
         },
         Command::Show(args) => analysis::show(&read_request("show", args)),
         Command::Deps(args) => analysis::deps(&read_request("deps", args)),
@@ -377,7 +436,8 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::ValidateCatalog(args) => validate_catalog(&args),
         Command::ResolveEnv(args) => resolve_env(&args),
         Command::ProposeCatalog(args) => propose_catalog(args),
-        Command::ServeMcp => crate::mcp::serve(),
+        Command::ServeMcp(args) => run_serve_mcp(args),
+        Command::MrCheck(args) => run_mr_check(args),
     }
 }
 
@@ -633,7 +693,10 @@ fn run_site(args: SiteArgs) -> Result<(), Error> {
     let graph: crate::models::GraphSnapshot = serde_json::from_str(&fs::read_to_string(&snapshot)?)
         .map_err(|err| Error::Validation(err.to_string()))?;
     let output = args.output.unwrap_or_else(|| PathBuf::from("public"));
-    publish::write_site(&graph, &output)?;
+    let aliases = config::load_project(Path::new("."))
+        .map(|project| project.aliases.aliases)
+        .unwrap_or_default();
+    publish::write_site(&graph, &aliases, &output)?;
     println!("wrote {}", output.join("index.html").display());
     Ok(())
 }
@@ -697,6 +760,104 @@ fn run_inventory(args: InventoryArgs) -> Result<(), Error> {
     Ok(())
 }
 
+fn run_serve_mcp(args: ServeMcpArgs) -> Result<(), Error> {
+    let project = config::load_project(Path::new("."))?;
+    let bind = args.bind.unwrap_or(project.config.mcp.bind);
+    let snapshot = args
+        .snapshot
+        .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
+    crate::mcp::serve_blocking(
+        &bind,
+        args.insecure_local,
+        &project.config.mcp.issuer,
+        &project.config.mcp.audience,
+        &project.config.mcp.jwks_url,
+        &snapshot,
+        project.aliases,
+    )
+}
+
+fn run_mr_check(args: MrCheckArgs) -> Result<(), Error> {
+    let project = config::load_project(Path::new("."))?;
+    let snapshot_path = args
+        .snapshot
+        .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
+    let text = fs::read_to_string(&snapshot_path)?;
+    let snapshot: crate::models::GraphSnapshot = serde_json::from_str(&text)
+        .map_err(|err| Error::Validation(crate::redact::redact(&err.to_string())))?;
+    let project_path = args
+        .project
+        .or_else(|| std::env::var("CI_PROJECT_PATH").ok())
+        .ok_or_else(|| Error::Config("mr-check needs --project or CI_PROJECT_PATH".to_owned()))?;
+    let note = publish::build_note(&publish::MrCheck {
+        project_path: &project_path,
+        snapshot: &snapshot,
+        aliases: &project.aliases,
+        contract_paths: &project.config.contract_paths,
+        changed_files: &args.changed_file,
+    });
+    if args.dry_run {
+        println!("{}", note.body);
+        return Ok(());
+    }
+    let iid = args
+        .mr_iid
+        .or_else(|| {
+            std::env::var("CI_MERGE_REQUEST_IID")
+                .ok()
+                .and_then(|value| value.parse().ok())
+        })
+        .ok_or_else(|| Error::Config("mr-check needs --mr-iid or CI_MERGE_REQUEST_IID".into()))?;
+    let base_url = args.base_url.unwrap_or(project.config.gitlab.base_url);
+    let token = std::env::var(&project.config.gitlab.bot_token_env).map_err(|_| {
+        Error::Config(format!(
+            "environment variable {} is not set. The token was not read.",
+            project.config.gitlab.bot_token_env
+        ))
+    })?;
+    tokio_runtime()?.block_on(publish::upsert_note(
+        &base_url,
+        &project_path,
+        iid,
+        &token,
+        &note.body,
+    ))
+}
+
+fn run_drift_issue(args: DriftIssueArgs) -> Result<(), Error> {
+    let project = config::load_project(Path::new("."))?;
+    let snapshot_path = args
+        .snapshot
+        .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
+    let text = fs::read_to_string(&snapshot_path)?;
+    let snapshot: crate::models::GraphSnapshot = serde_json::from_str(&text)
+        .map_err(|err| Error::Validation(crate::redact::redact(&err.to_string())))?;
+    let body = publish::drift_issue_body(&snapshot);
+    if args.dry_run {
+        println!("{body}");
+        return Ok(());
+    }
+    let project_path = args
+        .project
+        .or_else(|| std::env::var("CI_PROJECT_PATH").ok())
+        .ok_or_else(|| {
+            Error::Config("drift-issue needs --project or CI_PROJECT_PATH".to_owned())
+        })?;
+    let base_url = args.base_url.unwrap_or(project.config.gitlab.base_url);
+    let token = std::env::var(&project.config.gitlab.bot_token_env).map_err(|_| {
+        Error::Config(format!(
+            "environment variable {} is not set. The token was not read.",
+            project.config.gitlab.bot_token_env
+        ))
+    })?;
+    tokio_runtime()?.block_on(publish::upsert_drift_issue(
+        &base_url,
+        &project_path,
+        &token,
+        &body,
+    ))
+}
+
 fn validate_catalog(args: &ValidateCatalogArgs) -> Result<(), Error> {
     let entities = crate::catalog::validate_catalog_files(&args.files)?;
     println!("valid ({} entities)", entities.len());
@@ -754,6 +915,7 @@ fn read_request(command: &'static str, args: ReadArgs) -> ReadRequest {
         env: args.env.map(EnvArg::into_env),
         format: args.format.into_format(),
         snapshot: args.snapshot,
+        depth: args.depth,
     }
 }
 

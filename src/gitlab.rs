@@ -845,7 +845,7 @@ fn http_error(action: &str, status: reqwest::StatusCode, body: &[u8]) -> Error {
     )))
 }
 
-fn encode_uri_component(value: &str) -> String {
+pub(crate) fn encode_uri_component(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
         match byte {

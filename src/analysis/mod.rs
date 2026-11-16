@@ -1,8 +1,9 @@
 //! Read-only questions over a snapshot.
 //!
-//! Analysis is pure once it has a graph. F0-1 accepts the questions and
-//! returns a stub error instead of inventing answers. `petgraph` arrives with
-//! the first algorithm (ADR-002).
+//! The algorithms live in [`algo`] and use petgraph. Printing is the only
+//! side effect of the functions below.
+
+pub mod algo;
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -11,7 +12,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use crate::error::Error;
-use crate::models::{Edge, EdgeType, Env, GraphSnapshot, Node};
+use crate::models::{Edge, EdgeType, Env, GraphSnapshot, Node, Timestamp};
 
 /// How a read command prints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,8 @@ pub struct ReadRequest {
     pub format: OutputFormat,
     /// Snapshot file. `None` means the store default, once that exists.
     pub snapshot: Option<PathBuf>,
+    /// Walk limit. `None` walks until the graph ends.
+    pub depth: Option<usize>,
 }
 
 /// Show one node.
@@ -68,16 +71,12 @@ pub fn show(request: &ReadRequest) -> Result<(), Error> {
 /// Returns an error when the snapshot or the node is missing.
 pub fn deps(request: &ReadRequest) -> Result<(), Error> {
     let graph = load_graph(request)?;
-    let node = find_node(&graph, request.target.as_deref())?;
-    println!(
-        "{}",
-        render(
-            request.format,
-            &graph,
-            Some(node),
-            &related(&graph, node, true, request.env)
-        )
-    );
+    let name = request
+        .target
+        .as_deref()
+        .ok_or_else(|| Error::Validation("missing target".to_owned()))?;
+    let visits = algo::dependencies(&graph, name, request.env, request.depth)?;
+    println!("{}", render_visits(request.format, &visits));
     Ok(())
 }
 
@@ -88,16 +87,12 @@ pub fn deps(request: &ReadRequest) -> Result<(), Error> {
 /// Returns an error when the snapshot or the node is missing.
 pub fn consumers(request: &ReadRequest) -> Result<(), Error> {
     let graph = load_graph(request)?;
-    let node = find_node(&graph, request.target.as_deref())?;
-    println!(
-        "{}",
-        render(
-            request.format,
-            &graph,
-            Some(node),
-            &related(&graph, node, false, request.env)
-        )
-    );
+    let name = request
+        .target
+        .as_deref()
+        .ok_or_else(|| Error::Validation("missing target".to_owned()))?;
+    let visits = algo::consumers(&graph, name, request.env, request.depth)?;
+    println!("{}", render_visits(request.format, &visits));
     Ok(())
 }
 
@@ -106,10 +101,148 @@ fn load_graph(request: &ReadRequest) -> Result<GraphSnapshot, Error> {
         .snapshot
         .as_ref()
         .ok_or_else(|| Error::Validation("pass --snapshot with a graph json file".to_owned()))?;
+    read_snapshot(path)
+}
+
+fn read_snapshot(path: &Path) -> Result<GraphSnapshot, Error> {
     let text = fs::read_to_string(path)
         .map_err(|err| Error::Validation(format!("reading {}: {err}", path.display())))?;
     serde_json::from_str(&text)
         .map_err(|err| Error::Validation(crate::redact::redact(&err.to_string())))
+}
+
+fn component_set(graph: &GraphSnapshot, target: Option<&str>) -> Vec<String> {
+    match target {
+        Some(value) if !value.is_empty() => value
+            .split(',')
+            .map(|item| item.trim().to_owned())
+            .filter(|item| !item.is_empty())
+            .collect(),
+        _ => graph
+            .nodes
+            .iter()
+            .filter(|node| node.id.starts_with("component:"))
+            .map(|node| node.id.clone())
+            .collect(),
+    }
+}
+
+fn render_visits(format: OutputFormat, visits: &[algo::Visit]) -> String {
+    match format {
+        OutputFormat::Json => serde_json::to_string_pretty(&json!({"visits": visits.iter().map(|visit| json!({"id": visit.id, "depth": visit.depth})).collect::<Vec<_>>()})).unwrap_or_else(|_| "{}".into()),
+        OutputFormat::Mermaid => {
+            let mut lines = vec!["flowchart LR".to_owned()];
+            for visit in visits {
+                lines.push(format!("  {}", mermaid_id(&visit.id)));
+            }
+            lines.join("\n")
+        }
+        OutputFormat::Table => {
+            let mut lines = vec!["depth\tid".to_owned()];
+            for visit in visits {
+                lines.push(format!("{}\t{}", visit.depth, visit.id));
+            }
+            lines.join("\n")
+        }
+    }
+}
+
+fn render_deploy(format: OutputFormat, order: &algo::DeployOrder) -> String {
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_string_pretty(&json!({"order": order.order, "cycles": order.cycles}))
+                .unwrap_or_else(|_| "{}".into())
+        }
+        OutputFormat::Mermaid => format!("flowchart LR\n  %% order {}", order.order.join(" ")),
+        OutputFormat::Table => {
+            if order.cycles.is_empty() {
+                order.order.join("\n")
+            } else {
+                format!(
+                    "cycles\n{}",
+                    order
+                        .cycles
+                        .iter()
+                        .map(|cycle| cycle.join(" -> "))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            }
+        }
+    }
+}
+
+fn render_cycles(format: OutputFormat, cycles: &[Vec<String>]) -> String {
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_string_pretty(&json!({"cycles": cycles})).unwrap_or_else(|_| "{}".into())
+        }
+        OutputFormat::Mermaid => "flowchart LR".to_owned(),
+        OutputFormat::Table => {
+            if cycles.is_empty() {
+                "no cycles".to_owned()
+            } else {
+                cycles
+                    .iter()
+                    .map(|cycle| cycle.join(" -> "))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }
+    }
+}
+
+fn render_ids(format: OutputFormat, ids: &[String]) -> String {
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_string_pretty(&json!({"nodes": ids})).unwrap_or_else(|_| "{}".into())
+        }
+        OutputFormat::Mermaid => "flowchart LR".to_owned(),
+        OutputFormat::Table => {
+            if ids.is_empty() {
+                "none".to_owned()
+            } else {
+                ids.join("\n")
+            }
+        }
+    }
+}
+
+fn render_critical(format: OutputFormat, ranked: &[algo::CriticalNode]) -> String {
+    match format {
+        OutputFormat::Json => serde_json::to_string_pretty(&json!({"nodes": ranked.iter().map(|node| json!({"id": node.id, "in_degree": node.in_degree, "betweenness": node.betweenness, "articulation": node.articulation})).collect::<Vec<_>>()})).unwrap_or_else(|_| "{}".into()),
+        OutputFormat::Mermaid => "flowchart LR".to_owned(),
+        OutputFormat::Table => {
+            let mut lines = vec!["id\tin_degree\tbetweenness\tarticulation".to_owned()];
+            for node in ranked {
+                lines.push(format!(
+                    "{}\t{}\t{}\t{}",
+                    node.id, node.in_degree, node.betweenness, node.articulation
+                ));
+            }
+            lines.join("\n")
+        }
+    }
+}
+
+fn render_diff(format: OutputFormat, diff: &algo::SnapshotDiff) -> String {
+    match format {
+        OutputFormat::Json => serde_json::to_string_pretty(&json!({
+            "nodes_added": diff.nodes_added,
+            "nodes_removed": diff.nodes_removed,
+            "edges_added": diff.edges_added,
+            "edges_removed": diff.edges_removed,
+        }))
+        .unwrap_or_else(|_| "{}".into()),
+        OutputFormat::Mermaid => "flowchart LR".to_owned(),
+        OutputFormat::Table => format!(
+            "nodes added: {}\nnodes removed: {}\nedges added: {}\nedges removed: {}",
+            diff.nodes_added.len(),
+            diff.nodes_removed.len(),
+            diff.edges_added.len(),
+            diff.edges_removed.len()
+        ),
+    }
 }
 
 fn find_node<'a>(graph: &'a GraphSnapshot, target: Option<&str>) -> Result<&'a Node, Error> {
@@ -210,25 +343,39 @@ fn mermaid_id(value: &str) -> String {
 ///
 /// Returns [`Error::NotImplemented`] in F0-1.
 pub fn impact(request: &ReadRequest) -> Result<(), Error> {
-    reject(request)
+    let graph = load_graph(request)?;
+    let name = request
+        .target
+        .as_deref()
+        .ok_or_else(|| Error::Validation("missing target".to_owned()))?;
+    let visits = algo::impact(&graph, name, request.env)?;
+    println!("{}", render_visits(request.format, &visits));
+    Ok(())
 }
 
 /// A deploy order that respects hard edges.
 ///
 /// # Errors
 ///
-/// Returns [`Error::NotImplemented`] in F0-1.
+/// Returns an error when the snapshot cannot be read.
 pub fn deploy_order(request: &ReadRequest) -> Result<(), Error> {
-    reject(request)
+    let graph = load_graph(request)?;
+    let set = component_set(&graph, request.target.as_deref());
+    let order = algo::deploy_order(&graph, &set, request.env);
+    println!("{}", render_deploy(request.format, &order));
+    Ok(())
 }
 
 /// Cycles in the graph.
 ///
 /// # Errors
 ///
-/// Returns [`Error::NotImplemented`] in F0-1.
+/// Returns an error when the snapshot cannot be read.
 pub fn cycles(request: &ReadRequest) -> Result<(), Error> {
-    reject(request)
+    let graph = load_graph(request)?;
+    let cycles = algo::cycles(&graph, request.env);
+    println!("{}", render_cycles(request.format, &cycles));
+    Ok(())
 }
 
 /// Components affected by a library.
@@ -261,7 +408,7 @@ pub fn drift(request: &ReadRequest, output: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn drift_markdown(graph: &GraphSnapshot, env: Env) -> String {
+pub(crate) fn drift_markdown(graph: &GraphSnapshot, env: Env) -> String {
     let declared: BTreeSet<(String, String)> = graph
         .edges
         .iter()
@@ -350,49 +497,69 @@ fn push_section(lines: &mut Vec<String>, title: &str, edges: &[&Edge]) {
     lines.push(String::new());
 }
 
-/// Edges marked hard.
-///
-/// # Errors
-///
-/// Returns [`Error::NotImplemented`] in F0-1.
-pub fn critical(request: &ReadRequest) -> Result<(), Error> {
-    reject(request)
-}
-
-/// Nodes with no edges.
-///
-/// # Errors
-///
-/// Returns [`Error::NotImplemented`] in F0-1.
-pub fn orphans(request: &ReadRequest) -> Result<(), Error> {
-    reject(request)
-}
-
 /// Difference between two snapshots.
 ///
 /// # Errors
 ///
 /// Returns [`Error::NotImplemented`] in F0-1.
 pub fn diff(request: &ReadRequest) -> Result<(), Error> {
-    reject(request)
+    let left = load_graph(request)?;
+    let against = request.against.as_deref().ok_or_else(|| {
+        Error::Validation("diff needs a second snapshot in the second argument".to_owned())
+    })?;
+    let right = read_snapshot(Path::new(against))?;
+    let diff = algo::diff(&left, &right);
+    println!("{}", render_diff(request.format, &diff));
+    Ok(())
 }
 
 /// The graph as of a point in time.
 ///
+/// The target is an RFC 3339 timestamp.
+///
 /// # Errors
 ///
-/// Returns [`Error::NotImplemented`] in F0-1.
+/// Returns an error when the snapshot or the timestamp cannot be read.
 pub fn at(request: &ReadRequest) -> Result<(), Error> {
-    reject(request)
+    let graph = load_graph(request)?;
+    let raw = request
+        .target
+        .as_deref()
+        .ok_or_else(|| Error::Validation("at needs an RFC 3339 timestamp".to_owned()))?;
+    let stamp = Timestamp::parse(raw).map_err(Error::Validation)?;
+    let edges = algo::edges_at(&graph, &stamp);
+    println!(
+        "{}",
+        render(
+            request.format,
+            &graph,
+            None,
+            &edges.iter().collect::<Vec<_>>()
+        )
+    );
+    Ok(())
 }
 
-fn reject(request: &ReadRequest) -> Result<(), Error> {
-    let _ = (
-        request.target.as_ref(),
-        request.against.as_ref(),
-        request.env,
-        request.format,
-        request.snapshot.as_ref(),
-    );
-    Err(Error::NotImplemented(request.command))
+/// Nodes with no active edge.
+///
+/// # Errors
+///
+/// Returns an error when the snapshot cannot be read.
+pub fn orphans(request: &ReadRequest) -> Result<(), Error> {
+    let graph = load_graph(request)?;
+    let orphans = algo::orphans(&graph);
+    println!("{}", render_ids(request.format, &orphans));
+    Ok(())
+}
+
+/// Critical nodes for one environment.
+///
+/// # Errors
+///
+/// Returns an error when the snapshot cannot be read.
+pub fn critical(request: &ReadRequest) -> Result<(), Error> {
+    let graph = load_graph(request)?;
+    let ranked = algo::critical_nodes(&graph, request.env);
+    println!("{}", render_critical(request.format, &ranked));
+    Ok(())
 }

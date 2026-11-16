@@ -12,7 +12,7 @@ F3-6 beschreef een read-only MCP-server `depgraph-mcp` boven de analysebibliothe
 
 ## Besluit
 
-`depgraph serve-mcp` start de server. In deze fase is dat een stub: het commando eindigt met `not implemented in F0-1` en doet geen OAuth.
+`depgraph serve-mcp` start de server. Fase 3 bouwt die server: Streamable HTTP, OAuth 2.1 resource server, en de tool `component_context`. `--insecure-local` zet auth uit, alleen op een loopback-adres.
 
 Wanneer de server echt wordt gebouwd, gelden deze eisen:
 

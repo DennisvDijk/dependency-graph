@@ -18,6 +18,8 @@ gitlab:
   topics: []
   exclude_forks: true
   exclude_archived: true
+  # Name of the env var that holds the bot token for MR notes and drift issues.
+  bot_token_env: DEPGRAPH_GITLAB_BOT_TOKEN
   catalog_file: catalog-info.yaml
   per_page: 100
   max_concurrency: 4
@@ -65,3 +67,9 @@ contract_paths:
   - schema/**
 edge_expiry_days: 30
 retention_days: 90
+# ADR-005: OAuth 2.1 resource server. No client secret and no JWT in this file.
+mcp:
+  issuer: https://idp.example.com
+  audience: http://127.0.0.1:8080
+  jwks_url: https://idp.example.com/.well-known/jwks.json
+  bind: 127.0.0.1:8080

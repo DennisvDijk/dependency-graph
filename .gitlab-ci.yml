@@ -103,8 +103,8 @@ pages:
 drift-issue:
   <<: *rust_job
   stage: publish
+  allow_failure: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_KIND == "weekly"
   script:
-    - mkdir -p data
-    - printf '%s\n' 'Drift against production data is to be measured by Dennis.' > data/drift.md
+    - ./target/release/depgraph publish drift-issue --snapshot data/snapshot.json --project "${CI_PROJECT_PATH}"

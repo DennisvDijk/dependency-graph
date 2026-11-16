@@ -1,10 +1,10 @@
 # depgraph voor teams
 
-depgraph tekent runtime-afhankelijkheden en deploys over GitLab-repo's. De toolrepo staat op GitHub. Jullie applicatierepo's blijven op GitLab. Er gaat niets vanuit depgraph terug naar die repo's, het cluster of Prometheus.
+depgraph tekent runtime-afhankelijkheden en deploys over GitLab-repo's. De toolrepo staat op GitHub. Jullie applicatierepo's blijven op GitLab. depgraph leest die repo's en Prometheus. Het schrijft er niet naar, behalve één MR-notitie en één drift-issue vanuit de bot-token.
 
-Fase 0 legt alleen de repo, de config en de validatie neer. Er wordt nog niets verzameld. Echte tokens en echte data horen niet in deze repo en niet bij de bot die de tool bouwt.
+Hoe je een agent aansluit staat in [mcp.md](mcp.md).
 
-## Wat je later aanlevert
+## catalog-info.yaml bijhouden
 
 Een `catalog-info.yaml` in de applicatierepo, Backstage-vorm:
 
@@ -29,9 +29,17 @@ spec:
     - resource:default/payments-db
 ```
 
-`metadata.name` is de canonieke naam: lowercase kebab-case, hetzelfde als in `component:<naam>`. `spec.type` is `service`, `job`, `library` of `website`. `spec.lifecycle` is `experimental`, `production` of `deprecated`. Het schema in deze repo is nog een stub; F0-5 maakt het af.
+`metadata.name` is de canonieke naam: lowercase kebab-case, hetzelfde als in `component:<naam>`. `spec.type` is `service`, `job`, `library` of `website`. `spec.lifecycle` is `experimental`, `production` of `deprecated`. `spec.owner` en `spec.system` komen in de site-filters terecht.
 
 Zachte afhankelijkheden horen in de annotatie `depgraph/soft-dependencies`, niet als harde `dependsOn`.
+
+Houd de naam gelijk aan het OpenTelemetry `service.name` en aan het label `app.kubernetes.io/name`. Wijkt een workload-naam af, zet dan een alias in `config/aliases.yaml` van de toolrepo. Eén alias, één component.
+
+## Labels
+
+- Kubernetes: `app.kubernetes.io/name` is de componentnaam.
+- De wekelijkse drift-issue draagt het label `depgraph-drift`. Er blijft één open issue; depgraph werkt die bij.
+- De MR-check zet één notitie met het merkteken `<!-- depgraph-mr-check -->` en werkt diezelfde notitie bij.
 
 ## Omgevingen
 

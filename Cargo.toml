@@ -27,6 +27,9 @@ sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 yaml_serde = "0.10"
+petgraph = "0.8"
+jsonwebtoken = "9"
+axum = "0.8"
 
 [dev-dependencies]
 assert_cmd = "2"
@@ -34,3 +37,4 @@ base64 = "0.22"
 insta = { version = "1.49", features = ["json"] }
 predicates = "3"
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

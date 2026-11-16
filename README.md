@@ -44,7 +44,7 @@ cargo run -- collect --set full --prometheus --output data
 cargo run -- build --raw data/raw --output data/snapshot.json
 cargo run -- drift --snapshot data/snapshot.json --output drift_report
 cargo run -- library-impact
-cargo run -- serve-mcp             # exits 2; OAuth is not implemented yet
+cargo run -- serve-mcp --insecure-local --snapshot data/snapshot.json
 ```
 
 Read commands accept `--env dev|acc|prod`, `--format table|json|mermaid`, and `--snapshot`.

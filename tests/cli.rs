@@ -54,24 +54,13 @@ fn validate_rejects_a_secret_without_echoing_it() {
 }
 
 #[test]
-fn stubs_exit_2() {
+fn insecure_mcp_refuses_a_public_bind() {
     depgraph()
-        .args(["impact", "payments-api"])
+        .args(["serve-mcp", "--insecure-local", "--bind", "0.0.0.0:9"])
         .assert()
         .failure()
-        .code(2)
-        .stderr(predicate::str::contains("not implemented in F0-1"));
-    depgraph()
-        .args(["publish", "drift-issue"])
-        .assert()
-        .failure()
-        .code(2);
-    depgraph()
-        .arg("serve-mcp")
-        .assert()
-        .failure()
-        .code(2)
-        .stderr(predicate::str::contains("not implemented in F0-1"));
+        .code(1)
+        .stderr(predicate::str::contains("non-loopback"));
 }
 
 #[test]
@@ -85,32 +74,31 @@ fn help_lists_validate() {
 
 #[test]
 fn read_commands_accept_the_shared_flags() {
-    let commands = [
-        "impact",
-        "deploy-order",
-        "cycles",
-        "critical",
-        "orphans",
-        "diff",
-        "at",
-    ];
-    for command in commands {
+    for command in ["cycles", "critical", "orphans"] {
         depgraph()
             .args([
                 command,
-                "payments-api",
                 "--env",
                 "acc",
                 "--format",
-                "mermaid",
+                "json",
                 "--snapshot",
                 "tests/fixtures/empty-graph.json",
             ])
             .assert()
-            .failure()
-            .code(2)
-            .stderr(predicate::str::contains("not implemented in F0-1"));
+            .success();
     }
+    depgraph()
+        .args([
+            "impact",
+            "payments-api",
+            "--snapshot",
+            "tests/fixtures/empty-graph.json",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("unknown node"));
 }
 
 #[test]
