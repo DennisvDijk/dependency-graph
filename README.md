@@ -2,7 +2,7 @@
 
 Self-hosted dependency graph for runtime dependencies and deployments.
 
-The tool is Rust. This repository lives on GitHub for now; the code will live in GitLab later. It reads GitLab (local access via `glab`), declared manifests in those repos, Istio metrics, and optionally Tempo and Datadog. It does not write back to those systems. Decisions: [ADR-001](docs/decisions/ADR-001-aannames.md), [ADR-002](docs/decisions/ADR-002-rust-en-github.md), [ADR-003](docs/decisions/ADR-003-runtime-bron.md), [ADR-004](docs/decisions/ADR-004-pilot-en-datadog.md), [ADR-005](docs/decisions/ADR-005-mcp-server.md).
+The tool is Rust. This repository lives on GitHub for now; the code will live in GitLab later. It reads GitLab (local access via `glab`), declared manifests in those repos, Istio metrics, and optionally Tempo and Datadog. It does not write back to those systems. Decisions: [ADR-001](docs/decisions/ADR-001-aannames.md), [ADR-002](docs/decisions/ADR-002-rust-en-github.md), [ADR-003](docs/decisions/ADR-003-runtime-bron.md), [ADR-004](docs/decisions/ADR-004-pilot-en-datadog.md), [ADR-005](docs/decisions/ADR-005-mcp-server.md), [ADR-006](docs/decisions/ADR-006-volledige-scan.md), [ADR-007](docs/decisions/ADR-007-resource-kinds.md), [ADR-008](docs/decisions/ADR-008-runtime-istio.md), [ADR-009](docs/decisions/ADR-009-sbom-overgeslagen.md), [ADR-010](docs/decisions/ADR-010-entra-optioneel.md), [ADR-011](docs/decisions/ADR-011-confidence-en-padscore.md), [ADR-012](docs/decisions/ADR-012-graph-database.md), [ADR-013](docs/decisions/ADR-013-portaal.md).
 
 Start here: [docs/quickstart.md](docs/quickstart.md) (install, `init`, `doctor`, first answer). No tokens, kubeconfigs, or production data belong in this repo. Config uses `example.com`.
 
@@ -13,11 +13,13 @@ config/                 example config, environments, aliases, pilot, sdk hints
 schemas/                graph.schema.json (generated) and the catalog-info stub
 src/                    models, ids, config, collectors, normalize, store, analysis, publish, mcp, cli
 ci/depgraph-mr-check.yml
-tests/fixtures/         empty graph and a sample catalog-info.yaml
+tests/fixtures/         per-phase fixtures, empty graph, sample catalog-info.yaml
 docs/decisions/         ADRs (Dutch)
 docs/naming.md          id and hash rules
 docs/for-teams.md       short note for application teams (Dutch)
-docs/reports/fase-0.md
+docs/reports/          phase reports fase-0 through fase-4
+docs/plan-fase-4.md     phase 4 plan (F4-1 to F4-8)
+docs/quickstart.md      install, init, doctor, first answer
 ```
 
 Collectors only do I/O and emit raw JSONL. The normalizer is pure: no network, no clock, no randomness. A collector failure marks that collector `stale` in `meta.json` and keeps the previous snapshot and raw file. Credentialed URLs and known token shapes are rejected in the graph and redacted in errors.

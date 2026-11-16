@@ -1167,7 +1167,7 @@ fn run_stats(args: StatsArgs) -> Result<(), Error> {
     }
     println!("query_p95_ms {:.3}", stats.query_p95_ms);
     println!(
-        "next: paste these into docs/decisions/ADR-011-graph-database.md when measuring a real snapshot"
+        "next: paste these into docs/decisions/ADR-012-graph-database.md when measuring a real snapshot"
     );
     Ok(())
 }
