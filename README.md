@@ -1,58 +1,153 @@
+<div align="center">
+
 # depgraph
 
-Self-hosted dependency graph for runtime dependencies and deployments.
+**Know what depends on what—before you make the change.**
 
-The tool is Rust. This repository lives on GitHub for now; the code will live in GitLab later. It reads GitLab (local access via `glab`), declared manifests in those repos, Istio metrics, and optionally Tempo and Datadog. It does not write back to those systems. Decisions: [ADR-001](docs/decisions/ADR-001-aannames.md), [ADR-002](docs/decisions/ADR-002-rust-en-github.md), [ADR-003](docs/decisions/ADR-003-runtime-bron.md), [ADR-004](docs/decisions/ADR-004-pilot-en-datadog.md), [ADR-005](docs/decisions/ADR-005-mcp-server.md), [ADR-006](docs/decisions/ADR-006-volledige-scan.md), [ADR-007](docs/decisions/ADR-007-resource-kinds.md), [ADR-008](docs/decisions/ADR-008-runtime-istio.md), [ADR-009](docs/decisions/ADR-009-sbom-overgeslagen.md), [ADR-010](docs/decisions/ADR-010-entra-optioneel.md), [ADR-011](docs/decisions/ADR-011-confidence-en-padscore.md), [ADR-012](docs/decisions/ADR-012-graph-database.md), [ADR-013](docs/decisions/ADR-013-portaal.md).
+A self-hosted dependency graph for the services, infrastructure and runtime traffic you already have.
 
-Start here: **[docs/tutorials](docs/tutorials/README.md)**: try it on sample data in five minutes (`scripts/demo.sh`), add your service, cover Terraform, Python and open-source apps, connect your AI agent. Short version: [docs/quickstart.md](docs/quickstart.md). No tokens, kubeconfigs, or production data belong in this repo. Config uses `example.com`.
+[![Rust](https://img.shields.io/badge/Rust-1.100-CE422B?logo=rust&logoColor=white)](rust-toolchain.toml)
+[![Run it yourself](https://img.shields.io/badge/Deployment-self--hosted-1D6D73)](docs/quickstart.md)
+[![Data](https://img.shields.io/badge/Graph-versioned%20JSON-4457A5)](schemas/graph.schema.json)
 
-## Layout
+[Try the demo](#try-it-without-an-account) · [Discover your estate](#discover-your-estate) · [Ask the graph](#ask-the-graph) · [Documentation](#documentation)
 
-```text
-config/                 example config, environments, aliases, pilot, sdk hints
-schemas/                graph.schema.json (generated) and the catalog-info stub
-src/                    models, ids, config, collectors, normalize, store, analysis, publish, mcp, cli
-ci/depgraph-mr-check.yml
-tests/fixtures/         per-phase fixtures, empty graph, sample catalog-info.yaml
-docs/decisions/         ADRs (Dutch)
-docs/naming.md          id and hash rules
-docs/for-teams.md       short note for application teams (Dutch)
-docs/reports/          phase reports fase-0 through fase-4
-docs/plan-fase-4.md     phase 4 plan (F4-1 to F4-8)
-docs/quickstart.md      install, init, doctor, first answer
+</div>
+
+---
+
+## The problem
+
+A change rarely stops at one repository. Services call services; deployments move between environments; firewall rules allow paths that might never be used. The answers live in different tools, and an incomplete picture makes it harder to answer a simple question: **what could this change affect?**
+
+depgraph brings those signals together in a graph you can inspect, query and share with your team. It works with existing repositories and infrastructure; a catalog file for every service is not required.
+
+| | What you get |
+|---|---|
+| **Find dependencies** | Explore services, deployments, infrastructure and the ties depgraph can establish. |
+| **Understand impact** | Find consumers, transitive impact, deploy order, cycles and drift. |
+| **Keep the evidence** | See whether a tie was declared, observed in application telemetry, inferred from configuration or seen as network traffic. |
+| **Bring it into your workflow** | Use the CLI, a generated site, merge-request checks or a read-only MCP server for AI assistants. |
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["Repositories<br/>GitLab · manifests · Terraform"] --> D["Collect"]
+    B["Application telemetry<br/>Istio · X-Ray · App Insights"] --> D
+    C["Cloud infrastructure<br/>AWS · Azure · flow logs"] --> D
+    D --> E["Normalize & resolve"]
+    E --> F[("Versioned graph<br/>snapshot.json")]
+    E --> G["Unresolved names<br/>unresolved.json"]
+    F --> H["CLI · site · CI · AI assistants"]
+    G --> I["Review suggestions"]
 ```
 
-Collectors only do I/O and emit raw JSONL. The normalizer is pure: no network, no clock, no randomness. A collector failure marks that collector `stale` in `meta.json` and keeps the previous snapshot and raw file. Credentialed URLs and known token shapes are rejected in the graph and redacted in errors.
+Collectors gather source records. The normalizer resolves them into a snapshot and records names it couldn't place. Queries work from that snapshot, so the graph can be inspected without calling every source again. Historical snapshots support comparisons over time.
 
-## Develop
+### Evidence matters
 
-Toolchain is pinned in `rust-toolchain.toml` (Rust 1.100.0).
+| Signal | What it means |
+|---|---|
+| **Declared** | A repository or catalog says a dependency exists. |
+| **Observed call** | Application telemetry reported a call. Visibility depends on the telemetry you collect. |
+| **Candidate** | Configuration or static evidence suggests a possible tie; it is not proof of a call. |
+| **Network traffic** | Flow logs saw packets. Packet direction does not prove which application initiated a call, so these edges do not drive impact or drift. |
 
-```sh
-just fmt
-just lint
-just test
-just ci
+A missing edge is not proof that a connection doesn't exist. See [cloud discovery](docs/tutorials/09-cloud-discovery.md) for the sources and current limits.
+
+## Try it without an account
+
+The demo uses bundled sample repositories and recorded metrics. It runs in a temporary directory and doesn't access your cloud accounts.
+
+```bash
+git clone https://github.com/DennisvDijk/dependency-graph.git
+cd dependency-graph
+cargo install --path . --locked
+scripts/demo.sh
 ```
 
-`just ci` is format-check, clippy (`-D warnings`), and tests. GitHub Actions also runs `cargo deny check`.
+You need Rust via [rustup](https://rustup.rs), Bash and Python 3. The repository pins Rust **1.100.0**. The demo prints its temporary folder so you can inspect the graph and generated site. Start with the [five-minute walkthrough](docs/tutorials/01-try-it.md).
 
-```sh
-cargo run -- validate tests/fixtures/empty-graph.json
-cargo run -- inventory --output inventory.csv
-# narrow: cargo run -- inventory --group org/infra/platform --project org/other-team/ingress-gateway
-cargo run -- propose-catalog --from ./checkout --output ./proposed-catalog
-cargo run -- collect --set full --prometheus --output data
-cargo run -- build --raw data/raw --output data/snapshot.json
-cargo run -- drift --snapshot data/snapshot.json --output drift_report
-cargo run -- library-impact
-cargo run -- serve-mcp --insecure-local --snapshot data/snapshot.json
+## Discover your estate
+
+Start with the access details for your GitLab instance. `init` writes starter files if they don't already exist; set your GitLab URL in `config/config.yaml` and sign in with `glab` or provide a token through your environment.
+
+```bash
+depgraph init
+depgraph doctor
+depgraph discover
 ```
 
-Read commands accept `--env dev|acc|prod`, `--format table|json|mermaid`, and `--snapshot`.
+`discover` guides you through repository and optional cloud reads, shows the scope, and builds `data/snapshot.json` plus `data/unresolved.json`. It can also query a configured Prometheus endpoint for Istio calls. Cloud discovery is **opt-in** and uses the existing `aws` and `az` CLI logins; no per-service cloud mapping is required. Existing flow logs and the necessary read permissions are still required, and cloud queries can incur charges.
 
-## Configuration
+For non-interactive use, choose sources explicitly:
 
-`config/config.yaml` names a kubeconfig environment variable and never the file contents. GitLab tokens are not a config field. `config/environments.yaml` maps source names onto `dev`, `acc`, and `prod`; each source name must resolve to exactly one canonical environment.
+```bash
+depgraph discover --repos-only
+depgraph discover --aws --azure           # optional cloud reads
+depgraph discover --prometheus --aws      # configured Istio metrics + AWS
+```
 
-Id rules: [docs/naming.md](docs/naming.md).
+The default cloud scope is the AWS CLI's selected region and the Azure CLI's selected subscription. AWS flow evidence currently covers supported ECS task interfaces; Azure VNet Traffic Analytics discovers VM-to-VM traffic, not the application responsible on a VM. See [cloud discovery](docs/tutorials/09-cloud-discovery.md) for permissions, supported formats and gaps.
+
+## Ask the graph
+
+```bash
+depgraph show payments-api
+depgraph deps payments-api --env prod
+depgraph consumers billing-api --env prod
+depgraph impact billing-api --env prod
+depgraph deploy-order
+depgraph drift --env prod                # writes drift_report/prod.md
+```
+
+These are sample service names from the demo. Read commands support options such as `--snapshot`, `--env`, `--depth` and `--format table|json|mermaid` where applicable. Impact scores rank paths using observed call share and a hardness factor; they are **not probabilities**. See [all graph questions](docs/tutorials/03-ask-questions.md).
+
+## Suggestions and AI assistants
+
+Names don't always match across systems. `depgraph suggest` proposes alias and namespace lines for review; it does **not** change your config or the graph. Optional AI suggestions use an OpenAI-compatible Chat Completions endpoint and are off by default.
+
+```bash
+depgraph suggest                   # local matching rules
+depgraph model-setup               # one-time endpoint, model and optional key
+depgraph suggest --llm             # review the proposed lines
+```
+
+The setup can store a key in your operating system's credential store; headless jobs can use a mounted secret file or environment variable. Model calls send unmatched names and known component names to your chosen endpoint. See [suggestion setup and troubleshooting](docs/tutorials/07-troubleshooting.md#review-suggestions-for-unresolved-names).
+
+To let an assistant query an existing snapshot, start the read-only MCP server locally:
+
+In one terminal:
+
+```bash
+depgraph serve-mcp --insecure-local --snapshot data/snapshot.json
+```
+
+In another terminal:
+
+```bash
+depgraph mcp-config cursor          # or claude, vscode, opencode
+```
+
+`--insecure-local` is limited to loopback. A shared server needs authentication; see [AI agent setup](docs/tutorials/04-ai-agent.md) and [MCP authentication](docs/mcp.md).
+
+## Documentation
+
+| Start here | Go deeper |
+|---|---|
+| [Try the demo](docs/tutorials/01-try-it.md) | [Run on real data](docs/tutorials/06-real-data.md) |
+| [Ask graph questions](docs/tutorials/03-ask-questions.md) | [AWS and Azure discovery](docs/tutorials/09-cloud-discovery.md) |
+| [Connect an AI assistant](docs/tutorials/04-ai-agent.md) | [Terraform, firewalls and containers](docs/tutorials/08-terraform-python-open-source.md) |
+| [All tutorials](docs/tutorials/README.md) | [Architecture decisions](docs/decisions/) · [Naming rules](docs/naming.md) |
+
+## Development
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo deny check
+```
+
+The project is currently **unlicensed** (`UNLICENSED` in `Cargo.toml`). Collectors read source systems; commands that write merge-request notes, issues or drafts require an explicit invocation. Keep tokens, kubeconfigs and real production data out of the repository.

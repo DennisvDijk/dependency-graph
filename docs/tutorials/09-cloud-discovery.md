@@ -28,6 +28,15 @@ depgraph deps orders-py --snapshot data/snapshot.json
 
 ## Turn it on for your account
 
+`depgraph discover` guides a run: choose the sources to read, see the selected
+scope, then inspect the resulting snapshot and unresolved report. Cloud reads
+are opt-in; they use the CLI's existing credentials and can incur query charges.
+For non-interactive use, pass `--aws`, `--azure`, `--prometheus`, or
+`--repos-only`. The raw input for each guided run is stored separately under
+`data/discovery/`, so a new run doesn't silently include earlier cloud data.
+A failed source contributes no earlier data to that fresh snapshot; review the
+warnings before relying on it.
+
 **1. Sign in with read-only access.**
 
 - AWS: any role with the `ReadOnlyAccess` managed policy works. The minimum is `ec2:DescribeSecurityGroups`, `ecs:List*`, `ecs:DescribeServices`, `lambda:ListFunctions`, `rds:Describe*`, `elasticache:DescribeCacheClusters`, `xray:GetServiceGraph`. Check with `aws sts get-caller-identity`.

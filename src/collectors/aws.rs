@@ -814,6 +814,7 @@ pub fn records_from_aws(
     let mut records = Vec::new();
     let mut warnings = Vec::new();
     let mut flow_complete = true;
+    let mut no_flow_groups = Vec::new();
     let flow_enabled = live.flow_logs || live.flow_log_group.is_some();
     let regions: Vec<Option<&str>> = if live.regions.is_empty() {
         vec![None]
@@ -983,6 +984,9 @@ pub fn records_from_aws(
                     flow_complete = false;
                 }
             }
+            if groups.is_empty() {
+                no_flow_groups.push(region.unwrap_or("default region").to_owned());
+            }
             account.network_interfaces = soft(&["ec2", "describe-network-interfaces"]);
             if account
                 .network_interfaces
@@ -1028,10 +1032,15 @@ pub fn records_from_aws(
         }
         records.extend(account_records(&account, live.env.as_deref()));
     }
+    if flow_enabled && flow_complete {
+        for region in no_flow_groups {
+            warnings.push(format!("aws flow logs: no eligible active CloudWatch log groups in {region}; check VPC Flow Logs and log format"));
+        }
+    }
     if flow_enabled && !flow_complete {
         records.retain(|record| record.collector != "aws_flow_logs");
         warnings.push(
-            "aws flow logs: an input was incomplete; previous flow records are retained".into(),
+            "aws flow logs: an input was incomplete; any previous flow records are retained".into(),
         );
     }
     Ok((records, warnings))

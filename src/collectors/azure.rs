@@ -256,6 +256,8 @@ pub fn records_from_azure(live: &AzureLive) -> Result<(Vec<RawRecord>, Vec<Strin
     let mut records = Vec::new();
     let mut warnings = Vec::new();
     let mut flow_complete = true;
+    let mut flow_issues = std::collections::BTreeSet::new();
+    let mut found_flow_workspace = false;
     let subscriptions: Vec<Option<&str>> = if live.subscriptions.is_empty() {
         vec![None]
     } else {
@@ -306,6 +308,10 @@ pub fn records_from_azure(live: &AzureLive) -> Result<(Vec<RawRecord>, Vec<Strin
                             let id = workspace.get("customerId").and_then(Value::as_str);
                             let (Some(name), Some(group), Some(id)) = (name, group, id) else {
                                 flow_complete = false;
+                                flow_issues.insert(
+                                    "workspace metadata is missing; check workspace access"
+                                        .to_owned(),
+                                );
                                 continue;
                             };
                             match call(&[
@@ -322,6 +328,7 @@ pub fn records_from_azure(live: &AzureLive) -> Result<(Vec<RawRecord>, Vec<Strin
                                 Ok(tables) => {
                                     let Some(tables) = tables.as_array() else {
                                         flow_complete = false;
+                                        flow_issues.insert(format!("cannot read table list for workspace {name}; check Reader permissions"));
                                         continue;
                                     };
                                     if !tables.iter().any(|table| {
@@ -331,6 +338,7 @@ pub fn records_from_azure(live: &AzureLive) -> Result<(Vec<RawRecord>, Vec<Strin
                                     }) {
                                         continue;
                                     }
+                                    found_flow_workspace = true;
                                     match call(&[
                                         "monitor",
                                         "log-analytics",
@@ -347,22 +355,30 @@ pub fn records_from_azure(live: &AzureLive) -> Result<(Vec<RawRecord>, Vec<Strin
                                         {
                                             data.network_flows.push(rows)
                                         }
-                                        _ => {
+                                        Ok(_) => {
                                             flow_complete = false;
+                                            flow_issues.insert(format!("workspace {name} returned more than 10000 rows or invalid results"));
+                                        }
+                                        Err(_) => {
+                                            flow_complete = false;
+                                            flow_issues.insert(format!("cannot query VNet traffic in workspace {name}; check Log Analytics read permission"));
                                         }
                                     }
                                 }
                                 Err(_) => {
                                     flow_complete = false;
+                                    flow_issues.insert(format!("cannot list tables in workspace {name}; check Reader permissions"));
                                 }
                             }
                         }
                     } else {
                         flow_complete = false;
+                        flow_issues.insert("workspace discovery returned invalid data".to_owned());
                     }
                 }
                 Err(_) => {
                     flow_complete = false;
+                    flow_issues.insert("cannot list Log Analytics workspaces; check subscription Reader permissions".to_owned());
                 }
             }
             // A successful scan with no eligible workspace must replace old flow records.
@@ -372,10 +388,17 @@ pub fn records_from_azure(live: &AzureLive) -> Result<(Vec<RawRecord>, Vec<Strin
         }
         records.extend(subscription_records(&data, live.env.as_deref()));
     }
+    if live.flow_logs && flow_complete && !found_flow_workspace {
+        warnings.push("azure flow logs: no workspace with VNet Traffic Analytics found in the selected subscription; check that Traffic Analytics is enabled".into());
+    }
     if live.flow_logs && !flow_complete {
+        for issue in flow_issues {
+            warnings.push(format!("azure flow logs: {issue}"));
+        }
         records.retain(|record| record.collector != "azure_flow_logs");
         warnings.push(
-            "azure flow logs: an input was incomplete; previous flow records are retained".into(),
+            "azure flow logs: an input was incomplete; any previous flow records are retained"
+                .into(),
         );
     }
     Ok((records, warnings))
