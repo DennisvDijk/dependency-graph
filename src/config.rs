@@ -61,6 +61,73 @@ pub struct Config {
     /// MCP resource server. OAuth stays with the external issuer.
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Optional IdP preset. `generic` is the default resource server.
+    #[serde(default)]
+    pub auth: AuthConfig,
+    /// Path-score hardness factors. Assumptions, not measurements.
+    #[serde(default)]
+    pub scoring: ScoringConfig,
+    /// MR check policy. Blocking is off until a team opts in.
+    #[serde(default)]
+    pub mr_check: MrCheckConfig,
+    /// Opt-in live AWS read with the `aws` CLI. Off by default.
+    #[serde(default)]
+    pub aws: AwsConfig,
+    /// Opt-in live Azure read with the `az` CLI. Off by default.
+    #[serde(default)]
+    pub azure: AzureConfig,
+}
+
+/// Live AWS discovery. No key fields: the `aws` CLI's own login is used.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AwsConfig {
+    /// Read the account on every `depgraph collect`. `--aws` does it once.
+    #[serde(default)]
+    pub enabled: bool,
+    /// AWS CLI profile name. Empty uses the default credential chain.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Regions to read. Empty uses the CLI's default region.
+    #[serde(default)]
+    pub regions: Vec<String>,
+    /// Environment of this account (`dev`, `acc`, `prod` or a mapped name).
+    /// Empty: an env word in each service name is used (`orders-prod`).
+    #[serde(default)]
+    pub env: Option<String>,
+    /// Also read the X-Ray service graph for the calls that really happen.
+    #[serde(default = "default_true")]
+    pub xray: bool,
+}
+
+impl Default for AwsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            profile: None,
+            regions: Vec::new(),
+            env: None,
+            xray: true,
+        }
+    }
+}
+
+/// Live Azure discovery. No key fields: the `az` CLI's own login is used.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AzureConfig {
+    /// Read Azure on every `depgraph collect`. `--azure` does it once.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Subscription ids or names. Empty uses the `az` default subscription.
+    #[serde(default)]
+    pub subscriptions: Vec<String>,
+    /// Log Analytics workspace ids that hold Application Insights data.
+    #[serde(default)]
+    pub log_analytics_workspaces: Vec<String>,
+    /// Environment of these subscriptions. Empty: an env word in the name.
+    #[serde(default)]
+    pub env: Option<String>,
 }
 
 /// GitLab connection settings. `base_url` is a placeholder until a human confirms it.
@@ -130,6 +197,114 @@ pub struct McpConfig {
     pub jwks_url: String,
     /// Listen address. `--insecure-local` only allows a loopback address.
     pub bind: String,
+}
+
+/// `generic` keeps issuer and JWKS in `mcp`. `entra` derives them from the tenant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthProvider {
+    /// Any OAuth 2.1 issuer with a JWKS document.
+    #[default]
+    Generic,
+    /// Microsoft Entra ID v2 endpoints.
+    Entra,
+}
+
+/// Identity provider settings. Placeholder IDs only; real values may come from the environment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AuthConfig {
+    /// `generic` or `entra`.
+    pub provider: AuthProvider,
+    /// Entra tenant GUID. Overridden by `DEPGRAPH_ENTRA_TENANT_ID` when set.
+    pub tenant_id: String,
+    /// Entra application id. Overridden by `DEPGRAPH_ENTRA_CLIENT_ID` when set.
+    pub client_id: String,
+    /// Resource indicator. Empty becomes `api://<client_id>` for Entra.
+    pub audience: String,
+    /// App roles that may call the API, in addition to the read role.
+    pub allowed_roles: Vec<String>,
+    /// Group object ids that may call the API. Empty means no group restriction.
+    pub allowed_groups: Vec<String>,
+}
+
+/// Hardness factors stored as text so the config struct stays `Eq`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ScoringConfig {
+    /// Factor for a hard edge.
+    pub hard: String,
+    /// Factor for an unknown edge.
+    pub unknown: String,
+    /// Factor for a soft edge.
+    pub soft: String,
+}
+
+impl Default for ScoringConfig {
+    fn default() -> Self {
+        Self {
+            hard: "1.0".into(),
+            unknown: "0.5".into(),
+            soft: "0.2".into(),
+        }
+    }
+}
+
+impl ScoringConfig {
+    /// Parse the factors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a factor is not a finite number from 0 to 1.
+    pub fn hardness(&self) -> Result<crate::score::Hardness, Error> {
+        Ok(crate::score::Hardness {
+            hard: parse_factor("scoring.hard", &self.hard)?,
+            unknown: parse_factor("scoring.unknown", &self.unknown)?,
+            soft: parse_factor("scoring.soft", &self.soft)?,
+        })
+    }
+}
+
+fn parse_factor(field: &str, value: &str) -> Result<f64, Error> {
+    let number: f64 = value
+        .parse()
+        .map_err(|_| Error::Config(format!("{field} must be a number")))?;
+    if !(0.0..=1.0).contains(&number) {
+        return Err(Error::Config(format!("{field} must be between 0 and 1")));
+    }
+    Ok(number)
+}
+
+/// Opt-in gate for merge requests. Off in the example config.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct MrCheckConfig {
+    /// When true, a contract change with observed prod consumers needs approval.
+    pub blocking: bool,
+    /// A label that records an explicit override.
+    pub override_label: String,
+}
+
+impl Default for MrCheckConfig {
+    fn default() -> Self {
+        Self {
+            blocking: false,
+            override_label: "depgraph-override".into(),
+        }
+    }
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            provider: AuthProvider::Generic,
+            tenant_id: "00000000-0000-0000-0000-000000000000".to_owned(),
+            client_id: "11111111-1111-1111-1111-111111111111".to_owned(),
+            audience: "api://11111111-1111-1111-1111-111111111111".to_owned(),
+            allowed_roles: Vec::new(),
+            allowed_groups: Vec::new(),
+        }
+    }
 }
 
 impl Default for McpConfig {
@@ -288,6 +463,11 @@ pub struct Environments {
     pub acc: EnvMapping,
     /// Production.
     pub prod: EnvMapping,
+    /// Opt-in: use the guess for an unmapped namespace (`shop-prod` -> prod)
+    /// instead of leaving its calls out. Off by default (ADR-008). The build
+    /// lists every guessed namespace so it can be checked.
+    #[serde(default)]
+    pub guess_namespaces: bool,
 }
 
 /// Names used by each source system for one canonical environment.
@@ -310,6 +490,7 @@ pub struct EnvMapping {
 pub struct EnvIndex {
     by_name: BTreeMap<String, Env>,
     by_namespace: BTreeMap<String, Env>,
+    guess: bool,
 }
 
 impl EnvIndex {
@@ -319,10 +500,62 @@ impl EnvIndex {
         self.by_name.get(&name.to_ascii_lowercase()).copied()
     }
 
-    /// Resolve a Kubernetes namespace. Unknown namespaces are not guessed.
+    /// Resolve a Kubernetes namespace. Unknown namespaces are not guessed,
+    /// unless `guess_namespaces` is on.
     #[must_use]
     pub fn resolve_namespace(&self, name: &str) -> Option<Env> {
-        self.by_namespace.get(&name.to_ascii_lowercase()).copied()
+        self.by_namespace
+            .get(&name.to_ascii_lowercase())
+            .copied()
+            .or_else(|| {
+                if self.guess {
+                    self.suggest_namespace(name)
+                } else {
+                    None
+                }
+            })
+    }
+
+    /// The guessed environment, when `guess_namespaces` is on and the
+    /// namespace is not mapped. Used to list guesses after a build.
+    #[must_use]
+    pub fn guessed_namespace(&self, name: &str) -> Option<Env> {
+        if !self.guess || self.by_namespace.contains_key(&name.to_ascii_lowercase()) {
+            return None;
+        }
+        self.suggest_namespace(name)
+    }
+
+    /// Suggest an environment for an unmapped namespace, for a setup hint only.
+    ///
+    /// The first or last `-` segment must be a canonical env (`dev`, `acc`,
+    /// `prod`) or a mapped GitLab/OTel name, and all matches must agree.
+    /// The graph never uses this: unmapped namespaces stay unresolved (ADR-008).
+    #[must_use]
+    pub fn suggest_namespace(&self, name: &str) -> Option<Env> {
+        let lower = name.to_ascii_lowercase();
+        let segments: Vec<&str> = lower.split('-').filter(|part| !part.is_empty()).collect();
+        let candidates = match segments.as_slice() {
+            [] => Vec::new(),
+            [only] => vec![*only],
+            [first, .., last] => vec![*first, *last],
+        };
+        let mut found: Option<Env> = None;
+        for segment in candidates {
+            let env = match segment {
+                "dev" => Some(Env::Dev),
+                "acc" => Some(Env::Acc),
+                "prod" => Some(Env::Prod),
+                other => self.by_name.get(other).copied(),
+            };
+            match (found, env) {
+                (_, None) => {}
+                (None, Some(env)) => found = Some(env),
+                (Some(left), Some(right)) if left == right => {}
+                (Some(_), Some(_)) => return None,
+            }
+        }
+        found
     }
 }
 
@@ -413,6 +646,7 @@ impl Environments {
         Ok(EnvIndex {
             by_name,
             by_namespace: namespaces,
+            guess: self.guess_namespaces,
         })
     }
 }
@@ -984,9 +1218,16 @@ mod tests {
         );
         assert_eq!(project.config.edge_expiry_days, 30);
         assert_eq!(project.config.retention_days, 90);
+        assert!(!project.config.mr_check.blocking);
+        assert_eq!(project.config.scoring.hard, "1.0");
         assert_eq!(project.config.mcp.issuer, "https://idp.example.com");
         assert_eq!(project.config.mcp.audience, "http://127.0.0.1:8080");
         assert_eq!(project.config.mcp.bind, "127.0.0.1:8080");
+        assert_eq!(project.config.auth.provider, AuthProvider::Generic);
+        assert_eq!(
+            project.config.auth.tenant_id,
+            "00000000-0000-0000-0000-000000000000"
+        );
         assert!(project.aliases.aliases.is_empty());
         assert!(project.pilot.apps.is_empty());
         assert!(project.sdk_hints.hints.is_empty());
@@ -1054,6 +1295,44 @@ prod:
             environments.index().unwrap().resolve("development"),
             Some(Env::Dev)
         );
+    }
+
+    #[test]
+    fn namespace_suggestions_use_the_first_or_last_segment() {
+        let index = parse_environments(
+            "dev:\n  gitlab: [development]\nacc:\n  gitlab: [staging]\nprod:\n  gitlab: [production]\n",
+        )
+        .unwrap()
+        .index()
+        .unwrap();
+        assert_eq!(index.suggest_namespace("shop-prod"), Some(Env::Prod));
+        assert_eq!(index.suggest_namespace("staging-shop"), Some(Env::Acc));
+        assert_eq!(index.suggest_namespace("dev"), Some(Env::Dev));
+        assert_eq!(index.suggest_namespace("qa"), None);
+        assert_eq!(index.suggest_namespace("prod-to-dev"), None);
+        assert_eq!(index.suggest_namespace("shop-prod"), Some(Env::Prod));
+        assert_eq!(index.resolve_namespace("shop-prod"), None);
+        assert_eq!(index.guessed_namespace("shop-prod"), None);
+    }
+
+    #[test]
+    fn guessing_namespaces_is_opt_in() {
+        let yaml = r"
+guess_namespaces: true
+dev:
+  gitlab: [development]
+acc:
+  gitlab: [staging]
+prod:
+  gitlab: [production]
+  k8s_namespaces: [shop]
+";
+        let index = parse_environments(yaml).unwrap().index().unwrap();
+        assert_eq!(index.resolve_namespace("shop-prod"), Some(Env::Prod));
+        assert_eq!(index.guessed_namespace("shop-prod"), Some(Env::Prod));
+        assert_eq!(index.resolve_namespace("shop"), Some(Env::Prod));
+        assert_eq!(index.guessed_namespace("shop"), None);
+        assert_eq!(index.resolve_namespace("qa"), None);
     }
 
     #[test]

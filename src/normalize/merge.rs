@@ -14,8 +14,8 @@ use crate::config::{Aliases, EnvIndex};
 use crate::error::Error;
 use crate::ids::{self, ResourceKind};
 use crate::models::{
-    Edge, EdgeAttrs, EdgeSource, EdgeStatus, EdgeType, Env, GraphSnapshot, Node, NodeType,
-    SourceKind, SourceSummary, Timestamp,
+    Criticality, CriticalitySource, Edge, EdgeAttrs, EdgeSource, EdgeStatus, EdgeType, Env,
+    GraphSnapshot, Node, NodeType, SourceKind, SourceSummary, Timestamp,
 };
 use crate::raw::RawRecord;
 use crate::store::DeploymentMismatch;
@@ -81,12 +81,24 @@ pub fn merge_records(
     let libraries_enabled = options.libraries_enabled;
     let mut components: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut resources: BTreeMap<(String, String), String> = BTreeMap::new();
-    let mut resource_links: Vec<(String, String, String)> = Vec::new();
+    // (component from label, project path, resource kind, resource name)
+    let mut resource_links: Vec<(Option<String>, String, String, String)> = Vec::new();
+    // Indexes into `resource_links` whose component name is matched loosely.
+    let mut loose_links: Vec<usize> = Vec::new();
     let mut deployments: Vec<DeploymentCand> = Vec::new();
     let mut unresolved = Vec::new();
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
     let mut observed: BTreeMap<ObservedKey, ObservedAgg> = BTreeMap::new();
     let mut candidates: Vec<CandidateCall> = Vec::new();
+    let mut soft_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut heuristics: BTreeMap<String, bool> = BTreeMap::new();
+    let mut experiments: BTreeMap<(String, String), bool> = BTreeMap::new();
+    let mut owners: BTreeMap<String, (String, String)> = BTreeMap::new();
+    // GitLab project path -> components defined in it. A manifest resource
+    // without its own workload label belongs to the component of its repo.
+    let mut project_components: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // GitLab project path -> (languages, has a Dockerfile or compose file).
+    let mut stacks: BTreeMap<String, (BTreeSet<String>, bool)> = BTreeMap::new();
 
     for record in records {
         *counts.entry(record.collector.clone()).or_insert(0) += 1;
@@ -108,12 +120,49 @@ pub fn merge_records(
                     .and_then(|value| value.as_array())
                     .cloned()
                     .unwrap_or_default();
-                let entry = components.entry(name).or_default();
+                let project_path = text_field(&record.payload, "project_path");
+                if !project_path.is_empty() {
+                    project_components
+                        .entry(project_path)
+                        .or_default()
+                        .insert(name.clone());
+                }
+                let entry = components.entry(name.clone()).or_default();
                 for dep in deps {
                     if let Some(dep) = dep.as_str() {
                         entry.insert(dep.to_owned());
                     }
                 }
+                let soft: Vec<String> = string_list(&record.payload, "soft_dependencies")
+                    .iter()
+                    .map(|entry| soft_name(entry, aliases))
+                    .filter(|entry| !entry.is_empty())
+                    .collect();
+                if !soft.is_empty() {
+                    soft_deps.entry(name.clone()).or_default().extend(soft);
+                }
+                if string_list(&record.payload, "heuristics")
+                    .iter()
+                    .any(|token| crate::classify::is_soft_heuristic(token))
+                {
+                    heuristics.insert(name.clone(), true);
+                }
+                let owner = text_field(&record.payload, "owner");
+                let system = text_field(&record.payload, "system");
+                if !owner.is_empty() || !system.is_empty() {
+                    owners.entry(name).or_insert((owner, system));
+                }
+            }
+            "chaos_experiment" => {
+                let client = canonical_name(required_str(&record.payload, "client")?, aliases);
+                let dependency =
+                    canonical_name(required_str(&record.payload, "dependency")?, aliases);
+                let survived = record
+                    .payload
+                    .get("survived")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                experiments.insert((client, dependency), survived);
             }
             "resource" => {
                 let kind = required_str(&record.payload, "resource_kind")?;
@@ -128,13 +177,25 @@ pub fn merge_records(
                     continue;
                 }
                 resources.insert((kind.to_owned(), name.to_owned()), record.collector.clone());
-                if let Some(component) = record
-                    .payload
-                    .get("component")
-                    .and_then(|value| value.as_str())
-                {
+                // Catalog resources are standalone; manifest resources belong
+                // to a component, named by label or else found by repo below.
+                if record.collector != "gitlab_inventory" {
+                    let component = record
+                        .payload
+                        .get("component")
+                        .and_then(|value| value.as_str())
+                        .map(|component| canonical_name(component, aliases));
+                    if record
+                        .payload
+                        .get("loose")
+                        .and_then(|value| value.as_bool())
+                        == Some(true)
+                    {
+                        loose_links.push(resource_links.len());
+                    }
                     resource_links.push((
-                        canonical_name(component, aliases),
+                        component,
+                        text_field(&record.payload, "project_path"),
                         kind.to_owned(),
                         name.to_owned(),
                     ));
@@ -187,10 +248,59 @@ pub fn merge_records(
                         .and_then(|value| value.as_str())
                         .unwrap_or("")
                         .to_owned(),
+                    external: record
+                        .payload
+                        .get("external")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
+                    destination_kind: record
+                        .payload
+                        .get("destination_kind")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_owned),
+                    loose: record
+                        .payload
+                        .get("loose")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
                 });
+            }
+            "project_facts" => {
+                let project_path = text_field(&record.payload, "project_path");
+                let entry = stacks.entry(project_path).or_default();
+                entry.0.extend(string_list(&record.payload, "languages"));
+                entry.1 |= record
+                    .payload
+                    .get("container")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
             }
             other => unresolved.push(unresolved_row("record", other, "ignored record kind", 0)),
         }
+    }
+
+    // Security groups and other cloud resources name their service loosely
+    // (`orders-py-prod-sg`). Match to a known component or drop the resource.
+    for index in loose_links {
+        let (label, _, kind, name) = &resource_links[index];
+        let matched = label.as_deref().and_then(|label| {
+            loose_match(
+                label,
+                |name| components.contains_key(name),
+                aliases,
+                environments,
+            )
+        });
+        if matched.is_none() {
+            unresolved.push(unresolved_row(
+                "resource",
+                label.as_deref().unwrap_or(name),
+                "no component matches this cloud resource",
+                0,
+            ));
+            resources.remove(&(kind.clone(), name.clone()));
+        }
+        resource_links[index].0 = matched;
     }
 
     let mut inferred = BTreeSet::new();
@@ -206,13 +316,44 @@ pub fn merge_records(
         generated_at,
     });
 
+    let mut component_stack: BTreeMap<&str, (BTreeSet<String>, bool)> = BTreeMap::new();
+    for (project_path, names) in &project_components {
+        let Some((languages, container)) = stacks.get(project_path) else {
+            continue;
+        };
+        for name in names {
+            let entry = component_stack.entry(name.as_str()).or_default();
+            entry.0.extend(languages.iter().cloned());
+            entry.1 |= *container;
+        }
+    }
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     for name in components.keys() {
+        let mut attrs = BTreeMap::new();
+        if let Some((languages, container)) = component_stack.get(name.as_str()) {
+            if !languages.is_empty() {
+                attrs.insert(
+                    "languages".into(),
+                    serde_json::Value::from(languages.iter().cloned().collect::<Vec<_>>()),
+                );
+            }
+            if *container {
+                attrs.insert("container".into(), serde_json::Value::Bool(true));
+            }
+        }
+        if let Some((owner, system)) = owners.get(name) {
+            if !owner.is_empty() {
+                attrs.insert("owner".into(), serde_json::Value::String(owner.clone()));
+            }
+            if !system.is_empty() {
+                attrs.insert("system".into(), serde_json::Value::String(system.clone()));
+            }
+        }
         nodes.push(Node {
             id: ids::component_id(name).map_err(Error::Validation)?,
             node_type: NodeType::Component,
-            attrs: BTreeMap::new(),
+            attrs,
         });
     }
     for (kind, name) in resources.keys() {
@@ -238,11 +379,59 @@ pub fn merge_records(
         .map(|(kind, name)| (name.clone(), format!("resource:{kind}:{name}")))
         .collect();
 
-    for (from, deps) in &components {
+    // A dependency named only in `depgraph/soft-dependencies` is still a
+    // dependency: give it an edge, marked soft below.
+    let mut declared: BTreeMap<String, BTreeSet<String>> = components.clone();
+    for (from, names) in &soft_deps {
+        let Some(deps) = declared.get_mut(from) else {
+            continue;
+        };
+        for name in names {
+            let known = deps
+                .iter()
+                .any(|dep| dep.rsplit('/').next().unwrap_or(dep) == name);
+            if known {
+                continue;
+            }
+            if component_ids.contains(&format!("component:{name}")) {
+                deps.insert(format!("component:default/{name}"));
+            } else if resource_ids.contains_key(name) {
+                deps.insert(format!("resource:default/{name}"));
+            } else {
+                unresolved.push(unresolved_row(
+                    "soft_dependency",
+                    name,
+                    &format!("from {from}"),
+                    0,
+                ));
+            }
+        }
+    }
+    for (from, deps) in &declared {
         let from_id = format!("component:{from}");
         for dep in deps {
             match resolve_ref(dep, &component_ids, &resource_ids) {
-                Some(to_id) => edges.push(depends_edge(&from_id, &to_id, generated_at)),
+                Some(to_id) => {
+                    let dep_name = dep.rsplit('/').next().unwrap_or(dep);
+                    let evidence = crate::classify::Evidence {
+                        declared_soft: soft_deps
+                            .get(from)
+                            .is_some_and(|names| names.iter().any(|name| name == dep_name)),
+                        experiment_survived: experiments
+                            .get(&(from.clone(), dep_name.to_owned()))
+                            .copied(),
+                        heuristic: heuristics.get(from).copied().unwrap_or(false),
+                    };
+                    let (criticality, criticality_source) = crate::classify::classify(evidence);
+                    edges.push(depends_edge(
+                        &from_id,
+                        &to_id,
+                        generated_at,
+                        criticality,
+                        criticality_source,
+                        SourceKind::Catalog,
+                    ));
+                }
                 None => unresolved.push(unresolved_row(
                     "depends_on",
                     dep,
@@ -252,13 +441,39 @@ pub fn merge_records(
             }
         }
     }
-    for (component, kind, name) in &resource_links {
-        let from_id = format!("component:{component}");
+    let mut linked = BTreeSet::new();
+    for (label, project_path, kind, name) in &resource_links {
         let to_id = format!("resource:{kind}:{name}");
-        if component_ids.contains(&from_id) && resources.contains_key(&(kind.clone(), name.clone()))
-        {
-            edges.push(depends_edge(&from_id, &to_id, generated_at));
+        if !resources.contains_key(&(kind.clone(), name.clone())) {
+            continue;
         }
+        let by_label = label
+            .as_ref()
+            .map(|component| format!("component:{component}"))
+            .filter(|id| component_ids.contains(id));
+        // Fall back to the one component defined in the same repository.
+        let by_repo = || {
+            let owners = project_components.get(project_path)?;
+            if owners.len() != 1 {
+                return None;
+            }
+            let id = format!("component:{}", owners.iter().next()?);
+            component_ids.contains(&id).then_some(id)
+        };
+        let Some(from_id) = by_label.or_else(by_repo) else {
+            continue;
+        };
+        if from_id == to_id || !linked.insert((from_id.clone(), to_id.clone())) {
+            continue;
+        }
+        edges.push(depends_edge(
+            &from_id,
+            &to_id,
+            generated_at,
+            Default::default(),
+            Default::default(),
+            SourceKind::Static,
+        ));
     }
 
     let mut grouped: BTreeMap<(String, Env), Vec<DeploymentCand>> = BTreeMap::new();
@@ -315,6 +530,7 @@ pub fn merge_records(
         edges.push(deployed_edge(&from_id, &deployment_id, env, &stamp));
     }
     edges.append(&mut runtime_edges);
+    inherit_criticality(&mut edges);
     assign_status(&mut edges);
     expire_edges(
         &mut edges,
@@ -395,6 +611,95 @@ pub fn version_rank(reference: &str) -> (u8, String) {
     (0, String::new())
 }
 
+/// `depgraph/soft-dependencies` entries may be a bare name, a GitLab project
+/// path (`group/notifications`) or an entity ref (`component:default/x`).
+fn soft_name(entry: &str, aliases: &Aliases) -> String {
+    let entry = entry.trim();
+    let last = entry.rsplit('/').next().unwrap_or(entry);
+    let last = last.rsplit(':').next().unwrap_or(last);
+    canonical_name(last, aliases)
+}
+
+/// Words that cloud resource names add around a service name.
+const NAME_NOISE: &[&str] = &[
+    "sg",
+    "secgroup",
+    "security",
+    "group",
+    "svc",
+    "service",
+    "app",
+    "ecs",
+    "eks",
+    "task",
+    "lambda",
+    "fn",
+    "function",
+    "alb",
+    "nlb",
+    "elb",
+    "lb",
+    "allow",
+    "rule",
+    "rules",
+    "internal",
+    "private",
+    "public",
+    "dev",
+    "development",
+    "acc",
+    "acceptance",
+    "test",
+    "tst",
+    "qa",
+    "staging",
+    "stage",
+    "stg",
+    "prod",
+    "production",
+    "prd",
+    "asg",
+    "nsg",
+    "vm",
+    "vmss",
+    "aks",
+    "aci",
+    "func",
+    "webapp",
+    "rg",
+];
+
+/// Find a known name inside a cloud resource name: try the name as is (and
+/// its alias), then keep dropping a noise word or environment name from
+/// either end. Returns `None` when nothing known is found; nothing is guessed.
+fn loose_match(
+    name: &str,
+    known: impl Fn(&str) -> bool,
+    aliases: &Aliases,
+    environments: &EnvIndex,
+) -> Option<String> {
+    let lower = name.to_ascii_lowercase();
+    let mut parts: Vec<&str> = lower
+        .split(['-', '_', '.'])
+        .filter(|part| !part.is_empty())
+        .collect();
+    let noise = |part: &str| NAME_NOISE.contains(&part) || environments.resolve(part).is_some();
+    while !parts.is_empty() {
+        let candidate = canonical_name(&parts.join("-"), aliases);
+        if known(&candidate) {
+            return Some(candidate);
+        }
+        if noise(parts[0]) {
+            parts.remove(0);
+        } else if noise(parts[parts.len() - 1]) {
+            parts.pop();
+        } else {
+            return None;
+        }
+    }
+    None
+}
+
 fn canonical_name(name: &str, aliases: &Aliases) -> String {
     aliases
         .aliases
@@ -427,7 +732,14 @@ fn resolve_ref(
     }
 }
 
-fn depends_edge(from_id: &str, to_id: &str, generated_at: &Timestamp) -> Edge {
+fn depends_edge(
+    from_id: &str,
+    to_id: &str,
+    generated_at: &Timestamp,
+    criticality: crate::models::Criticality,
+    criticality_source: crate::models::CriticalitySource,
+    source: SourceKind,
+) -> Edge {
     let edge_type = EdgeType::DeclaredDependsOn;
     Edge {
         id: ids::edge_id(edge_type, from_id, to_id, None),
@@ -436,13 +748,14 @@ fn depends_edge(from_id: &str, to_id: &str, generated_at: &Timestamp) -> Edge {
         to_id: to_id.to_owned(),
         env: None,
         sources: vec![EdgeSource {
-            kind: SourceKind::Catalog,
+            kind: source,
             first_seen: generated_at.clone(),
             last_seen: generated_at.clone(),
             evidence_ref: None,
         }],
         status: EdgeStatus::DeclaredOnly,
-        criticality: Default::default(),
+        criticality,
+        criticality_source,
         active: true,
         attrs: EdgeAttrs::default(),
     }
@@ -464,6 +777,7 @@ fn deployed_edge(from_id: &str, to_id: &str, env: Env, stamp: &Timestamp) -> Edg
         }],
         status: EdgeStatus::NotApplicable,
         criticality: Default::default(),
+        criticality_source: Default::default(),
         active: true,
         attrs: EdgeAttrs::default(),
     }
@@ -535,6 +849,14 @@ struct ObservedKey {
     external_host: String,
     protocol: String,
     window: String,
+    /// Environment named by a cloud collector, when there is no namespace.
+    env: String,
+    /// Names come from a cloud service map and are matched with `loose_match`.
+    loose: bool,
+    /// A resource kind (`database`) when the destination is not a component.
+    destination_kind: String,
+    /// Where a cloud observation came from (`aws-xray`, `azure-app-insights`).
+    evidence: String,
 }
 
 struct ObservedAgg {
@@ -548,6 +870,11 @@ struct CandidateCall {
     source: String,
     destination: String,
     namespace: String,
+    external: bool,
+    /// A resource kind (`database`) when the destination is not a component.
+    destination_kind: Option<String>,
+    /// Names come from cloud resources and are matched with `loose_match`.
+    loose: bool,
 }
 
 fn absorb_observed(
@@ -569,6 +896,14 @@ fn absorb_observed(
         external_host: text_field(&record.payload, "external_host"),
         protocol: text_field(&record.payload, "protocol"),
         window: text_field(&record.payload, "window"),
+        env: text_field(&record.payload, "env"),
+        loose: record
+            .payload
+            .get("loose")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+        destination_kind: text_field(&record.payload, "destination_kind"),
+        evidence: text_field(&record.payload, "evidence"),
     };
     let calls = json_u64(&record.payload, "calls");
     let errors = json_u64(&record.payload, "errors");
@@ -593,6 +928,19 @@ fn absorb_observed(
         }
     }
     Ok(())
+}
+
+fn string_list(payload: &serde_json::Value, field: &str) -> Vec<String> {
+    payload
+        .get(field)
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn text_field(payload: &serde_json::Value, field: &str) -> String {
@@ -636,7 +984,13 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
     } = build;
     let mut edges = Vec::new();
     for (key, agg) in observed.iter() {
-        let source = canonical_name(&key.source, aliases);
+        let is_component = |name: &str| components.contains_key(name);
+        let source = if key.loose {
+            loose_match(&key.source, is_component, aliases, environments)
+                .unwrap_or_else(|| canonical_name(&key.source, aliases))
+        } else {
+            canonical_name(&key.source, aliases)
+        };
         let source_id = format!("component:{source}");
         if !components.contains_key(&source) {
             unresolved.push(unresolved_row(
@@ -648,6 +1002,15 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
             continue;
         }
         let env = match observed_env(key, environments) {
+            Err(_) if key.loose && key.source_namespace.is_empty() => {
+                unresolved.push(unresolved_row(
+                    "environment",
+                    &key.source,
+                    "environment is not known; set env in the cloud config",
+                    agg.calls,
+                ));
+                continue;
+            }
             Ok(env) => env,
             Err(message) => {
                 unresolved.push(unresolved_row(
@@ -681,8 +1044,37 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
             );
             inferred.insert(id.clone());
             id
+        } else if !key.destination_kind.is_empty() {
+            let kind = key.destination_kind.as_str();
+            if ResourceKind::parse(kind).is_none() || !ids::is_kebab_case(&key.destination) {
+                unresolved.push(unresolved_row(
+                    "observed_call",
+                    &key.destination,
+                    "resource name is not kebab-case",
+                    agg.calls,
+                ));
+                continue;
+            }
+            let name = loose_match(
+                &key.destination,
+                |name| resources.contains_key(&(kind.to_owned(), name.to_owned())),
+                aliases,
+                environments,
+            )
+            .unwrap_or_else(|| key.destination.clone());
+            let id = format!("resource:{kind}:{name}");
+            if !resources.contains_key(&(kind.to_owned(), name.clone())) {
+                resources.insert((kind.to_owned(), name), "runtime_edges".to_owned());
+                inferred.insert(id.clone());
+            }
+            id
         } else {
-            let destination = canonical_name(&key.destination, aliases);
+            let destination = if key.loose {
+                loose_match(&key.destination, is_component, aliases, environments)
+                    .unwrap_or_else(|| canonical_name(&key.destination, aliases))
+            } else {
+                canonical_name(&key.destination, aliases)
+            };
             if !components.contains_key(&destination) {
                 unresolved.push(unresolved_row(
                     "observed_call",
@@ -704,9 +1096,52 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
         ));
     }
     for candidate in candidates.iter() {
-        let source = canonical_name(&candidate.source, aliases);
-        let destination = canonical_name(&candidate.destination, aliases);
-        if !components.contains_key(&source) || !components.contains_key(&destination) {
+        let is_component = |name: &str| components.contains_key(name);
+        let resolve = |name: &str| {
+            if candidate.loose {
+                loose_match(name, is_component, aliases, environments)
+                    .unwrap_or_else(|| canonical_name(name, aliases))
+            } else {
+                canonical_name(name, aliases)
+            }
+        };
+        let source = resolve(&candidate.source);
+        if let Some(kind) = candidate.destination_kind.as_deref() {
+            if !components.contains_key(&source) {
+                unresolved.push(unresolved_row(
+                    "candidate_call",
+                    &candidate.source,
+                    "name is not a known component",
+                    0,
+                ));
+                continue;
+            }
+            if ResourceKind::parse(kind).is_none() || !ids::is_kebab_case(&candidate.destination) {
+                continue;
+            }
+            let name = loose_match(
+                &candidate.destination,
+                |name| resources.contains_key(&(kind.to_owned(), name.to_owned())),
+                aliases,
+                environments,
+            )
+            .unwrap_or_else(|| candidate.destination.clone());
+            let id = format!("resource:{kind}:{name}");
+            if !resources.contains_key(&(kind.to_owned(), name.clone())) {
+                resources.insert((kind.to_owned(), name), "k8s_workloads".to_owned());
+                inferred.insert(id.clone());
+            }
+            edges.push(candidate_edge(
+                &format!("component:{source}"),
+                &id,
+                None,
+                generated_at,
+            ));
+            continue;
+        }
+        let destination = resolve(&candidate.destination);
+        let destination_known = candidate.external || components.contains_key(&destination);
+        if !components.contains_key(&source) || !destination_known {
             let missing = if components.contains_key(&source) {
                 &candidate.destination
             } else {
@@ -736,9 +1171,19 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
                 }
             }
         };
+        let to_id = if candidate.external {
+            let id = format!("resource:external-api:{destination}");
+            resources
+                .entry(("external-api".to_owned(), destination.clone()))
+                .or_insert_with(|| "k8s_workloads".to_owned());
+            inferred.insert(id.clone());
+            id
+        } else {
+            format!("component:{destination}")
+        };
         edges.push(candidate_edge(
             &format!("component:{source}"),
-            &format!("component:{destination}"),
+            &to_id,
             env,
             generated_at,
         ));
@@ -789,6 +1234,20 @@ fn merge_measurement(existing: &mut Edge, extra: &Edge) {
 }
 
 fn observed_env(key: &ObservedKey, environments: &EnvIndex) -> Result<Env, String> {
+    if key.loose && key.source_namespace.is_empty() {
+        // Cloud service maps have no namespace: use the configured env, else
+        // an env word at either end of the service name (`orders-py-prod`).
+        let named = match key.env.to_ascii_lowercase().as_str() {
+            "" => None,
+            "dev" => Some(Env::Dev),
+            "acc" => Some(Env::Acc),
+            "prod" => Some(Env::Prod),
+            other => environments.resolve(other),
+        };
+        return named
+            .or_else(|| environments.suggest_namespace(&key.source.replace(['_', '.'], "-")))
+            .ok_or_else(|| key.source.clone());
+    }
     let source = environments.resolve_namespace(&key.source_namespace);
     if key.external {
         return source.ok_or_else(|| key.source_namespace.clone());
@@ -797,6 +1256,10 @@ fn observed_env(key: &ObservedKey, environments: &EnvIndex) -> Result<Env, Strin
     match (source, destination) {
         (Some(left), Some(right)) if left == right => Ok(left),
         (Some(_), Some(_)) => Err(format!(
+            "{} and {}",
+            key.source_namespace, key.destination_namespace
+        )),
+        (None, None) if key.source_namespace != key.destination_namespace => Err(format!(
             "{} and {}",
             key.source_namespace, key.destination_namespace
         )),
@@ -836,13 +1299,22 @@ fn observed_edge(
         to_id: to_id.to_owned(),
         env: Some(env),
         sources: vec![EdgeSource {
-            kind: SourceKind::Istio,
+            kind: if key.evidence.is_empty() {
+                SourceKind::Istio
+            } else {
+                SourceKind::Cloud
+            },
             first_seen: last_seen.clone(),
             last_seen,
-            evidence_ref: Some(format!("prometheus:istio_requests_total[{}]", key.window)),
+            evidence_ref: Some(if key.evidence.is_empty() {
+                format!("prometheus:istio_requests_total[{}]", key.window)
+            } else {
+                format!("{}[{}]", key.evidence, key.window)
+            }),
         }],
         status: EdgeStatus::ObservedOnly,
         criticality: Default::default(),
+        criticality_source: Default::default(),
         active: true,
         attrs,
     }
@@ -864,9 +1336,53 @@ fn candidate_edge(from_id: &str, to_id: &str, env: Option<Env>, generated_at: &T
         }],
         status: EdgeStatus::Candidate,
         criticality: Default::default(),
+        criticality_source: Default::default(),
         active: true,
         attrs: EdgeAttrs::default(),
     }
+}
+
+/// Runtime edges carry the call volume that path scores use, so they take the
+/// hard/soft classification of the declared edge between the same pair.
+fn inherit_criticality(edges: &mut [Edge]) {
+    let declared: BTreeMap<(String, String), (Criticality, CriticalitySource)> = edges
+        .iter()
+        .filter(|edge| {
+            edge.edge_type == EdgeType::DeclaredDependsOn
+                && edge.criticality != Criticality::Unknown
+        })
+        .map(|edge| {
+            (
+                (edge.from_id.clone(), edge.to_id.clone()),
+                (edge.criticality, edge.criticality_source),
+            )
+        })
+        .collect();
+    for edge in edges.iter_mut().filter(|edge| {
+        matches!(
+            edge.edge_type,
+            EdgeType::ObservedCalls | EdgeType::CandidateCalls
+        ) && edge.criticality == Criticality::Unknown
+    }) {
+        if let Some((criticality, source)) =
+            declared.get(&(edge.from_id.clone(), edge.to_id.clone()))
+        {
+            edge.criticality = *criticality;
+            edge.criticality_source = *source;
+        }
+    }
+}
+
+/// Network policies, firewall rules and IaC never show up in mesh traffic, so
+/// comparing them with observed calls would only produce noise.
+pub(crate) fn is_structural(to_id: &str) -> bool {
+    [
+        "resource:infra:",
+        "resource:network-policy:",
+        "resource:firewall-rule:",
+    ]
+    .iter()
+    .any(|prefix| to_id.starts_with(prefix))
 }
 
 fn assign_status(edges: &mut [Edge]) {
@@ -883,6 +1399,7 @@ fn assign_status(edges: &mut [Edge]) {
     for edge in edges {
         let pair = (edge.from_id.clone(), edge.to_id.clone());
         edge.status = match edge.edge_type {
+            EdgeType::DeclaredDependsOn if is_structural(&edge.to_id) => EdgeStatus::NotApplicable,
             EdgeType::DeclaredDependsOn => {
                 if observed.contains(&pair) {
                     EdgeStatus::Both

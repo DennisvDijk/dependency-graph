@@ -1,0 +1,22 @@
+{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {
+          "source_workload": "orders",
+          "source_workload_namespace": "shop-prod",
+          "destination_workload": "keycloak",
+          "destination_workload_namespace": "platform-prod",
+          "request_protocol": "http",
+          "destination_service": "keycloak.platform-prod.svc.cluster.local"
+        },
+        "value": [
+          1768435200,
+          "35"
+        ]
+      }
+    ]
+  }
+}

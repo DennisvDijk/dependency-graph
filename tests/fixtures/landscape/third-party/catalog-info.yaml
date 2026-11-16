@@ -1,0 +1,21 @@
+# Open-source apps the platform team runs.
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: keycloak
+  annotations:
+    depgraph/k8s-app-name: keycloak
+spec:
+  type: service
+  lifecycle: production
+  owner: platform-team
+  system: identity
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: redis-cache
+spec:
+  type: database
+  lifecycle: production
+  owner: platform-team

@@ -1,0 +1,5 @@
+{
+  "CacheClusters": [
+    {"CacheClusterId": "sessions-redis-001", "ReplicationGroupId": "sessions-redis", "SecurityGroups": [{"SecurityGroupId": "sg-0g7", "Status": "active"}]}
+  ]
+}

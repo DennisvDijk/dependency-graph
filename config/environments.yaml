@@ -1,4 +1,8 @@
 # Source environment names map onto exactly one of dev, acc, prod.
+# Opt-in: true uses the guess for an unmapped namespace (shop-prod -> prod)
+# instead of leaving its calls out; `depgraph build` lists every guess.
+# A namespace mapped below always wins. Off by default (ADR-008).
+guess_namespaces: false
 dev:
   gitlab:
     - development

@@ -1,0 +1,15 @@
+projects:
+  - path: example-group/shop/orders-py
+    dir: orders-py
+  - path: example-group/shop/notifications
+    dir: notifications
+  - path: example-group/platform/third-party
+    dir: third-party
+  - path: example-group/platform/infra-network
+    dir: infra-network
+  - path: example-group/shop/billing-ex
+    dir: billing-ex
+  - path: example-group/platform/edge-proxy-rs
+    dir: edge-proxy-rs
+  - path: example-group/platform/aws-platform
+    dir: aws-platform

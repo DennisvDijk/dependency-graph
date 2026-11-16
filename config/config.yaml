@@ -30,6 +30,20 @@ kubernetes:
     # kubeconfig_env is the variable name. Never put kubeconfig contents here.
     - name: main
       kubeconfig_env: DEPGRAPH_KUBECONFIG_MAIN
+# Opt-in live cloud discovery: off until you turn it on. depgraph runs the
+# `aws` / `az` CLI with list, describe and read-only query calls only, using
+# the login that CLI already has. No keys here. docs/tutorials/09-cloud-discovery.md
+aws:
+  enabled: false
+  # profile: readonly        # AWS CLI profile name; empty uses the default chain
+  regions: []                # empty: the CLI's default region
+  # env: prod                # environment of this account; empty: from names like orders-prod
+  xray: true                 # also read the X-Ray service map (calls that really happen)
+azure:
+  enabled: false
+  subscriptions: []          # empty: the az default subscription
+  log_analytics_workspaces: []  # workspace ids with Application Insights data
+  # env: prod
 prometheus:
   url: https://prometheus.example.com
   env_label: env
@@ -67,6 +81,25 @@ contract_paths:
   - schema/**
 edge_expiry_days: 30
 retention_days: 90
+# Path scores use these factors. They are assumptions for ranking, not probabilities.
+scoring:
+  hard: "1.0"
+  unknown: "0.5"
+  soft: "0.2"
+# Blocking MR check is off. A team opts in only after explicit approval.
+mr_check:
+  blocking: false
+  override_label: depgraph-override
+# ADR-010: generic OAuth resource server. Set provider: entra to derive Entra v2 endpoints.
+# Tenant and client ids below are placeholders. DEPGRAPH_ENTRA_TENANT_ID and
+# DEPGRAPH_ENTRA_CLIENT_ID override them and are never written here.
+auth:
+  provider: generic
+  tenant_id: 00000000-0000-0000-0000-000000000000
+  client_id: 11111111-1111-1111-1111-111111111111
+  audience: api://11111111-1111-1111-1111-111111111111
+  allowed_roles: []
+  allowed_groups: []
 # ADR-005: OAuth 2.1 resource server. No client secret and no JWT in this file.
 mcp:
   issuer: https://idp.example.com

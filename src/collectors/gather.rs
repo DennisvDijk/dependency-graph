@@ -145,15 +145,19 @@ pub async fn records_from_gitlab(
         ));
         if set == GatherSet::Full {
             let tree = client.repository_tree(project.id, &branch).await?;
-            for item in tree
-                .into_iter()
+            let paths: Vec<String> = tree
+                .iter()
                 .filter(|item| item.item_type == "blob")
-                .take(40)
-            {
-                if !interesting_manifest(&item.path) {
-                    continue;
-                }
+                .map(|item| item.path.clone())
+                .collect();
+            records.extend(project_facts(&project.path_with_namespace, &paths));
+            let mut terraform = String::new();
+            for item in manifest_items(tree) {
                 if let Some(text) = client.file_text(project.id, &item.path, &branch).await? {
+                    if item.path.ends_with(".tf") {
+                        terraform.push_str(&text);
+                        terraform.push('\n');
+                    }
                     records.extend(records_from_file(
                         &project.path_with_namespace,
                         &item.path,
@@ -161,6 +165,10 @@ pub async fn records_from_gitlab(
                     ));
                 }
             }
+            records.extend(super::aws::terraform_records(
+                &project.path_with_namespace,
+                &terraform,
+            ));
         }
     }
     if let Some(live) = live {
@@ -169,7 +177,27 @@ pub async fn records_from_gitlab(
     Ok((records, warnings))
 }
 
+/// Manifest files read per project in a full run. The cap applies after the
+/// filter, so a large source tree (Python, Terraform, monorepos) does not push
+/// its deploy manifests past it.
+const MAX_MANIFESTS_PER_PROJECT: usize = 200;
+
+/// Blobs worth reading, capped after filtering.
+fn manifest_items(tree: Vec<crate::gitlab::TreeItem>) -> Vec<crate::gitlab::TreeItem> {
+    tree.into_iter()
+        .filter(|item| item.item_type == "blob" && interesting_manifest(&item.path))
+        .take(MAX_MANIFESTS_PER_PROJECT)
+        .collect()
+}
+
 fn records_from_catalog(project_path: &str, yaml: &str) -> Vec<RawRecord> {
+    crate::catalog::yaml_documents(yaml)
+        .into_iter()
+        .flat_map(|doc| records_from_catalog_doc(project_path, doc))
+        .collect()
+}
+
+fn records_from_catalog_doc(project_path: &str, yaml: &str) -> Vec<RawRecord> {
     let value: Value = yaml_serde::from_str(yaml).unwrap_or(Value::Null);
     let kind = value
         .get("kind")
@@ -198,20 +226,60 @@ fn records_from_catalog(project_path: &str, yaml: &str) -> Vec<RawRecord> {
         .pointer("/spec/dependsOn")
         .cloned()
         .unwrap_or(json!([]));
+    let soft = annotation_list(&value, "depgraph/soft-dependencies");
+    let heuristics = annotation_list(&value, "depgraph/heuristics");
+    let owner = value
+        .pointer("/spec/owner")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
+    let system = value
+        .pointer("/spec/system")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
     vec![record(
         &collector,
         "component",
-        json!({"name": name, "depends_on": depends_on, "project_path": project_path}),
+        json!({
+            "name": name,
+            "depends_on": depends_on,
+            "project_path": project_path,
+            "soft_dependencies": soft,
+            "heuristics": heuristics,
+            "owner": owner,
+            "system": system,
+        }),
     )]
+}
+
+fn annotation_list(value: &Value, key: &str) -> Vec<String> {
+    let key = key.replace("~", "~0").replace("/", "~1");
+    value
+        .pointer(&format!("/metadata/annotations/{key}"))
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn records_from_tree(project_path: &str, root: &Path) -> Result<Vec<RawRecord>, Error> {
     let mut records = Vec::new();
     let mut files = Vec::new();
     collect_files(root, root, &mut files)?;
+    let mut paths = Vec::new();
+    collect_paths(root, root, &mut paths)?;
+    records.extend(project_facts(project_path, &paths));
+    let mut terraform = String::new();
     for (path, text) in files {
+        if path.ends_with(".tf") {
+            terraform.push_str(&text);
+            terraform.push('\n');
+        }
         records.extend(records_from_file(project_path, &path, &text));
     }
+    records.extend(super::aws::terraform_records(project_path, &terraform));
     Ok(records)
 }
 
@@ -229,6 +297,16 @@ fn records_from_file(project_path: &str, path: &str, text: &str) -> Vec<RawRecor
         }
         return records;
     }
+    // Helm and other Go templates are not rendered; their names are not names.
+    if text.contains("{{") {
+        return records;
+    }
+    if is_compose_file(path) {
+        return compose_records(text);
+    }
+    if text.contains("AWS::") && text.contains("Resources:") {
+        return super::aws::cloudformation_records(project_path, text);
+    }
     for doc in text.split("\n---\n") {
         let kind = yaml_kind(doc);
         let name = yaml_metadata_name(doc).unwrap_or_default();
@@ -243,13 +321,26 @@ fn records_from_file(project_path: &str, path: &str, text: &str) -> Vec<RawRecor
                 ));
             }
             Some("FirewallRule") if crate::ids::is_kebab_case(&name) => {
+                let (sources, destinations) = firewall_endpoints(doc);
+                let owner = sources.first().cloned().or(component);
                 records.push(record(
                     collector,
                     "resource",
-                    json!({"resource_kind": "firewall-rule", "name": name, "project_path": project_path}),
+                    json!({"resource_kind": "firewall-rule", "name": name, "project_path": project_path, "component": owner}),
                 ));
+                for source in &sources {
+                    for (destination, external) in &destinations {
+                        if source != destination {
+                            records.push(record(
+                                collector,
+                                "candidate_call",
+                                json!({"source": source, "destination": destination, "external": external}),
+                            ));
+                        }
+                    }
+                }
             }
-            Some("Deployment") => {
+            Some("Deployment" | "StatefulSet" | "DaemonSet" | "Job" | "CronJob" | "Rollout") => {
                 if let Some(component) = component {
                     records.push(record(
                         collector,
@@ -460,6 +551,166 @@ fn records_from_kubectl_json(text: &str) -> Vec<RawRecord> {
     records
 }
 
+/// `spec.from`/`source(s)` and `spec.to`/`destination(s)` of a firewall rule.
+///
+/// Entries are names, hosts, or maps with `app`, `name`, `component`,
+/// `service` or `host`. CIDRs and wildcards are skipped. A destination is
+/// external when it is a host outside the cluster.
+fn firewall_endpoints(doc: &str) -> (Vec<String>, Vec<(String, bool)>) {
+    let Ok(value) = yaml_serde::from_str::<Value>(doc) else {
+        return (Vec::new(), Vec::new());
+    };
+    let spec = value.get("spec").unwrap_or(&Value::Null);
+    let pick = |keys: &[&str]| -> Vec<String> {
+        let mut out = Vec::new();
+        for key in keys {
+            match spec.get(*key) {
+                Some(Value::Array(items)) => out.extend(items.iter().filter_map(endpoint_text)),
+                Some(item) => out.extend(endpoint_text(item)),
+                None => {}
+            }
+        }
+        out
+    };
+    let mut sources: Vec<String> = pick(&["from", "source", "sources"])
+        .iter()
+        .filter_map(|entry| match endpoint_name(entry) {
+            Some((name, false)) => Some(name),
+            _ => None,
+        })
+        .collect();
+    sources.dedup();
+    let mut destinations: Vec<(String, bool)> = pick(&["to", "destination", "destinations"])
+        .iter()
+        .filter_map(|entry| endpoint_name(entry))
+        .collect();
+    destinations.sort();
+    destinations.dedup();
+    (sources, destinations)
+}
+
+fn endpoint_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Object(map) => ["app", "component", "service", "name", "host"]
+            .iter()
+            .find_map(|key| map.get(*key).and_then(Value::as_str))
+            .map(str::to_owned),
+        _ => None,
+    }
+}
+
+/// `(name, external)` for a firewall endpoint, or `None` for CIDRs and wildcards.
+fn endpoint_name(entry: &str) -> Option<(String, bool)> {
+    let entry = entry.trim();
+    if entry.is_empty()
+        || entry.contains('*')
+        || entry.contains('/')
+        || entry
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == ':')
+    {
+        return None;
+    }
+    let host = entry.split(':').next().unwrap_or(entry);
+    let external = host.contains('.') && !host.ends_with(".svc.cluster.local");
+    let name = host_to_name(entry);
+    crate::ids::is_kebab_case(&name).then_some((name, external))
+}
+
+fn is_compose_file(path: &str) -> bool {
+    let file = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    matches!(
+        file.as_str(),
+        "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml"
+    ) || (file.starts_with("docker-compose.")
+        && (file.ends_with(".yml") || file.ends_with(".yaml")))
+}
+
+/// Candidate calls from docker-compose `depends_on`. Only pairs where both
+/// services are known components end up in the graph.
+fn compose_records(text: &str) -> Vec<RawRecord> {
+    let Ok(value) = yaml_serde::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let Some(services) = value.get("services").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut records = Vec::new();
+    for (service, body) in services {
+        let deps: Vec<String> = match body.get("depends_on") {
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            Some(Value::Object(map)) => map.keys().cloned().collect(),
+            _ => Vec::new(),
+        };
+        for dep in deps {
+            if crate::ids::is_kebab_case(service) && crate::ids::is_kebab_case(&dep) {
+                records.push(record(
+                    "k8s_workloads",
+                    "candidate_call",
+                    json!({"source": service, "destination": dep}),
+                ));
+            }
+        }
+    }
+    records
+}
+
+/// Languages and container use of a repository, from its file names.
+#[must_use]
+pub fn project_facts(project_path: &str, paths: &[String]) -> Option<RawRecord> {
+    let mut languages = std::collections::BTreeSet::new();
+    let mut container = false;
+    for path in paths {
+        if path.split('/').any(|part| {
+            matches!(
+                part,
+                "node_modules" | "vendor" | "deps" | "_build" | "target" | ".venv" | "venv"
+            )
+        }) {
+            continue;
+        }
+        let file = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+        let language = match file.as_str() {
+            "requirements.txt" | "pyproject.toml" | "setup.py" | "pipfile" | "poetry.lock" => {
+                Some("python")
+            }
+            "mix.exs" => Some("elixir"),
+            "cargo.toml" => Some("rust"),
+            "go.mod" => Some("go"),
+            "package.json" => Some("javascript"),
+            "pom.xml" | "build.gradle" | "build.gradle.kts" => Some("java"),
+            "gemfile" => Some("ruby"),
+            "composer.json" => Some("php"),
+            _ if file.ends_with(".csproj") => Some("dotnet"),
+            _ if file.ends_with(".tf") => Some("terraform"),
+            _ => None,
+        };
+        if let Some(language) = language {
+            languages.insert(language);
+        }
+        if file == "dockerfile"
+            || file.ends_with(".dockerfile")
+            || file.starts_with("dockerfile.")
+            || is_compose_file(&file)
+        {
+            container = true;
+        }
+    }
+    if languages.is_empty() && !container {
+        return None;
+    }
+    Some(record(
+        "k8s_workloads",
+        "project_facts",
+        json!({"project_path": project_path, "languages": languages, "container": container}),
+    ))
+}
+
 fn record(collector: &str, kind: &str, payload: Value) -> RawRecord {
     RawRecord {
         collector: collector.to_owned(),
@@ -527,6 +778,20 @@ fn collect_files(root: &Path, dir: &Path, files: &mut Vec<(String, String)>) -> 
     Ok(())
 }
 
+fn collect_paths(root: &Path, dir: &Path, paths: &mut Vec<String>) -> Result<(), Error> {
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_paths(root, &path, paths)?;
+        } else {
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            paths.push(relative.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    paths.sort();
+    Ok(())
+}
+
 fn read_if_exists(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok()
 }
@@ -550,4 +815,60 @@ struct FixtureDeployment {
     #[serde(rename = "ref")]
     reference: String,
     created_at: String,
+}
+
+#[cfg(test)]
+mod manifest_selection_tests {
+    use super::*;
+    use crate::gitlab::TreeItem;
+
+    fn blob(path: &str) -> TreeItem {
+        TreeItem {
+            path: path.to_owned(),
+            item_type: "blob".to_owned(),
+        }
+    }
+
+    #[test]
+    fn manifests_after_many_source_files_are_still_read() {
+        let mut tree: Vec<TreeItem> = (0..500)
+            .map(|index| blob(&format!("src/app/module_{index}.py")))
+            .collect();
+        tree.push(TreeItem {
+            path: "deploy".to_owned(),
+            item_type: "tree".to_owned(),
+        });
+        tree.push(blob("deploy/deployment.yaml"));
+        tree.push(blob("terraform/main.tf"));
+        let paths: Vec<String> = manifest_items(tree)
+            .into_iter()
+            .map(|item| item.path)
+            .collect();
+        assert_eq!(paths, ["deploy/deployment.yaml", "terraform/main.tf"]);
+    }
+
+    #[test]
+    fn manifest_count_is_capped_per_project() {
+        let tree = (0..MAX_MANIFESTS_PER_PROJECT + 50)
+            .map(|index| blob(&format!("k8s/{index}.yaml")))
+            .collect();
+        assert_eq!(manifest_items(tree).len(), MAX_MANIFESTS_PER_PROJECT);
+    }
+
+    #[test]
+    fn templated_manifests_are_skipped() {
+        let text = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: {{ .Release.Name }}\n  labels:\n    app.kubernetes.io/name: {{ .Chart.Name }}\n";
+        assert!(records_from_file("group/app", "chart/templates/deployment.yaml", text).is_empty());
+    }
+
+    #[test]
+    fn a_catalog_file_with_two_entities_yields_both() {
+        let yaml = "# third-party apps run by the platform team\n---\napiVersion: backstage.io/v1alpha1\nkind: Component\nmetadata:\n  name: keycloak\nspec:\n  type: service\n---\napiVersion: backstage.io/v1alpha1\nkind: Resource\nmetadata:\n  name: redis-cache\nspec:\n  type: database\n";
+        let records = records_from_catalog("example-group/platform/third-party", yaml);
+        let names: Vec<&str> = records
+            .iter()
+            .filter_map(|record| record.payload["name"].as_str())
+            .collect();
+        assert_eq!(names, ["keycloak", "redis-cache"]);
+    }
 }

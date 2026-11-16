@@ -26,6 +26,8 @@ pub struct McpState {
     pub issuer: String,
     /// Expected audience.
     pub audience: String,
+    /// Signature, issuer, audience, and scope rules.
+    pub policy: crate::mcp::auth::AccessPolicy,
     /// JWKS document URL.
     pub jwks_url: String,
     /// Skip bearer checks. Only valid on a loopback bind.
@@ -60,8 +62,7 @@ pub fn router(state: Arc<McpState>) -> Router {
 pub async fn serve(
     bind: &str,
     insecure: bool,
-    issuer: &str,
-    audience: &str,
+    policy: crate::mcp::auth::AccessPolicy,
     jwks_url: &str,
     snapshot_path: &Path,
     aliases: Aliases,
@@ -83,8 +84,13 @@ pub async fn serve(
         empty_graph()
     };
     let state = Arc::new(McpState {
-        issuer: issuer.to_owned(),
-        audience: audience.to_owned(),
+        issuer: policy.issuer.clone(),
+        audience: policy
+            .audiences
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "http://127.0.0.1:8080".to_owned()),
+        policy,
         jwks_url: jwks_url.to_owned(),
         insecure,
         snapshot,
@@ -122,8 +128,7 @@ async fn mcp(
         };
         if auth::authorize(
             &token,
-            &state.issuer,
-            &state.audience,
+            &state.policy,
             &state.jwks_url,
             &state.jwks,
             &state.http,
@@ -220,7 +225,11 @@ fn call_tool(state: &McpState, params: &Value) -> Result<Value, String> {
                 .map_err(|err| err.to_string())?
         ),
         "impact" => {
-            json!(algo::impact(&state.snapshot, component, env).map_err(|err| err.to_string())?)
+            let hardness = crate::score::Hardness::default();
+            json!(
+                crate::score::ranked_impact(&state.snapshot, component, env, hardness)
+                    .map_err(|err| err.to_string())?
+            )
         }
         "deploy_order" => {
             let set = args
@@ -238,12 +247,36 @@ fn call_tool(state: &McpState, params: &Value) -> Result<Value, String> {
         "cycles" => json!(algo::cycles(&state.snapshot, env)),
         "library_impact" => json!({"message": algo::library_impact_disabled()}),
         "drift" => json!({"env": env.map(|value| value.as_str()).unwrap_or("prod")}),
-        "critical_nodes" => json!(algo::critical_nodes(&state.snapshot, env)),
+        "critical_nodes" => {
+            let ranked = algo::critical_nodes(&state.snapshot, env);
+            let hardness = crate::score::Hardness::default();
+            json!(ranked
+                .iter()
+                .map(|node| json!({
+                    "id": node.id,
+                    "in_degree": node.in_degree,
+                    "betweenness": node.betweenness,
+                    "articulation": node.articulation,
+                    "weight_score": crate::score::weight_score(&state.snapshot, &node.id, env, hardness),
+                }))
+                .collect::<Vec<_>>())
+        }
         "orphans" => json!(algo::orphans(&state.snapshot)),
         "diff" => {
             json!({"note": "pass two snapshots to the CLI; the server diffs against an empty addition set"})
         }
         "component_context" => component_context(state, component, env)?,
+        "scorecard" => json!(
+            crate::score::scorecard(&state.snapshot)
+                .into_iter()
+                .map(|row| json!({
+                    "owner": row.owner,
+                    "components": row.components,
+                    "with_system": row.with_system,
+                    "with_telemetry": row.with_telemetry,
+                }))
+                .collect::<Vec<_>>()
+        ),
         _ => return Err(format!("unknown tool {name}")),
     };
     Ok(json!({
@@ -283,6 +316,8 @@ fn component_context(state: &McpState, component: &str, env: Option<Env>) -> Res
         "catalog_path": node.attrs.get("catalog_path").cloned().unwrap_or(json!("catalog-info.yaml")),
         "manifest_paths": node.attrs.get("manifest_paths").cloned().unwrap_or(json!([])),
         "owner": attr("owner"),
+        "languages": node.attrs.get("languages").cloned().unwrap_or(json!([])),
+        "container": node.attrs.get("container").cloned().unwrap_or(json!(false)),
         "dependencies": deps,
         "consumers": consumers
     }))

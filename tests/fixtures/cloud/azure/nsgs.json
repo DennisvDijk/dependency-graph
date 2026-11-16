@@ -1,0 +1,11 @@
+[
+  {"name": "shop-prod-nsg", "securityRules": [
+    {"name": "storefront-to-billing", "access": "Allow", "direction": "Inbound", "priority": 200,
+     "sourceApplicationSecurityGroups": [{"id": "/subscriptions/0000/resourceGroups/SHOP-PROD/providers/Microsoft.Network/applicationSecurityGroups/asg-storefront"}],
+     "destinationApplicationSecurityGroups": [{"id": "/subscriptions/0000/resourceGroups/shop-prod/providers/Microsoft.Network/applicationSecurityGroups/billing-ex-asg"}]},
+    {"name": "deny-billing-to-storefront", "access": "Deny", "direction": "Inbound", "priority": 300,
+     "sourceApplicationSecurityGroups": [{"id": "/subscriptions/0000/resourceGroups/shop-prod/providers/Microsoft.Network/applicationSecurityGroups/billing-ex-asg"}],
+     "destinationApplicationSecurityGroups": [{"id": "/subscriptions/0000/resourceGroups/shop-prod/providers/Microsoft.Network/applicationSecurityGroups/asg-storefront"}]},
+    {"name": "internet-https", "access": "Allow", "direction": "Inbound", "sourceAddressPrefix": "Internet", "destinationApplicationSecurityGroups": [{"id": "/subscriptions/0000/resourceGroups/shop-prod/providers/Microsoft.Network/applicationSecurityGroups/asg-storefront"}]}
+  ]}
+]

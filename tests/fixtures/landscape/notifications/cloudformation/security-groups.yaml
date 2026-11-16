@@ -1,0 +1,28 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Notifications security groups (CloudFormation short-form tags on purpose).
+Resources:
+  NotificationsSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: notifications-prod-sg
+      GroupDescription: !Sub "${AWS::StackName} notifications"
+      Tags:
+        - Key: app
+          Value: notifications
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !GetAtt WorkerSg.GroupId
+  WorkerSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: orders-worker-sg
+      GroupDescription: Orders worker
+  OrdersWorker:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: orders-py-prod
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref WorkerSg

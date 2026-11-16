@@ -1,0 +1,10 @@
+kind: FirewallRule
+metadata:
+  name: billing-egress
+spec:
+  from:
+    - app: billing-ex
+  to:
+    - host: api.stripe.com:443
+    - notifications.shop-prod.svc.cluster.local
+    - 0.0.0.0/0

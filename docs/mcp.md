@@ -33,6 +33,33 @@ docker run --rm -p 8080:8080 -v "$PWD:/app" -w /app depgraph serve-mcp --insecur
 
 `--insecure-local` refuses a bind address that is not loopback.
 
+## Entra ID (optional)
+
+Leave `auth.provider: generic` unless the organization uses Entra. With Entra, the MCP client performs the browser flow. depgraph never asks you to paste a token. `--insecure-local` ignores the provider and still only binds loopback.
+
+```yaml
+auth:
+  provider: entra
+  tenant_id: 00000000-0000-0000-0000-000000000000
+  client_id: 11111111-1111-1111-1111-111111111111
+  audience: api://11111111-1111-1111-1111-111111111111
+  allowed_roles: []
+  allowed_groups: []
+```
+
+Real ids may be supplied as `DEPGRAPH_ENTRA_TENANT_ID` and `DEPGRAPH_ENTRA_CLIENT_ID` instead of committing them. The issuer becomes `https://login.microsoftonline.com/<tenant>/v2.0`. The JWKS URL is the `jwks_uri` from `https://login.microsoftonline.com/<tenant>/v2.0/.well-known/openid-configuration` (the v2 document publishes `https://login.microsoftonline.com/<tenant>/discovery/v2.0/keys`).
+
+App registration:
+
+1. Entra admin center → App registrations → New registration. Note the application (client) id and the directory (tenant) id.
+2. Expose an API. Set the Application ID URI to `api://<client-id>`.
+3. Add a delegated scope `depgraph.read` (admins and users can consent).
+4. App roles → create an application role `Depgraph.Read` (allowed member types: applications and users) for service clients.
+5. API permissions → add the delegated scope, then Grant admin consent.
+6. Optional: put group object ids in `allowed_groups` or extra role values in `allowed_roles`.
+
+Clients: `depgraph mcp-config cursor|claude|vscode|opencode`. The JSON has the server URL only. The client discovers `/.well-known/oauth-protected-resource` and opens the browser.
+
 ## Identity provider
 
 1. Register a client for the agent (opencode, pi, or another MCP client) at the IdP. The IdP runs PKCE. depgraph does not.

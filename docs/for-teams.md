@@ -2,7 +2,7 @@
 
 depgraph tekent runtime-afhankelijkheden en deploys over GitLab-repo's. De toolrepo staat op GitHub. Jullie applicatierepo's blijven op GitLab. depgraph leest die repo's en Prometheus. Het schrijft er niet naar, behalve één MR-notitie en één drift-issue vanuit de bot-token.
 
-Hoe je een agent aansluit staat in [mcp.md](mcp.md).
+Hoe je een agent aansluit staat in [mcp.md](mcp.md). Een eerste lokale run, zonder token in de repo, staat in [quickstart.md](quickstart.md): `depgraph init`, `depgraph doctor`, daarna `depgraph serve-mcp --insecure-local`. Met Entra doet de client de browserflow; je plakt geen token.
 
 ## catalog-info.yaml bijhouden
 

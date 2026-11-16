@@ -8,9 +8,11 @@
 
 pub mod analysis;
 pub mod catalog;
+pub mod classify;
 pub mod cli;
 pub mod collectors;
 pub mod config;
+pub mod doctor;
 pub mod error;
 pub mod gitlab;
 pub mod ids;
@@ -20,9 +22,12 @@ pub mod models;
 pub mod normalize;
 pub mod propose;
 pub mod publish;
+pub mod quickstart;
 pub mod raw;
 pub mod redact;
 pub mod repo_scan;
+pub mod score;
 pub mod store;
+pub mod timeline;
 
 pub use error::Error;

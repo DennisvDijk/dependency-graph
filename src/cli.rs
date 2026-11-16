@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::analysis::{self, OutputFormat, ReadRequest};
 use crate::collectors::{self, CollectSet};
@@ -19,7 +19,12 @@ use crate::publish;
 
 /// Self-hosted dependency graph for runtime dependencies and deployments.
 #[derive(Debug, Parser)]
-#[command(name = "depgraph", version, about)]
+#[command(
+    name = "depgraph",
+    version,
+    about,
+    after_long_help = "Examples:\n  depgraph init\n  depgraph doctor\n  depgraph collect --set full --output data\n  depgraph build --raw data/raw --output data/snapshot.json\n  depgraph show payments-api --snapshot data/snapshot.json\n  depgraph serve-mcp --insecure-local --snapshot data/snapshot.json\n  depgraph mcp-config cursor"
+)]
 pub struct Cli {
     /// Command to run.
     #[command(subcommand)]
@@ -79,6 +84,24 @@ pub enum Command {
     ServeMcp(ServeMcpArgs),
     /// Comment on a merge request with prod consumers and contract changes.
     MrCheck(MrCheckArgs),
+    /// Write a minimal config. Does not store tokens.
+    Init(InitArgs),
+    /// Check config, glab, and snapshot freshness.
+    Doctor(DoctorArgs),
+    /// Print an MCP client config snippet.
+    McpConfig(McpConfigArgs),
+    /// Print a shell completion script.
+    Completions(CompletionArgs),
+    /// List archived snapshot runs.
+    Runs(RunsArgs),
+    /// Delete archived runs older than retention_days.
+    Retain(RetainArgs),
+    /// Deployments and incidents on one timeline.
+    Timeline(TimelineArgs),
+    /// Edge count and local query p95.
+    Stats(StatsArgs),
+    /// Data-quality scorecard per owner.
+    Scorecard(ScorecardArgs),
 }
 
 /// `depgraph collect`.
@@ -108,6 +131,20 @@ pub struct CollectArgs {
     /// Query `prometheus.url` with read-only GETs.
     #[arg(long)]
     pub prometheus: bool,
+    /// Read the AWS account once with the `aws` CLI (read-only), even when
+    /// `aws.enabled` is false.
+    #[arg(long)]
+    pub aws: bool,
+    /// Saved `aws` CLI output (`security-groups.json`, `service-graph.json`, ...).
+    #[arg(long)]
+    pub aws_fixture: Option<PathBuf>,
+    /// Read Azure once with the `az` CLI (read-only), even when
+    /// `azure.enabled` is false.
+    #[arg(long)]
+    pub azure: bool,
+    /// Saved `az` CLI output (`asgs.json`, `nsgs.json`, `dependencies.json`).
+    #[arg(long)]
+    pub azure_fixture: Option<PathBuf>,
 }
 
 /// `depgraph drift`.
@@ -156,6 +193,12 @@ pub struct MrCheckArgs {
     /// Print the note and do not call GitLab.
     #[arg(long)]
     pub dry_run: bool,
+    /// Opt in to the blocking check for this run. The config flag stays off.
+    #[arg(long)]
+    pub blocking: bool,
+    /// Label already on the merge request. Repeatable.
+    #[arg(long)]
+    pub label: Vec<String>,
 }
 
 /// `depgraph publish drift-issue`.
@@ -173,6 +216,94 @@ pub struct DriftIssueArgs {
     /// Print the issue body and do not call GitLab.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+/// `depgraph init`.
+#[derive(Debug, clap::Args)]
+pub struct InitArgs {
+    /// Directory that will contain `config/`. Defaults to the current directory.
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
+    /// Replace config files that already exist.
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// `depgraph doctor`.
+#[derive(Debug, clap::Args)]
+pub struct DoctorArgs {
+    /// Reference time for snapshot age. Defaults to the clock.
+    #[arg(long)]
+    pub now: Option<String>,
+    /// Also GET GitLab `/api/v4/version`. Read-only.
+    #[arg(long)]
+    pub online: bool,
+}
+
+/// `depgraph mcp-config`.
+#[derive(Debug, clap::Args)]
+pub struct McpConfigArgs {
+    /// `cursor`, `claude`, `vscode`, or `opencode`.
+    pub client: String,
+}
+
+/// `depgraph completions`.
+#[derive(Debug, clap::Args)]
+pub struct CompletionArgs {
+    /// Shell to generate.
+    pub shell: clap_complete::Shell,
+}
+
+/// `depgraph runs`.
+#[derive(Debug, clap::Args)]
+pub struct RunsArgs {
+    /// Directory that contains `snapshot.json`. Defaults to `data`.
+    #[arg(long)]
+    pub data: Option<PathBuf>,
+}
+
+/// `depgraph retain`.
+#[derive(Debug, clap::Args)]
+pub struct RetainArgs {
+    /// Directory that contains `snapshot.json` and `runs/`. Defaults to `data`.
+    #[arg(long)]
+    pub data: Option<PathBuf>,
+    /// Reference time. Defaults to the clock.
+    #[arg(long)]
+    pub now: Option<String>,
+}
+
+/// `depgraph timeline`.
+#[derive(Debug, clap::Args)]
+pub struct TimelineArgs {
+    /// Canonical environment.
+    #[arg(long, value_enum)]
+    pub env: EnvArg,
+    /// Include events at or after this RFC 3339 time.
+    #[arg(long)]
+    pub since: String,
+    /// Deployment fixture. Not a live GitLab call.
+    #[arg(long)]
+    pub deployments: PathBuf,
+    /// Incident fixture. Not a live Datadog call.
+    #[arg(long)]
+    pub incidents: Option<PathBuf>,
+}
+
+/// `depgraph stats`.
+#[derive(Debug, clap::Args)]
+pub struct StatsArgs {
+    /// Snapshot to measure.
+    #[arg(long)]
+    pub snapshot: Option<PathBuf>,
+}
+
+/// `depgraph scorecard`.
+#[derive(Debug, clap::Args)]
+pub struct ScorecardArgs {
+    /// Snapshot to score.
+    #[arg(long)]
+    pub snapshot: Option<PathBuf>,
 }
 
 /// `depgraph build`.
@@ -217,6 +348,18 @@ pub struct ReadArgs {
     /// How many edges to walk. Omit to walk the whole reachable graph.
     #[arg(long)]
     pub depth: Option<usize>,
+    /// Archived run key for the left side of `diff`.
+    #[arg(long = "from")]
+    pub from_run: Option<String>,
+    /// Archived run key for the right side of `diff`.
+    #[arg(long = "to")]
+    pub to_run: Option<String>,
+    /// Date for `at`. Uses the newest stored run at or before this time.
+    #[arg(long)]
+    pub date: Option<String>,
+    /// Directory of archived runs. Defaults to `data/runs`.
+    #[arg(long)]
+    pub runs: Option<PathBuf>,
 }
 
 /// `depgraph site`.
@@ -438,6 +581,15 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::ProposeCatalog(args) => propose_catalog(args),
         Command::ServeMcp(args) => run_serve_mcp(args),
         Command::MrCheck(args) => run_mr_check(args),
+        Command::Init(args) => run_init(args),
+        Command::Doctor(args) => run_doctor(args),
+        Command::McpConfig(args) => run_mcp_config(args),
+        Command::Completions(args) => run_completions(args),
+        Command::Runs(args) => run_runs(args),
+        Command::Retain(args) => run_retain(args),
+        Command::Timeline(args) => run_timeline(args),
+        Command::Stats(args) => run_stats(args),
+        Command::Scorecard(args) => run_scorecard(args),
     }
 }
 
@@ -446,9 +598,13 @@ fn run_collect(args: CollectArgs) -> Result<(), Error> {
         collectors::CollectSet::Fast => collectors::GatherSet::Fast,
         collectors::CollectSet::Full => collectors::GatherSet::Full,
     };
-    let prometheus_only =
-        args.fixture.is_none() && (args.prometheus_fixture.is_some() || args.prometheus);
+    let prometheus_only = args.fixture.is_none()
+        && (args.prometheus_fixture.is_some()
+            || args.prometheus
+            || args.aws_fixture.is_some()
+            || args.azure_fixture.is_some());
     let runtime = prometheus_records(&args)?;
+    let cloud = cloud_records(&args)?;
     let mut records = if let Some(fixture) = &args.fixture {
         collectors::records_from_fixture(fixture, set)?
     } else if prometheus_only {
@@ -493,6 +649,7 @@ fn run_collect(args: CollectArgs) -> Result<(), Error> {
         records
     };
     records.extend(runtime);
+    records.extend(cloud);
     let output = args.output.unwrap_or_else(|| PathBuf::from("data"));
     write_raw_dir(&output.join("raw"), &records)?;
     println!(
@@ -531,6 +688,57 @@ fn prometheus_records(args: &CollectArgs) -> Result<Vec<crate::raw::RawRecord>, 
         &filter,
         token.as_deref(),
     ))
+}
+
+/// Opt-in AWS and Azure reads: a saved fixture, `--aws`/`--azure`, or
+/// `enabled: true` in config. Nothing runs when none of these is set.
+fn cloud_records(args: &CollectArgs) -> Result<Vec<crate::raw::RawRecord>, Error> {
+    let project = config::load_project(Path::new(".")).ok();
+    let aws = project
+        .as_ref()
+        .map(|p| p.config.aws.clone())
+        .unwrap_or_default();
+    let azure = project
+        .as_ref()
+        .map(|p| p.config.azure.clone())
+        .unwrap_or_default();
+    let uses_config = args.fixture.is_none();
+    let mut records = Vec::new();
+    if let Some(dir) = &args.aws_fixture {
+        records.extend(collectors::records_from_aws_dir(dir, aws.env.as_deref())?);
+    } else if args.aws || (uses_config && aws.enabled) {
+        let live = collectors::AwsLive {
+            profile: aws.profile.clone(),
+            regions: aws.regions.clone(),
+            env: aws.env.clone(),
+            xray: aws.xray,
+        };
+        let (found, warnings) = collectors::records_from_aws(&live, chrono::Utc::now())?;
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
+        eprintln!("aws: {} records", found.len());
+        records.extend(found);
+    }
+    if let Some(dir) = &args.azure_fixture {
+        records.extend(collectors::records_from_azure_dir(
+            dir,
+            azure.env.as_deref(),
+        )?);
+    } else if args.azure || (uses_config && azure.enabled) {
+        let live = collectors::AzureLive {
+            subscriptions: azure.subscriptions.clone(),
+            workspaces: azure.log_analytics_workspaces.clone(),
+            env: azure.env.clone(),
+        };
+        let (found, warnings) = collectors::records_from_azure(&live)?;
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
+        eprintln!("azure: {} records", found.len());
+        records.extend(found);
+    }
+    Ok(records)
 }
 
 fn live_reader(
@@ -640,7 +848,104 @@ fn run_build(args: BuildArgs) -> Result<(), Error> {
         output.display(),
         built.unresolved.len()
     );
+    for line in namespace_hints(&built.unresolved, &environments) {
+        eprintln!("{line}");
+    }
+    for line in guessed_namespaces(&records, &environments) {
+        eprintln!("{line}");
+    }
+    match crate::store::archive_snapshot(&output) {
+        Ok(path) => println!("archived {}", path.display()),
+        Err(err) => eprintln!("warning: snapshot was not archived: {err}"),
+    }
     Ok(())
+}
+
+/// With `guess_namespaces: true`, list every namespace whose environment was
+/// guessed, so the guesses can be checked.
+fn guessed_namespaces(
+    records: &[crate::raw::RawRecord],
+    environments: &config::EnvIndex,
+) -> Vec<String> {
+    let mut guessed: std::collections::BTreeMap<String, crate::models::Env> = Default::default();
+    for record in records {
+        for field in ["namespace", "source_namespace", "destination_namespace"] {
+            if let Some(namespace) = record.payload.get(field).and_then(|value| value.as_str())
+                && let Some(env) = environments.guessed_namespace(namespace)
+            {
+                guessed.insert(namespace.to_owned(), env);
+            }
+        }
+    }
+    if guessed.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "note: guess_namespaces is on; {} namespace(s) were guessed from their name:",
+        guessed.len()
+    )];
+    for (namespace, env) in &guessed {
+        lines.push(format!("  {namespace} -> {env}"));
+    }
+    lines.push(
+        "  map a wrong guess under k8s_namespaces in config/environments.yaml; a mapping always wins."
+            .to_string(),
+    );
+    lines
+}
+
+/// Setup hints for calls dropped because their namespace is not mapped.
+fn namespace_hints(
+    unresolved: &[normalize::merge::Unresolved],
+    environments: &config::EnvIndex,
+) -> Vec<String> {
+    let mut dropped: std::collections::BTreeMap<String, u64> = Default::default();
+    for row in unresolved
+        .iter()
+        .filter(|row| row.kind == "environment" && row.reason == "namespace is not mapped")
+    {
+        for namespace in row
+            .name
+            .split(" and ")
+            .filter(|namespace| environments.resolve_namespace(namespace).is_none())
+        {
+            *dropped.entry(namespace.to_string()).or_default() += row.volume;
+        }
+    }
+    if dropped.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "hint: calls in {} namespace(s) were left out because config/environments.yaml does not map them:",
+        dropped.len()
+    )];
+    let mut suggested: std::collections::BTreeMap<crate::models::Env, Vec<&str>> =
+        Default::default();
+    for (namespace, calls) in &dropped {
+        let guess = environments.suggest_namespace(namespace);
+        let advice = match guess {
+            Some(env) => format!("looks like {env}"),
+            None => "no guess; map it yourself or ignore it".to_string(),
+        };
+        lines.push(format!("  {namespace} ({calls} calls): {advice}"));
+        if let Some(env) = guess {
+            suggested.entry(env).or_default().push(namespace);
+        }
+    }
+    if !suggested.is_empty() {
+        lines.push(
+            "  check the guesses, then add them under the matching keys in config/environments.yaml:"
+                .to_string(),
+        );
+        for (env, namespaces) in &suggested {
+            lines.push(format!("    {env}:"));
+            lines.push(format!("      k8s_namespaces: [{}]", namespaces.join(", ")));
+        }
+    }
+    lines.push(
+        "  then run depgraph build again (docs/tutorials/07-troubleshooting.md).".to_string(),
+    );
+    lines
 }
 
 fn read_raw_dir(dir: &Path) -> Result<Vec<crate::raw::RawRecord>, Error> {
@@ -762,16 +1067,22 @@ fn run_inventory(args: InventoryArgs) -> Result<(), Error> {
 
 fn run_serve_mcp(args: ServeMcpArgs) -> Result<(), Error> {
     let project = config::load_project(Path::new("."))?;
-    let bind = args.bind.unwrap_or(project.config.mcp.bind);
+    let bind = args
+        .bind
+        .clone()
+        .unwrap_or_else(|| project.config.mcp.bind.clone());
     let snapshot = args
         .snapshot
         .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
+    let (policy, jwks) = crate::mcp::policy_from_config(&project.config)?;
+    if args.insecure_local {
+        eprintln!("next: depgraph mcp-config cursor");
+    }
     crate::mcp::serve_blocking(
         &bind,
         args.insecure_local,
-        &project.config.mcp.issuer,
-        &project.config.mcp.audience,
-        &project.config.mcp.jwks_url,
+        policy,
+        &jwks,
         &snapshot,
         project.aliases,
     )
@@ -795,10 +1106,24 @@ fn run_mr_check(args: MrCheckArgs) -> Result<(), Error> {
         aliases: &project.aliases,
         contract_paths: &project.config.contract_paths,
         changed_files: &args.changed_file,
+        blocking: args.blocking || project.config.mr_check.blocking,
+        override_label: &project.config.mr_check.override_label,
+        labels: &args.label,
     });
     if args.dry_run {
         println!("{}", note.body);
+        if note.requires_approval {
+            return Err(Error::Validation(
+                "blocking MR check: extra approval or the override label is required".into(),
+            ));
+        }
         return Ok(());
+    }
+    if note.requires_approval {
+        eprintln!("{}", note.body);
+        return Err(Error::Validation(
+            "blocking MR check: extra approval or the override label is required".into(),
+        ));
     }
     let iid = args
         .mr_iid
@@ -856,6 +1181,260 @@ fn run_drift_issue(args: DriftIssueArgs) -> Result<(), Error> {
         &token,
         &body,
     ))
+}
+
+fn run_init(args: InitArgs) -> Result<(), Error> {
+    let root = args.dir.unwrap_or_else(|| PathBuf::from("."));
+    let host = glab_host();
+    let written = crate::quickstart::init(&root, host.as_deref(), args.force)?;
+    if written.is_empty() {
+        println!("config already exists. next: depgraph doctor");
+    } else {
+        for path in &written {
+            println!("wrote {path}");
+        }
+        println!("next: depgraph doctor");
+    }
+    if host.is_none() {
+        eprintln!("glab host was not detected. next: glab auth login, then set gitlab.base_url");
+    }
+    Ok(())
+}
+
+fn run_doctor(args: DoctorArgs) -> Result<(), Error> {
+    let now = match args.now {
+        Some(value) => crate::models::Timestamp::parse(value).map_err(Error::Validation)?,
+        None => crate::models::Timestamp::parse(chrono::Utc::now().to_rfc3339())
+            .map_err(Error::Validation)?,
+    };
+    let token_env_set = std::env::var("GITLAB_TOKEN")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let mut checks = crate::doctor::diagnose(Path::new("."), &now, probe_glab(), token_env_set);
+    if args.online {
+        checks.retain(|check| check.name != "connectivity");
+        checks.push(online_gitlab());
+    }
+    let ok = crate::doctor::all_ok(&checks);
+    print!("{}", crate::doctor::render(&checks));
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Config(
+            "doctor found a problem. follow the next: lines above".into(),
+        ))
+    }
+}
+
+fn run_mcp_config(args: McpConfigArgs) -> Result<(), Error> {
+    let project = config::load_project(Path::new(".")).ok();
+    let bind = project
+        .as_ref()
+        .map(|item| item.config.mcp.bind.clone())
+        .unwrap_or_else(|| "127.0.0.1:8080".to_owned());
+    let entra = project
+        .as_ref()
+        .is_some_and(|item| item.config.auth.provider == config::AuthProvider::Entra);
+    let body = crate::mcp::render_client_config(&args.client, &bind, entra)?;
+    print!("{body}");
+    if entra {
+        eprintln!(
+            "Entra is enabled. The client opens a browser. Do not paste a token. next: depgraph serve-mcp"
+        );
+    } else {
+        eprintln!("next: depgraph serve-mcp --insecure-local --snapshot data/snapshot.json");
+    }
+    Ok(())
+}
+
+fn run_completions(args: CompletionArgs) -> Result<(), Error> {
+    let mut command = Cli::command();
+    clap_complete::generate(args.shell, &mut command, "depgraph", &mut std::io::stdout());
+    Ok(())
+}
+
+fn run_runs(args: RunsArgs) -> Result<(), Error> {
+    let data = args.data.unwrap_or_else(|| PathBuf::from("data"));
+    for key in crate::store::list_runs(&data.join("runs"))? {
+        println!("{key}");
+    }
+    Ok(())
+}
+
+fn run_retain(args: RetainArgs) -> Result<(), Error> {
+    let data = args.data.unwrap_or_else(|| PathBuf::from("data"));
+    let now = match args.now {
+        Some(value) => crate::models::Timestamp::parse(value).map_err(Error::Validation)?,
+        None => crate::models::Timestamp::parse(chrono::Utc::now().to_rfc3339())
+            .map_err(Error::Validation)?,
+    };
+    let days = config::load_project(Path::new("."))
+        .map(|project| project.config.retention_days)
+        .unwrap_or(90);
+    let removed = crate::store::retain(&data.join("runs"), &now, days)?;
+    if removed.is_empty() {
+        println!("removed 0 runs");
+    } else {
+        for key in removed {
+            println!("removed {key}");
+        }
+    }
+    Ok(())
+}
+
+fn run_timeline(args: TimelineArgs) -> Result<(), Error> {
+    let deployments: Vec<crate::timeline::DeploymentFixture> =
+        yaml_serde::from_str(&fs::read_to_string(&args.deployments)?)
+            .map_err(|err| Error::Config(format!("deployments fixture: {err}")))?;
+    let incidents = if let Some(path) = &args.incidents {
+        yaml_serde::from_str(&fs::read_to_string(path)?)
+            .map_err(|err| Error::Config(format!("incidents fixture: {err}")))?
+    } else {
+        Vec::new()
+    };
+    let environments =
+        config::parse_environments(&fs::read_to_string("config/environments.yaml")?)?.index()?;
+    let events = crate::timeline::correlate(
+        &deployments,
+        &incidents,
+        args.env.into_env(),
+        &args.since,
+        |name| {
+            environments.resolve(name).or(match name {
+                "dev" => Some(crate::models::Env::Dev),
+                "acc" => Some(crate::models::Env::Acc),
+                "prod" => Some(crate::models::Env::Prod),
+                _ => None,
+            })
+        },
+    );
+    for event in events {
+        println!(
+            "{}\t{}\t{}\t{}",
+            event.at, event.env, event.kind, event.summary
+        );
+    }
+    Ok(())
+}
+
+fn run_stats(args: StatsArgs) -> Result<(), Error> {
+    let path = args
+        .snapshot
+        .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
+    let graph: crate::models::GraphSnapshot = serde_json::from_str(&fs::read_to_string(&path)?)
+        .map_err(|err| Error::Validation(err.to_string()))?;
+    let stats = crate::score::measure(&graph);
+    println!("active_edges {}", stats.active_edges);
+    for (env, count) in &stats.active_edges_by_env {
+        println!("active_edges_{env} {count}");
+    }
+    println!("query_p95_ms {:.3}", stats.query_p95_ms);
+    println!(
+        "next: paste these into docs/decisions/ADR-012-graph-database.md when measuring a real snapshot"
+    );
+    Ok(())
+}
+
+fn run_scorecard(args: ScorecardArgs) -> Result<(), Error> {
+    let path = args
+        .snapshot
+        .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
+    let graph: crate::models::GraphSnapshot = serde_json::from_str(&fs::read_to_string(&path)?)
+        .map_err(|err| Error::Validation(err.to_string()))?;
+    println!("owner\tcomponents\twith_system\twith_telemetry");
+    for row in crate::score::scorecard(&graph) {
+        println!(
+            "{}\t{}\t{}\t{}",
+            row.owner, row.components, row.with_system, row.with_telemetry
+        );
+    }
+    println!("note: this is an improvement aid, not a ranking for blame");
+    Ok(())
+}
+
+fn probe_glab() -> crate::doctor::GlabStatus {
+    match std::process::Command::new("glab")
+        .args(["auth", "status"])
+        .output()
+    {
+        Err(_) => crate::doctor::GlabStatus::Missing,
+        Ok(output) if output.status.success() => crate::doctor::GlabStatus::LoggedIn,
+        Ok(_) => crate::doctor::GlabStatus::LoggedOut,
+    }
+}
+
+fn glab_host() -> Option<String> {
+    let output = std::process::Command::new("glab")
+        .args(["config", "get", "host"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let host = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if host.is_empty() || host.contains([' ', '@']) {
+        None
+    } else {
+        Some(host)
+    }
+}
+
+fn online_gitlab() -> crate::doctor::Check {
+    let project = match config::load_project(Path::new(".")) {
+        Ok(project) => project,
+        Err(err) => {
+            return crate::doctor::Check {
+                name: "connectivity",
+                ok: false,
+                detail: format!("{err}. next: depgraph init"),
+            };
+        }
+    };
+    let url = format!(
+        "{}/api/v4/version",
+        project.config.gitlab.base_url.trim_end_matches('/')
+    );
+    let runtime = match tokio_runtime() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            return crate::doctor::Check {
+                name: "connectivity",
+                ok: false,
+                detail: format!("{err}"),
+            };
+        }
+    };
+    let result = runtime.block_on(async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .map_err(|err| err.to_string())?;
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|_| "could not reach GitLab".to_owned())?;
+        Ok::<_, String>(response.status())
+    });
+    match result {
+        Ok(status) if status.is_success() => crate::doctor::Check {
+            name: "connectivity",
+            ok: true,
+            detail: "GitLab /api/v4/version responded".to_owned(),
+        },
+        Ok(status) => crate::doctor::Check {
+            name: "connectivity",
+            ok: false,
+            detail: format!(
+                "GitLab returned {status}. next: check gitlab.base_url and glab auth login"
+            ),
+        },
+        Err(err) => crate::doctor::Check {
+            name: "connectivity",
+            ok: false,
+            detail: format!("{err}. next: check gitlab.base_url and the network"),
+        },
+    }
 }
 
 fn validate_catalog(args: &ValidateCatalogArgs) -> Result<(), Error> {
@@ -916,6 +1495,10 @@ fn read_request(command: &'static str, args: ReadArgs) -> ReadRequest {
         format: args.format.into_format(),
         snapshot: args.snapshot,
         depth: args.depth,
+        from_run: args.from_run,
+        to_run: args.to_run,
+        date: args.date,
+        runs: args.runs,
     }
 }
 

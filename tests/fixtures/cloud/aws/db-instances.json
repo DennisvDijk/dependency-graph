@@ -1,0 +1,5 @@
+{
+  "DBInstances": [
+    {"DBInstanceIdentifier": "orders-aurora-instance-1", "DBClusterIdentifier": "orders-aurora", "VpcSecurityGroups": [{"VpcSecurityGroupId": "sg-0c3", "Status": "active"}]}
+  ]
+}

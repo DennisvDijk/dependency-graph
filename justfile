@@ -17,3 +17,19 @@ ci:
 	cargo fmt --all -- --check
 	cargo clippy --all-targets --all-features -- -D warnings
 	cargo test --all-targets --all-features
+
+init:
+	cargo run -- init
+
+doctor:
+	cargo run -- doctor
+
+mcp-cursor:
+	cargo run -- mcp-config cursor
+
+completions:
+	cargo run -- completions bash
+
+# Full flow on the bundled sample data. No token, no network.
+demo:
+	scripts/demo.sh

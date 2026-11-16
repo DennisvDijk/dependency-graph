@@ -30,6 +30,7 @@ yaml_serde = "0.10"
 petgraph = "0.8"
 jsonwebtoken = "9"
 axum = "0.8"
+clap_complete = "4"
 
 [dev-dependencies]
 assert_cmd = "2"

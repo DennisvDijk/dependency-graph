@@ -1,0 +1,6 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: edge-proxy-rs
+  labels:
+    app.kubernetes.io/name: edge-proxy-rs

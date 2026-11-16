@@ -383,6 +383,7 @@ mod tests {
             sources: vec![source],
             status: EdgeStatus::NotApplicable,
             criticality: Criticality::Unknown,
+            criticality_source: Default::default(),
             active: true,
             attrs: EdgeAttrs::default(),
         }

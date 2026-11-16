@@ -24,6 +24,12 @@ pub struct MrCheck<'a> {
     pub contract_paths: &'a [String],
     /// Files changed in the merge request.
     pub changed_files: &'a [String],
+    /// Config flag. Off until a team opts in.
+    pub blocking: bool,
+    /// Label that records an override.
+    pub override_label: &'a str,
+    /// Labels already on the merge request.
+    pub labels: &'a [String],
 }
 
 /// The note body and whether a contract file changed.
@@ -35,6 +41,8 @@ pub struct MrNote {
     pub component: Option<String>,
     /// Whether a changed file matched `contract_paths`.
     pub contract_change: bool,
+    /// Blocking is on, a contract changed, prod callers were observed, and no override label is set.
+    pub requires_approval: bool,
 }
 
 /// Build the note. Does not call GitLab.
@@ -87,10 +95,35 @@ pub fn build_note(check: &MrCheck<'_>) -> MrNote {
         }
         _ => lines.push("- none".to_owned()),
     }
+    let observed = component.as_ref().is_some_and(|name| {
+        let id = format!("component:{name}");
+        check.snapshot.edges.iter().any(|edge| {
+            edge.active
+                && edge.edge_type == crate::models::EdgeType::ObservedCalls
+                && edge.env == Some(Env::Prod)
+                && edge.to_id == id
+        })
+    });
+    let overridden = check
+        .labels
+        .iter()
+        .any(|label| label == check.override_label);
+    let requires_approval = check.blocking && !contract_hits.is_empty() && observed && !overridden;
+    if requires_approval {
+        lines.push(
+            "BLOCKING: contract change has observed prod consumers. An extra approval or the override label is required."
+                .into(),
+        );
+    } else if check.blocking {
+        lines.push("blocking: enabled, no extra approval required for this change".into());
+    } else {
+        lines.push("blocking: off".into());
+    }
     MrNote {
         body: lines.join("\n") + "\n",
         component,
         contract_change: !contract_hits.is_empty(),
+        requires_approval,
     }
 }
 
@@ -281,6 +314,7 @@ mod tests {
                 }],
                 status: EdgeStatus::DeclaredOnly,
                 criticality: Default::default(),
+                criticality_source: Default::default(),
                 active: true,
                 attrs: Default::default(),
             }],
@@ -295,6 +329,9 @@ mod tests {
             aliases: &aliases,
             contract_paths: &["openapi/**".into()],
             changed_files: &["openapi/api.yaml".into(), "README.md".into()],
+            blocking: false,
+            override_label: "depgraph-override",
+            labels: &[],
         });
         assert_eq!(note.component.as_deref(), Some("payments-api"));
         assert!(note.contract_change);

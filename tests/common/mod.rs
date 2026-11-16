@@ -55,6 +55,7 @@ fn edge(
         }],
         status,
         criticality: Criticality::Hard,
+        criticality_source: Default::default(),
         active: true,
         attrs: EdgeAttrs::default(),
     }

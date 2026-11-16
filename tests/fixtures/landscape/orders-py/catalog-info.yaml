@@ -1,0 +1,17 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: orders-py
+  annotations:
+    gitlab.com/project-slug: example-group/shop/orders-py
+    depgraph/k8s-app-name: orders
+    depgraph/soft-dependencies: example-group/shop/notifications
+spec:
+  type: service
+  lifecycle: production
+  owner: shop-team
+  system: shop
+  dependsOn:
+    - component:default/keycloak
+    - resource:default/redis-cache
+    - resource:default/infra-network

@@ -1,0 +1,7 @@
+{
+  "services": [
+    {"serviceName": "orders-py-prod", "networkConfiguration": {"awsvpcConfiguration": {"securityGroups": ["sg-0a1"], "subnets": ["subnet-1"]}}},
+    {"serviceName": "notifications-prod", "networkConfiguration": {"awsvpcConfiguration": {"securityGroups": ["sg-0e5"]}}},
+    {"serviceName": "keycloak", "networkConfiguration": {"awsvpcConfiguration": {"securityGroups": ["sg-0f6"]}}}
+  ]
+}

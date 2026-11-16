@@ -232,6 +232,28 @@ pub fn diff(left: &GraphSnapshot, right: &GraphSnapshot) -> SnapshotDiff {
     }
 }
 
+/// Confidence in `0.0..=1.0` from status and whether calls were observed.
+///
+/// Inactive edges score `0`. A declared-and-observed edge with calls scores `1`.
+#[must_use]
+pub fn confidence(edge: &crate::models::Edge) -> f64 {
+    if !edge.active {
+        return 0.0;
+    }
+    let base = match edge.status {
+        crate::models::EdgeStatus::Both => 0.9,
+        crate::models::EdgeStatus::ObservedOnly => 0.6,
+        crate::models::EdgeStatus::DeclaredOnly => 0.4,
+        crate::models::EdgeStatus::Candidate => 0.2,
+        crate::models::EdgeStatus::NotApplicable => 0.5,
+    };
+    if edge.attrs.calls_7d.unwrap_or(0) > 0 || edge.attrs.calls_total.unwrap_or(0) > 0 {
+        f64::min(base + 0.1, 1.0)
+    } else {
+        base
+    }
+}
+
 /// Edges whose evidence covers `at`.
 #[must_use]
 pub fn edges_at(graph: &GraphSnapshot, at: &Timestamp) -> Vec<Edge> {
@@ -494,6 +516,7 @@ mod tests {
             } else {
                 Criticality::Hard
             },
+            criticality_source: Default::default(),
             active,
             attrs: EdgeAttrs::default(),
         }

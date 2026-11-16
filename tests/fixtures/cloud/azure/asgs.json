@@ -1,0 +1,4 @@
+[
+  {"id": "/subscriptions/0000/resourceGroups/shop-prod/providers/Microsoft.Network/applicationSecurityGroups/asg-storefront", "name": "asg-storefront", "tags": {"app": "edge-proxy-rs"}},
+  {"id": "/subscriptions/0000/resourceGroups/shop-prod/providers/Microsoft.Network/applicationSecurityGroups/billing-ex-asg", "name": "billing-ex-asg"}
+]
