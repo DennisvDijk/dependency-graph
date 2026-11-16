@@ -47,6 +47,8 @@ Source-kind: `catalog`, `otel`, `istio`, `hubble`, `sbom_hint`, `static`.
 
 Voor het schrijven worden nodes en edges op id gesorteerd, en sources op kind, `first_seen`, `last_seen`, `evidence_ref`. Object-sleutels komen uit structs en `BTreeMap`, dus de sleutelvolgorde ligt vast. Het snapshot-schema is `schemas/graph.schema.json` en wordt uit de Rust-modellen gegenereerd; de test faalt als het bestand achterloopt.
 
+Een alias wijst altijd naar precies één componentnaam, zonder het `component:`-voorvoegsel. Zie `config/aliases.example.yaml`. `config/aliases.yaml` blijft leeg tot er echte aliassen zijn. Een alias die twee keer voorkomt, of een lijst van componenten, is een configfout.
+
 ## Buiten scope, types blijven
 
 `Library`-nodes en `uses_library`-edges blijven geldige ids. `libraries.enabled` staat uit: er zijn geen interne libraries, en collectors mogen ze niet schrijven. Voorgestelde resource-kinds `network-policy`, `firewall-rule` en `infra` staan in ADR-003 en ADR-004 en zitten nog niet in de parser.

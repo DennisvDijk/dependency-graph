@@ -1,0 +1,16 @@
+[
+  {
+    "id": 101,
+    "path_with_namespace": "example-group/pilot/payments-api",
+    "default_branch": "main",
+    "last_activity_at": "2026-01-15T12:00:00Z",
+    "archived": false
+  },
+  {
+    "id": 102,
+    "path_with_namespace": "example-group/pilot/billing-api",
+    "default_branch": "main",
+    "last_activity_at": "2026-01-10T08:00:00Z",
+    "archived": false
+  }
+]

@@ -218,9 +218,26 @@ pub struct Aliases {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PilotFile {
-    /// Chosen applications. Empty in F0-1.
+    /// Informational names. They do not shrink the pilot. Scope is every project in the configured groups.
     #[serde(default)]
     pub apps: Vec<PilotApp>,
+}
+
+/// Projects in `groups` are in scope. `pilot.apps` never removes a project (ADR-004).
+#[must_use]
+pub fn pilot_project_paths<'a>(
+    groups: &[impl AsRef<str>],
+    project_paths: &'a [impl AsRef<str>],
+) -> Vec<&'a str> {
+    project_paths
+        .iter()
+        .map(AsRef::as_ref)
+        .filter(|path| groups.iter().any(|group| in_group(path, group.as_ref())))
+        .collect()
+}
+
+fn in_group(path: &str, group: &str) -> bool {
+    path == group || path.starts_with(&format!("{group}/"))
 }
 
 /// One pilot application.
@@ -939,5 +956,62 @@ prod:
             aliases.aliases.get("payments").map(String::as_str),
             Some("payments-api")
         );
+    }
+
+    #[test]
+    fn example_aliases_load_and_duplicates_still_fail() {
+        let example = parse_aliases(include_str!("../config/aliases.example.yaml")).unwrap();
+        assert_eq!(
+            example.aliases.get("payments").map(String::as_str),
+            Some("payments-api")
+        );
+        assert_eq!(
+            example.aliases.get("billing").map(String::as_str),
+            Some("billing-api")
+        );
+        let duplicated = "aliases:\n  payments: payments-api\n  payments: other-api\n";
+        assert!(
+            parse_aliases(duplicated)
+                .unwrap_err()
+                .to_string()
+                .contains("more than once")
+        );
+    }
+
+    #[test]
+    fn pilot_scope_is_every_project_in_the_configured_groups() {
+        let groups = ["example-group/pilot"];
+        let projects = [
+            "example-group/pilot/payments-api".to_owned(),
+            "example-group/other/skip-me".to_owned(),
+            "example-group/pilot/billing-api".to_owned(),
+        ];
+        let scope = pilot_project_paths(&groups, &projects);
+        assert_eq!(
+            scope,
+            vec![
+                "example-group/pilot/payments-api",
+                "example-group/pilot/billing-api",
+            ]
+        );
+    }
+
+    #[test]
+    fn environment_names_map_to_exactly_one_canonical_env() {
+        let environments = parse_environments(include_str!("../config/environments.yaml")).unwrap();
+        let index = environments.index().unwrap();
+        let cases = [
+            ("development", Env::Dev),
+            ("dev", Env::Dev),
+            ("acceptance", Env::Acc),
+            ("staging", Env::Acc),
+            ("acc", Env::Acc),
+            ("production", Env::Prod),
+            ("prod", Env::Prod),
+        ];
+        for (source, expected) in cases {
+            assert_eq!(index.resolve(source), Some(expected), "{source}");
+        }
+        assert_eq!(index.resolve("qa"), None);
     }
 }

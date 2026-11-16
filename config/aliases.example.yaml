@@ -1,0 +1,5 @@
+# Example only. config/aliases.yaml stays empty until real aliases are known.
+# Each alias names exactly one canonical component name.
+aliases:
+  payments: payments-api
+  billing: billing-api

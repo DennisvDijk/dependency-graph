@@ -37,6 +37,8 @@ just ci
 
 ```sh
 cargo run -- validate tests/fixtures/empty-graph.json
+cargo run -- inventory --output inventory.csv
+cargo run -- propose-catalog --from ./checkout --output ./proposed-catalog
 cargo run -- collect --set fast   # exits 2 until a later phase
 cargo run -- serve-mcp             # exits 2; OAuth is not implemented yet
 ```

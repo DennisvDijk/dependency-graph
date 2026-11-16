@@ -1,0 +1,17 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: payments-api
+  annotations:
+    gitlab.com/project-slug: example-group/payments-api
+    depgraph/otel-service-name: payments-api
+    depgraph/k8s-app-name: payments-api
+    depgraph/image-repository: registry.example.com/payments-api
+spec:
+  type: service
+  lifecycle: experimental
+  owner: ai-platform
+  system: payments
+  dependsOn:
+    - component:default/billing-api
+    - resource:default/payments-db

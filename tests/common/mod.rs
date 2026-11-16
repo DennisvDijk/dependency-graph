@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+
+pub mod gitlab_mock;
+
 use std::collections::BTreeMap;
 
 use depgraph::ids::{self, ResourceKind};

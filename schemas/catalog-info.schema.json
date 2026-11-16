@@ -2,13 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.com/depgraph/catalog-info.schema.json",
   "title": "catalog-info.yaml",
-  "description": "Stub schema for a Backstage catalog-info.yaml document. F0-5 completes the rules; F0-1 only locks the fields depgraph reads.",
+  "description": "Backstage catalog entity read by depgraph. dependsOn resolution is enforced by depgraph validate-catalog, not by this schema alone.",
   "type": "object",
   "additionalProperties": true,
   "required": ["apiVersion", "kind", "metadata", "spec"],
   "properties": {
     "apiVersion": { "const": "backstage.io/v1alpha1" },
-    "kind": { "const": "Component" },
+    "kind": { "enum": ["Component", "Resource"] },
     "metadata": {
       "type": "object",
       "additionalProperties": true,
@@ -17,8 +17,10 @@
         "name": {
           "type": "string",
           "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
-          "description": "Canonical component name."
+          "description": "Canonical component or resource name."
         },
+        "description": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
         "annotations": {
           "type": "object",
           "additionalProperties": { "type": "string" },
@@ -27,7 +29,8 @@
             "depgraph/otel-service-name": { "type": "string" },
             "depgraph/k8s-app-name": { "type": "string" },
             "depgraph/image-repository": { "type": "string" },
-            "depgraph/soft-dependencies": { "type": "string" }
+            "depgraph/soft-dependencies": { "type": "string" },
+            "depgraph/gitlab-environments": { "type": "string" }
           }
         }
       }
@@ -35,9 +38,8 @@
     "spec": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["type", "lifecycle", "owner"],
       "properties": {
-        "type": { "enum": ["service", "job", "library", "website"] },
+        "type": { "type": "string", "minLength": 1 },
         "lifecycle": { "enum": ["experimental", "production", "deprecated"] },
         "owner": { "type": "string", "minLength": 1 },
         "system": { "type": "string" },
@@ -50,5 +52,36 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "kind": { "const": "Component" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": {
+          "spec": {
+            "required": ["type", "lifecycle", "owner"],
+            "properties": {
+              "type": { "enum": ["service", "job", "library", "website"] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "Resource" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": {
+          "spec": {
+            "required": ["type", "owner"]
+          }
+        }
+      }
+    }
+  ]
 }
