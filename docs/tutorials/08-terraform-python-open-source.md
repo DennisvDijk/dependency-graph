@@ -9,6 +9,7 @@ The short version:
 | Terraform repo | `resource:infra:<repo-name>` | Yes, one node per repo that has `.tf` files | Owner, and services can `dependsOn` it |
 | Service in any language (Python, Elixir, Rust, Go, Java, Node…) | `component:<name>`, with `languages` on the node | Yes, from its workload label | Owner, system, declared deps |
 | Kubernetes workload | `component:<name>` | `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `CronJob`, Argo `Rollout` with an `app.kubernetes.io/name` label | — |
+| AWS security group (Terraform or CloudFormation) | `resource:firewall-rule:<group-name>` on its service; a rule between two groups becomes a candidate edge; an RDS/ElastiCache group becomes `resource:database:<id>` | Yes, fully automatic | — |
 | Firewall rule (YAML, `kind: FirewallRule`) | `resource:firewall-rule:<name>`, plus a candidate edge per allowed destination | Yes | — |
 | Docker / docker-compose | `container: true` on the node; compose `depends_on` becomes candidate edges | Yes | — |
 | Python package (pip library) | Not tracked | — | — (see [limits](#what-is-not-covered-yet)) |
@@ -100,6 +101,38 @@ spec:
 - Each `from → to` pair becomes a **candidate** edge: the network allows it, nobody has seen it yet. If Istio sees the call, the observed edge appears next to it.
 - Does your firewall-as-code use a different format (a vendor's export, a CSV, a different YAML shape)? Send one sample file; mapping it is a small change in `src/collectors/gather.rs` (`firewall_endpoints`).
 
+## AWS security groups
+
+On AWS the firewall is the security group. depgraph reads them from Terraform (`.tf`, all files of a repo together) and from CloudFormation YAML, with nothing to configure:
+
+```hcl
+resource "aws_security_group" "billing" { name = "payments-sg" }
+
+resource "aws_ecs_service" "billing" {
+  name = "billing-ex"                                   # payments-sg belongs to billing-ex
+  network_configuration { security_groups = [aws_security_group.billing.id] }
+}
+
+resource "aws_security_group_rule" "billing_to_keycloak" {
+  type                     = "ingress"
+  security_group_id        = aws_security_group.keycloak.id   # name = "prod-keycloak"
+  source_security_group_id = aws_security_group.billing.id
+}
+# -> candidate edge  component:billing-ex -> component:keycloak
+```
+
+**Which service owns a group**, first match wins:
+
+1. What it is attached to: `aws_ecs_service` (`name`), `aws_lambda_function` (`function_name`), `aws_db_instance` / `aws_rds_cluster` (`identifier`), `aws_elasticache_*` (`cluster_id`). CloudFormation: `AWS::ECS::Service`, `AWS::Lambda::Function`, `AWS::RDS::DBInstance` / `DBCluster`. A database owner turns into `resource:database:<identifier>`.
+2. Its `app`, `service`, `component` or `Name` tag.
+3. Its group name (`name`, `name_prefix`, `GroupName`), or else the Terraform label.
+
+**Names are matched to services you already have.** `orders-py-prod-sg`, `prod-orders-py` and `${var.env}-orders-py-sg` all find `orders-py`: depgraph drops words like `sg`, `ecs`, `lambda`, `svc` and environment names (`prod`, `staging`, your own GitLab names) from either end until a known service matches, and applies `config/aliases.yaml`. Nothing new is invented: a group whose name matches no service goes to `unresolved.csv` ("no component matches this cloud resource"). Fix it with one alias line, for example `legacy-batch-sg: batch-runner`.
+
+**Which rules count**: inline `ingress` / `egress` blocks with `security_groups`, `aws_security_group_rule`, `aws_vpc_security_group_ingress_rule` / `egress_rule`, and in CloudFormation `SecurityGroupIngress` / `SecurityGroupEgress` (inline or standalone) with `SourceSecurityGroupId` / `DestinationSecurityGroupId`. `!Ref` and `!GetAtt` work. CIDR and prefix-list rules add nothing, because an IP range is not a service.
+
+Edges are **candidates**: the security group allows the traffic, nobody has seen it yet. Group ids typed as literals (`sg-0abc…`) and groups from other repos via `data` sources without a name cannot be followed.
+
 ## Docker and docker-compose
 
 - A `Dockerfile` (or compose file) in a repo sets `container: true` on the repo's components.
@@ -164,7 +197,7 @@ Calls that leave the cluster through Istio show up as `resource:external-api:<ho
 
 ## Try it on sample data
 
-`tests/fixtures/landscape/` holds all of this in one place: a Python service (`orders-py`), a Terraform-only repo, Keycloak and Redis in one deploy repo with a Helm chart, a soft dependency, an OpenAI egress call and an unmapped namespace. `tests/landscape.rs` asserts every node and edge it must produce, so it doubles as a reference for what to expect. To run it yourself from a checkout:
+`tests/fixtures/landscape/` holds all of this in one place: a Python service (`orders-py`), an Elixir and a Rust service, AWS security groups in Terraform (`aws-platform/`) and CloudFormation (`notifications/cloudformation/`), a Terraform-only repo, Keycloak and Redis in one deploy repo with a Helm chart, a soft dependency, an OpenAI egress call and an unmapped namespace. `tests/landscape.rs` asserts every node and edge it must produce, so it doubles as a reference for what to expect. To run it yourself from a checkout:
 
 ```sh
 mkdir -p /tmp/landscape/config && cp config/*.yaml /tmp/landscape/config/
@@ -185,5 +218,6 @@ The build prints one hint, for the `qa` namespace, which the sample leaves unmap
 - **Python, npm or other package dependencies** (who uses library X at version Y). Libraries are switched off on purpose (ADR-001 question 8, ADR-009), so `depgraph library-impact` answers `libraries disabled`. If you need this, it is a new phase: read `requirements.txt` / `pyproject.toml` / SBOMs and turn libraries back on.
 - **Resources inside a Terraform stack.** One node per repo, by design.
 - **Clusters as nodes.** See [Kubernetes clusters](#kubernetes-clusters).
-- **Firewall formats other than `kind: FirewallRule` YAML.** Send a sample.
+- **Firewall formats other than `kind: FirewallRule` YAML and AWS security groups** (AWS Network Firewall domain lists, WAF, NACLs). Send a sample.
+- **AWS CDK or Pulumi code.** Run `cdk synth` and commit the template, or describe the groups in Terraform/CloudFormation.
 - **Rendered Helm output.** Use a catalog file, as above.

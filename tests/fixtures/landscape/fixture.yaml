@@ -11,3 +11,5 @@ projects:
     dir: billing-ex
   - path: example-group/platform/edge-proxy-rs
     dir: edge-proxy-rs
+  - path: example-group/platform/aws-platform
+    dir: aws-platform

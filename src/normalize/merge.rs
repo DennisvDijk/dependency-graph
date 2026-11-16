@@ -83,6 +83,8 @@ pub fn merge_records(
     let mut resources: BTreeMap<(String, String), String> = BTreeMap::new();
     // (component from label, project path, resource kind, resource name)
     let mut resource_links: Vec<(Option<String>, String, String, String)> = Vec::new();
+    // Indexes into `resource_links` whose component name is matched loosely.
+    let mut loose_links: Vec<usize> = Vec::new();
     let mut deployments: Vec<DeploymentCand> = Vec::new();
     let mut unresolved = Vec::new();
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
@@ -183,6 +185,14 @@ pub fn merge_records(
                         .get("component")
                         .and_then(|value| value.as_str())
                         .map(|component| canonical_name(component, aliases));
+                    if record
+                        .payload
+                        .get("loose")
+                        .and_then(|value| value.as_bool())
+                        == Some(true)
+                    {
+                        loose_links.push(resource_links.len());
+                    }
                     resource_links.push((
                         component,
                         text_field(&record.payload, "project_path"),
@@ -243,6 +253,16 @@ pub fn merge_records(
                         .get("external")
                         .and_then(|value| value.as_bool())
                         .unwrap_or(false),
+                    destination_kind: record
+                        .payload
+                        .get("destination_kind")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_owned),
+                    loose: record
+                        .payload
+                        .get("loose")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
                 });
             }
             "project_facts" => {
@@ -257,6 +277,30 @@ pub fn merge_records(
             }
             other => unresolved.push(unresolved_row("record", other, "ignored record kind", 0)),
         }
+    }
+
+    // Security groups and other cloud resources name their service loosely
+    // (`orders-py-prod-sg`). Match to a known component or drop the resource.
+    for index in loose_links {
+        let (label, _, kind, name) = &resource_links[index];
+        let matched = label.as_deref().and_then(|label| {
+            loose_match(
+                label,
+                |name| components.contains_key(name),
+                aliases,
+                environments,
+            )
+        });
+        if matched.is_none() {
+            unresolved.push(unresolved_row(
+                "resource",
+                label.as_deref().unwrap_or(name),
+                "no component matches this cloud resource",
+                0,
+            ));
+            resources.remove(&(kind.clone(), name.clone()));
+        }
+        resource_links[index].0 = matched;
     }
 
     let mut inferred = BTreeSet::new();
@@ -576,6 +620,77 @@ fn soft_name(entry: &str, aliases: &Aliases) -> String {
     canonical_name(last, aliases)
 }
 
+/// Words that cloud resource names add around a service name.
+const NAME_NOISE: &[&str] = &[
+    "sg",
+    "secgroup",
+    "security",
+    "group",
+    "svc",
+    "service",
+    "app",
+    "ecs",
+    "eks",
+    "task",
+    "lambda",
+    "fn",
+    "function",
+    "alb",
+    "nlb",
+    "elb",
+    "lb",
+    "allow",
+    "rule",
+    "rules",
+    "internal",
+    "private",
+    "public",
+    "dev",
+    "development",
+    "acc",
+    "acceptance",
+    "test",
+    "tst",
+    "qa",
+    "staging",
+    "stage",
+    "stg",
+    "prod",
+    "production",
+    "prd",
+];
+
+/// Find a known name inside a cloud resource name: try the name as is (and
+/// its alias), then keep dropping a noise word or environment name from
+/// either end. Returns `None` when nothing known is found; nothing is guessed.
+fn loose_match(
+    name: &str,
+    known: impl Fn(&str) -> bool,
+    aliases: &Aliases,
+    environments: &EnvIndex,
+) -> Option<String> {
+    let lower = name.to_ascii_lowercase();
+    let mut parts: Vec<&str> = lower
+        .split(['-', '_', '.'])
+        .filter(|part| !part.is_empty())
+        .collect();
+    let noise = |part: &str| NAME_NOISE.contains(&part) || environments.resolve(part).is_some();
+    while !parts.is_empty() {
+        let candidate = canonical_name(&parts.join("-"), aliases);
+        if known(&candidate) {
+            return Some(candidate);
+        }
+        if noise(parts[0]) {
+            parts.remove(0);
+        } else if noise(parts[parts.len() - 1]) {
+            parts.pop();
+        } else {
+            return None;
+        }
+    }
+    None
+}
+
 fn canonical_name(name: &str, aliases: &Aliases) -> String {
     aliases
         .aliases
@@ -739,6 +854,10 @@ struct CandidateCall {
     destination: String,
     namespace: String,
     external: bool,
+    /// A resource kind (`database`) when the destination is not a component.
+    destination_kind: Option<String>,
+    /// Names come from cloud resources and are matched with `loose_match`.
+    loose: bool,
 }
 
 fn absorb_observed(
@@ -908,8 +1027,50 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
         ));
     }
     for candidate in candidates.iter() {
-        let source = canonical_name(&candidate.source, aliases);
-        let destination = canonical_name(&candidate.destination, aliases);
+        let is_component = |name: &str| components.contains_key(name);
+        let resolve = |name: &str| {
+            if candidate.loose {
+                loose_match(name, is_component, aliases, environments)
+                    .unwrap_or_else(|| canonical_name(name, aliases))
+            } else {
+                canonical_name(name, aliases)
+            }
+        };
+        let source = resolve(&candidate.source);
+        if let Some(kind) = candidate.destination_kind.as_deref() {
+            if !components.contains_key(&source) {
+                unresolved.push(unresolved_row(
+                    "candidate_call",
+                    &candidate.source,
+                    "name is not a known component",
+                    0,
+                ));
+                continue;
+            }
+            if ResourceKind::parse(kind).is_none() || !ids::is_kebab_case(&candidate.destination) {
+                continue;
+            }
+            let name = loose_match(
+                &candidate.destination,
+                |name| resources.contains_key(&(kind.to_owned(), name.to_owned())),
+                aliases,
+                environments,
+            )
+            .unwrap_or_else(|| candidate.destination.clone());
+            let id = format!("resource:{kind}:{name}");
+            if !resources.contains_key(&(kind.to_owned(), name.clone())) {
+                resources.insert((kind.to_owned(), name), "k8s_workloads".to_owned());
+                inferred.insert(id.clone());
+            }
+            edges.push(candidate_edge(
+                &format!("component:{source}"),
+                &id,
+                None,
+                generated_at,
+            ));
+            continue;
+        }
+        let destination = resolve(&candidate.destination);
         let destination_known = candidate.external || components.contains_key(&destination);
         if !components.contains_key(&source) || !destination_known {
             let missing = if components.contains_key(&source) {

@@ -8,6 +8,7 @@
 //! clients (kube, k8s-openapi) arrive with the first real collector. See ADR-002.
 //! None of these stubs contact a source system.
 
+mod aws;
 mod base;
 mod datadog_status;
 mod gather;

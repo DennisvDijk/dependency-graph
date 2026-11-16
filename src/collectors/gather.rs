@@ -151,8 +151,13 @@ pub async fn records_from_gitlab(
                 .map(|item| item.path.clone())
                 .collect();
             records.extend(project_facts(&project.path_with_namespace, &paths));
+            let mut terraform = String::new();
             for item in manifest_items(tree) {
                 if let Some(text) = client.file_text(project.id, &item.path, &branch).await? {
+                    if item.path.ends_with(".tf") {
+                        terraform.push_str(&text);
+                        terraform.push('\n');
+                    }
                     records.extend(records_from_file(
                         &project.path_with_namespace,
                         &item.path,
@@ -160,6 +165,10 @@ pub async fn records_from_gitlab(
                     ));
                 }
             }
+            records.extend(super::aws::terraform_records(
+                &project.path_with_namespace,
+                &terraform,
+            ));
         }
     }
     if let Some(live) = live {
@@ -262,9 +271,15 @@ fn records_from_tree(project_path: &str, root: &Path) -> Result<Vec<RawRecord>, 
     let mut paths = Vec::new();
     collect_paths(root, root, &mut paths)?;
     records.extend(project_facts(project_path, &paths));
+    let mut terraform = String::new();
     for (path, text) in files {
+        if path.ends_with(".tf") {
+            terraform.push_str(&text);
+            terraform.push('\n');
+        }
         records.extend(records_from_file(project_path, &path, &text));
     }
+    records.extend(super::aws::terraform_records(project_path, &terraform));
     Ok(records)
 }
 
@@ -288,6 +303,9 @@ fn records_from_file(project_path: &str, path: &str, text: &str) -> Vec<RawRecor
     }
     if is_compose_file(path) {
         return compose_records(text);
+    }
+    if text.contains("AWS::") && text.contains("Resources:") {
+        return super::aws::cloudformation_records(project_path, text);
     }
     for doc in text.split("\n---\n") {
         let kind = yaml_kind(doc);

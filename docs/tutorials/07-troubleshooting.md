@@ -17,6 +17,7 @@ Start with `depgraph doctor`. Every `fail` line ends with a `next:` line that sa
 | A network policy or firewall rule is not linked to my service | No `app.kubernetes.io/name` label, and the repo holds several services | Add the label to the manifest |
 | A StatefulSet, CronJob or DaemonSet does not show up | No `app.kubernetes.io/name` label on it | Add the label; the name comes from there, not from `metadata.name` |
 | `languages` is missing on a node | The repo has no recognized build file at any depth, or only inside a build folder | Expected for deploy-only repos; see [tutorial 8](08-terraform-python-open-source.md#python-elixir-rust-and-other-languages) |
+| `unresolved.csv` says "no component matches this cloud resource" | An AWS security group (or the service it is attached to) has a name that contains no known service | Add one line to `config/aliases.yaml`: `<name-from-the-row>: <service>` |
 | `unresolved.csv` lists `postgres`, `redis` or similar as `candidate_call` | A docker-compose `depends_on` points at a local helper, not a service | Harmless. Declare real databases as catalog `Resource`s |
 | `path_score` is 0 | The edge has no observed calls (declared only, or no Prometheus data for that env) | Expected. Scores need Istio traffic. |
 | A Helm-deployed or open-source app is missing, or has no owner | Helm templates are not rendered | Add a `catalog-info.yaml` in its deploy repo ([tutorial 8](08-terraform-python-open-source.md#open-source-apps-you-run)) |

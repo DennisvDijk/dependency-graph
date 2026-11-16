@@ -1,6 +1,7 @@
 //! End-to-end check of nodes and edges on a mixed landscape: a Python
 //! service, a Terraform-only repo, open-source apps in one deploy repo, a
-//! soft-only dependency, an external API and an unmapped namespace.
+//! soft-only dependency, an external API, AWS security groups and an
+//! unmapped namespace.
 //! See `tests/fixtures/landscape/README.md`.
 
 use std::collections::BTreeSet;
@@ -114,11 +115,19 @@ fn every_node_is_expected() {
         "deployment:keycloak@prod",
         "deployment:orders-py@acc",
         "deployment:orders-py@prod",
+        "resource:database:orders-db",
         "resource:database:redis-cache",
         "resource:external-api:api-openai-com",
         "resource:external-api:api-stripe-com",
         "resource:firewall-rule:billing-egress",
+        "resource:firewall-rule:edge-public-sg",
+        "resource:firewall-rule:notifications-prod-sg",
         "resource:firewall-rule:orders-egress",
+        "resource:firewall-rule:orders-py-prod-sg",
+        "resource:firewall-rule:orders-worker-sg",
+        "resource:firewall-rule:payments-sg",
+        "resource:firewall-rule:prod-keycloak",
+        "resource:infra:aws-platform",
         "resource:infra:infra-network",
         "resource:infra:orders-py",
         "resource:network-policy:orders-net",
@@ -155,6 +164,20 @@ fn every_edge_is_expected() {
         "candidate_calls component:billing-ex -> resource:external-api:api-stripe-com - candidate unknown static",
         "candidate_calls component:billing-ex -> component:notifications - candidate unknown static",
         "candidate_calls component:billing-ex -> component:orders-py - candidate unknown static",
+        // AWS security groups (Terraform and CloudFormation). Each group belongs
+        // to the service it is attached to (ECS, Lambda) or named after
+        // (`orders-py-prod-sg`, tag `app`); a rule between two groups is a
+        // candidate call. The RDS group turns into a database node.
+        "declared_depends_on component:orders-py -> resource:firewall-rule:orders-py-prod-sg - n/a unknown static",
+        "declared_depends_on component:orders-py -> resource:firewall-rule:orders-worker-sg - n/a unknown static",
+        "declared_depends_on component:edge-proxy-rs -> resource:firewall-rule:edge-public-sg - n/a unknown static",
+        "declared_depends_on component:billing-ex -> resource:firewall-rule:payments-sg - n/a unknown static",
+        "declared_depends_on component:keycloak -> resource:firewall-rule:prod-keycloak - n/a unknown static",
+        "declared_depends_on component:notifications -> resource:firewall-rule:notifications-prod-sg - n/a unknown static",
+        "candidate_calls component:edge-proxy-rs -> component:orders-py - candidate unknown static",
+        "candidate_calls component:billing-ex -> component:keycloak - candidate unknown static",
+        "candidate_calls component:orders-py -> resource:database:orders-db - candidate unknown static",
+        "candidate_calls component:orders-py -> component:notifications - candidate soft static",
         // GitLab deployments; `staging` maps to acc.
         "deployed_as component:orders-py -> deployment:orders-py@prod prod n/a unknown static",
         "deployed_as component:orders-py -> deployment:orders-py@acc acc n/a unknown static",
@@ -198,6 +221,11 @@ fn helm_templates_add_nothing_and_unmapped_namespaces_are_reported() {
     );
     assert!(
         unresolved.contains("candidate_call,postgres,name is not a known component"),
+        "{unresolved}"
+    );
+    // A security group named after a service that does not exist is not drawn.
+    assert!(
+        unresolved.contains("resource,legacy-batch-sg,no component matches this cloud resource"),
         "{unresolved}"
     );
     assert!(
