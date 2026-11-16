@@ -118,10 +118,10 @@ pub struct SuggestArgs {
     /// Environment mappings used to suggest namespace names.
     #[arg(long, default_value = "config/environments.yaml")]
     pub environments: PathBuf,
-    /// Send remaining names and component names to Amazon Bedrock.
+    /// Send remaining names and component names to an OpenAI-compatible API.
     #[arg(long)]
     pub llm: bool,
-    /// Claude model ID available to the configured AWS account and region.
+    /// Model name on the configured endpoint (or set OPENAI_MODEL).
     #[arg(long, requires = "llm")]
     pub model_id: Option<String>,
 }

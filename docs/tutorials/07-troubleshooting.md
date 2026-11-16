@@ -43,9 +43,13 @@ changes the graph. Ambiguous and unrecognized names can remain unresolved.
 An older `unresolved.csv` may remain on disk after upgrading; it is no longer
 updated and should not be used as the current report.
 
-For optional AI suggestions, run `depgraph suggest --llm --model-id <model-id>`
-with an Amazon Bedrock Claude model ID available in your AWS account and
-region. This sends unmatched names and known component names to Bedrock using
-your configured AWS CLI credentials, may incur charges, and requires permission
-to invoke the model. AI output is marked for review; it cannot change your
-configuration. The default command does not call Bedrock.
+For optional AI suggestions, set `OPENAI_BASE_URL` to your OpenAI-compatible
+API base URL (for example `https://models.example.com/v1`), set
+`OPENAI_API_KEY` in your environment if the endpoint needs a key, and run
+`depgraph suggest --llm --model-id <model-name>`. You can set `OPENAI_MODEL`
+instead of passing `--model-id`. An endpoint must support the Chat Completions
+API and return a JSON object in its message content. HTTPS is required except
+for local endpoints on localhost. No endpoint is contacted unless `--llm` is
+specified. Unmatched names and known component names are sent to the endpoint;
+its operator's privacy and billing terms apply. AI output is marked for review
+and cannot change your configuration. Do not commit API keys to the repository.

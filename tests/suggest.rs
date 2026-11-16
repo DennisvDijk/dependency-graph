@@ -69,10 +69,10 @@ fn suggestions_are_review_only_and_ignore_ambiguous_names() {
     assert!(!environments.exists());
 }
 
-#[cfg(unix)]
 #[test]
-fn bedrock_proposals_are_checked_against_the_input() {
-    use std::os::unix::fs::PermissionsExt;
+fn openai_compatible_proposals_are_checked_against_the_input() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     let dir = tempfile::tempdir().unwrap();
     let report = UnresolvedReport {
         schema_version: "1.0.0".into(),
@@ -96,10 +96,54 @@ fn bedrock_proposals_are_checked_against_the_input() {
         .unwrap();
     node["id"] = "component:orders-py".into();
     fs::write(&snapshot, serde_json::to_vec(&graph).unwrap()).unwrap();
-    let response = serde_json::json!({"output":{"message":{"content":[{"text": "{\"legacy-sg\":\"orders-py\",\"invented\":\"orders-py\"}"}]}}});
-    let aws = dir.path().join("aws");
-    fs::write(&aws, format!("#!/bin/sh\nprintf '%s' '{}'\n", response)).unwrap();
-    fs::set_permissions(&aws, fs::Permissions::from_mode(0o755)).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0; 2048];
+        loop {
+            let count = stream.read(&mut buffer).unwrap();
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..count]);
+            if let Some(end) = request.windows(4).position(|v| v == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&request[..end]);
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|n| n.trim().parse().ok())
+                    })
+                    .unwrap();
+                if request.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        let text = String::from_utf8(request).unwrap();
+        assert!(text.starts_with("POST /v1/chat/completions "), "{text}");
+        assert!(
+            text.to_ascii_lowercase()
+                .contains("authorization: bearer test-token")
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(text.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["model"], "test-model");
+        assert!(
+            body["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("legacy-sg")
+        );
+        let response = serde_json::json!({"choices":[{"message":{"content":"{\"legacy-sg\":\"orders-py\",\"invented\":\"orders-py\"}"}}]}).to_string();
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+    });
     let output = Command::cargo_bin("depgraph")
         .unwrap()
         .args(["suggest", "--unresolved"])
@@ -109,7 +153,8 @@ fn bedrock_proposals_are_checked_against_the_input() {
         .arg("--environments")
         .arg(dir.path().join("absent.yaml"))
         .args(["--llm", "--model-id", "test-model"])
-        .env("PATH", dir.path())
+        .env("OPENAI_BASE_URL", format!("http://{address}/v1"))
+        .env("OPENAI_API_KEY", "test-token")
         .output()
         .unwrap();
     assert!(
@@ -123,4 +168,5 @@ fn bedrock_proposals_are_checked_against_the_input() {
         "{text}"
     );
     assert!(!text.contains("invented"), "{text}");
+    server.join().unwrap();
 }
