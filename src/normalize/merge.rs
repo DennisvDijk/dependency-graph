@@ -4,7 +4,7 @@
 //! One deployment is kept per component per environment. A higher version
 //! rank wins (digest, then semver, then git sha, then any other tag).
 //! Losers are recorded as deployment mismatches. Names that do not resolve
-//! are returned for `unresolved.csv`.
+//! are returned for `unresolved.json`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,7 +21,7 @@ use crate::raw::RawRecord;
 use crate::store::DeploymentMismatch;
 
 /// A name the normalizer could not attach to a node.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Unresolved {
     /// Record kind, such as `depends_on` or `environment`.
     pub kind: String,
@@ -56,7 +56,7 @@ pub struct MergeOptions<'a> {
 pub struct BuildOutput {
     /// Canonical graph, not yet sorted. Callers sort via `to_canonical_json`.
     pub graph: GraphSnapshot,
-    /// Rows for `unresolved.csv`.
+    /// Rows for `unresolved.json`.
     pub unresolved: Vec<Unresolved>,
     /// Versions that lost the precedence check.
     pub mismatches: Vec<DeploymentMismatch>,
@@ -574,22 +574,14 @@ pub fn merge_records(
     })
 }
 
-/// CSV body for unresolved names, including the header and a trailing newline.
-#[must_use]
-pub fn unresolved_csv(rows: &[Unresolved]) -> String {
-    let mut lines = vec!["kind,name,reason,volume".to_owned()];
-    for row in rows {
-        lines.push(format!(
-            "{},{},{},{}",
-            csv(&row.kind),
-            csv(&row.name),
-            csv(&row.reason),
-            row.volume
-        ));
-    }
-    let mut text = lines.join("\n");
-    text.push('\n');
-    text
+/// Versioned unresolved records produced by a build.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnresolvedReport {
+    /// Report schema version.
+    pub schema_version: String,
+    /// Names the normalizer could not resolve.
+    pub records: Vec<Unresolved>,
 }
 
 /// Rank a version string. Higher is better.
@@ -829,14 +821,6 @@ fn collapse_unresolved(rows: &mut Vec<Unresolved>) {
         collapsed.push(row);
     }
     *rows = collapsed;
-}
-
-fn csv(value: &str) -> String {
-    if value.contains([',', '"', '\n']) {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_owned()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

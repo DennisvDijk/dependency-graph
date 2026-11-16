@@ -38,6 +38,8 @@ pub enum Command {
     Collect(CollectArgs),
     /// Build a graph snapshot from raw records.
     Build(BuildArgs),
+    /// Propose aliases and namespace mappings for review.
+    Suggest(SuggestArgs),
     /// Generate the static site.
     Site(SiteArgs),
     /// Publish a snapshot or a drift issue.
@@ -102,6 +104,26 @@ pub enum Command {
     Stats(StatsArgs),
     /// Data-quality scorecard per owner.
     Scorecard(ScorecardArgs),
+}
+
+/// Options for reviewable suggestions.
+#[derive(Debug, clap::Args)]
+pub struct SuggestArgs {
+    /// Unresolved report from a build.
+    #[arg(long, default_value = "data/unresolved.json")]
+    pub unresolved: PathBuf,
+    /// Graph snapshot from the same build.
+    #[arg(long, default_value = "data/snapshot.json")]
+    pub snapshot: PathBuf,
+    /// Environment mappings used to suggest namespace names.
+    #[arg(long, default_value = "config/environments.yaml")]
+    pub environments: PathBuf,
+    /// Send remaining names and component names to Amazon Bedrock.
+    #[arg(long)]
+    pub llm: bool,
+    /// Claude model ID available to the configured AWS account and region.
+    #[arg(long, requires = "llm")]
+    pub model_id: Option<String>,
 }
 
 /// `depgraph collect`.
@@ -552,6 +574,13 @@ fn execute(cli: Cli) -> Result<(), Error> {
     match cli.command {
         Command::Collect(args) => run_collect(args),
         Command::Build(args) => run_build(args),
+        Command::Suggest(args) => crate::suggest::run(
+            &args.unresolved,
+            &args.snapshot,
+            &args.environments,
+            args.llm,
+            args.model_id.as_deref(),
+        ),
         Command::Site(args) => run_site(args),
         Command::Publish { target } => match target {
             PublishCommand::Snapshot(args) => run_publish_snapshot(args),
@@ -828,10 +857,14 @@ fn run_build(args: BuildArgs) -> Result<(), Error> {
         .output
         .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
     publish::write_snapshot(&built.graph, &output)?;
-    let unresolved_path = output.with_file_name("unresolved.csv");
+    let unresolved_path = output.with_file_name("unresolved.json");
     fs::write(
         &unresolved_path,
-        normalize::merge::unresolved_csv(&built.unresolved),
+        serde_json::to_string_pretty(&normalize::merge::UnresolvedReport {
+            schema_version: "1.0.0".into(),
+            records: built.unresolved.clone(),
+        })
+        .map_err(|err| Error::Store(err.to_string()))?,
     )?;
     let meta_path = output.with_file_name("meta.json");
     let meta = crate::store::Meta {

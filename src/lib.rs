@@ -28,6 +28,7 @@ pub mod redact;
 pub mod repo_scan;
 pub mod score;
 pub mod store;
+pub mod suggest;
 pub mod timeline;
 
 pub use error::Error;

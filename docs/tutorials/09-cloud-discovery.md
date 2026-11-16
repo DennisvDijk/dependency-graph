@@ -71,7 +71,7 @@ Cloud names rarely match repo names exactly. depgraph matches them **loosely** b
 | `notifications-prod.azurewebsites.net` | `notifications` | A host inside Azure is a service |
 | `api.stripe.com` | `resource:external-api:api-stripe-com` | Any other host is external |
 
-Anything that matches nothing goes to `data/unresolved.csv` with the reason. Nothing is drawn from a guess. To fix a name, add one line to `config/aliases.yaml` (`legacy-batch: batch-runner`) or tag the resource with `app: <service>`.
+Anything that matches nothing goes to `data/unresolved.json` with the reason. Nothing is drawn from a guess. To fix a name, add one line to `config/aliases.yaml` (`legacy-batch: batch-runner`) or tag the resource with `app: <service>`.
 
 Two security groups or ASGs that point at each other become a **candidate** edge, which means *allowed*. An X-Ray or Application Insights call becomes an **observed** edge with source `cloud`, which means *seen*. `depgraph drift` shows where the two disagree, for example a rule that allows traffic nobody uses.
 
@@ -81,7 +81,7 @@ An observed call needs an environment. depgraph uses, in order:
 
 1. `env:` in the `aws` or `azure` section, when one account or subscription is one environment;
 2. an environment word at the start or end of the service name (`orders-py-prod`, `staging-billing`);
-3. otherwise the call goes to `unresolved.csv` as `environment is not known; set env in the cloud config`.
+3. otherwise the call goes to `unresolved.json` as `environment is not known; set env in the cloud config`.
 
 ### Guessing Kubernetes namespaces (also opt-in)
 
@@ -96,6 +96,6 @@ guess_namespaces: true
 ## What it does not do yet
 
 - **VPC Flow Logs / NSG flow logs.** IP-level traffic would also catch services without X-Ray or Application Insights. Not read yet.
-- **New services from the cloud.** Cloud resources tie to services that exist in your repos. An ECS service with no repo shows up in `unresolved.csv` and doesn't become a node of its own.
+- **New services from the cloud.** Cloud resources tie to services that exist in your repos. An ECS service with no repo shows up in `unresolved.json` and doesn't become a node of its own.
 - **Network Firewall, WAF, NACLs, Azure Firewall, CIDR-only rules.** These rules don't say which service they're for.
 - **EKS / AKS workloads.** These come from the Kubernetes manifests in your repos (tutorial 8) and Istio, not from these readers.
