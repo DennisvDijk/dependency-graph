@@ -1,48 +1,31 @@
-//! Static site published as GitLab Pages when this tool runs inside GitLab.
+//! Static site published as GitLab Pages.
+//!
+//! The page is one HTML file. Cytoscape.js is loaded from a CDN. There is no
+//! backend: the snapshot and the alias table are embedded in the page.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 use crate::error::Error;
 use crate::models::GraphSnapshot;
 
-/// Write a minimal static site.
+/// Write the filterable graph page.
 ///
 /// # Errors
 ///
 /// Returns an error when the directory cannot be written.
-pub fn write_site(graph: &GraphSnapshot, output: &Path) -> Result<(), Error> {
+pub fn write_site(
+    graph: &GraphSnapshot,
+    aliases: &BTreeMap<String, String>,
+    output: &Path,
+) -> Result<(), Error> {
     fs::create_dir_all(output)?;
-    let mut body = String::from(
-        "<!DOCTYPE html><meta charset=\"utf-8\"><title>depgraph</title><h1>depgraph</h1>",
-    );
-    body.push_str("<h2>Nodes</h2><ul>");
-    for node in &graph.nodes {
-        body.push_str(&format!(
-            "<li>{} {}</li>",
-            escape(node.node_type.as_str()),
-            escape(&node.id)
-        ));
-    }
-    body.push_str("</ul><h2>Edges</h2><ul>");
-    for edge in &graph.edges {
-        let env = edge.env.map(|env| env.as_str()).unwrap_or("");
-        body.push_str(&format!(
-            "<li>{} {} -&gt; {} {}</li>",
-            escape(edge.edge_type.as_str()),
-            escape(&edge.from_id),
-            escape(&edge.to_id),
-            escape(env)
-        ));
-    }
-    body.push_str("</ul>\n");
-    fs::write(output.join("index.html"), body)?;
+    let graph_json = serde_json::to_string(graph).map_err(|err| Error::Store(err.to_string()))?;
+    let alias_json = serde_json::to_string(aliases).map_err(|err| Error::Store(err.to_string()))?;
+    let page = include_str!("page.html")
+        .replace("/*GRAPH*/", &graph_json.replace('<', "\\u003c"))
+        .replace("/*ALIASES*/", &alias_json.replace('<', "\\u003c"));
+    fs::write(output.join("index.html"), page)?;
     Ok(())
-}
-
-fn escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }

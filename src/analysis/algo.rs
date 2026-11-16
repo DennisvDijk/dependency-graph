@@ -1,0 +1,700 @@
+//! Graph questions on petgraph.
+//!
+//! `A -> B` means A depends on B. Only active edges are walked. The caller
+//! supplies the snapshot; nothing here reads the clock or the network.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+
+use serde::Serialize;
+
+use petgraph::Direction;
+use petgraph::graph::{Graph, NodeIndex};
+use petgraph::visit::EdgeRef;
+
+use crate::error::Error;
+use crate::models::{Criticality, Edge, EdgeType, Env, GraphSnapshot, Timestamp};
+
+/// One step away from the start node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Visit {
+    /// Node id.
+    pub id: String,
+    /// Distance from the start. The start itself is not included.
+    pub depth: usize,
+}
+
+/// A deploy order, or the cycles that blocked one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeployOrder {
+    /// Dependencies first. Empty when `cycles` is not.
+    pub order: Vec<String>,
+    /// Strongly connected components that blocked the order.
+    pub cycles: Vec<Vec<String>>,
+}
+
+/// One node in the critical ranking.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CriticalNode {
+    /// Node id.
+    pub id: String,
+    /// Incoming active edges in the directed graph.
+    pub in_degree: usize,
+    /// Betweenness on the undirected projection.
+    pub betweenness: f64,
+    /// Whether the node is an articulation point.
+    pub articulation: bool,
+}
+
+/// Nodes and edges that differ between two snapshots.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SnapshotDiff {
+    /// Node ids only in `right`.
+    pub nodes_added: Vec<String>,
+    /// Node ids only in `left`.
+    pub nodes_removed: Vec<String>,
+    /// Edge ids only in `right`.
+    pub edges_added: Vec<String>,
+    /// Edge ids only in `left`.
+    pub edges_removed: Vec<String>,
+}
+
+/// What `c` depends on, walking outgoing edges up to `depth`.
+///
+/// `depth` `None` walks until the graph ends. Depth `0` returns nothing.
+///
+/// # Errors
+///
+/// Returns an error when `component` is not in the snapshot.
+pub fn dependencies(
+    graph: &GraphSnapshot,
+    component: &str,
+    env: Option<Env>,
+    depth: Option<usize>,
+) -> Result<Vec<Visit>, Error> {
+    walk(graph, component, env, depth, true)
+}
+
+/// Who depends on `component`: the ancestors, walking incoming edges.
+///
+/// # Errors
+///
+/// Returns an error when `component` is not in the snapshot.
+pub fn consumers(
+    graph: &GraphSnapshot,
+    component: &str,
+    env: Option<Env>,
+    depth: Option<usize>,
+) -> Result<Vec<Visit>, Error> {
+    walk(graph, component, env, depth, false)
+}
+
+/// Components transitively affected if `component` fails.
+///
+/// That is the ancestor set: every component that depends on it.
+///
+/// # Errors
+///
+/// Returns an error when `component` is not in the snapshot.
+pub fn impact(
+    graph: &GraphSnapshot,
+    component: &str,
+    env: Option<Env>,
+) -> Result<Vec<Visit>, Error> {
+    consumers(graph, component, env, None)
+}
+
+/// Order `set` so a dependency is deployed before its dependent.
+///
+/// Edges are active `declared_depends_on` and `observed_calls` whose
+/// criticality is not `soft`. A cycle is returned in [`DeployOrder::cycles`]
+/// and `order` stays empty.
+pub fn deploy_order(graph: &GraphSnapshot, set: &[String], env: Option<Env>) -> DeployOrder {
+    let wanted: BTreeSet<String> = set
+        .iter()
+        .map(|name| resolve_id(graph, name).unwrap_or_else(|| name.clone()))
+        .collect();
+    let indexed = index(graph, env, |edge| {
+        deploy_edge(edge) && wanted.contains(&edge.from_id) && wanted.contains(&edge.to_id)
+    });
+    let mut keep = Vec::new();
+    for id in &wanted {
+        if let Some(index) = indexed.ids.get(id) {
+            keep.push(*index);
+        }
+    }
+    let cycles = cycles_from(&indexed, &keep);
+    if !cycles.is_empty() {
+        return DeployOrder {
+            order: Vec::new(),
+            cycles,
+        };
+    }
+    let subgraph = induced(&indexed, &keep);
+    let sorted = petgraph::algo::toposort(&subgraph, None).unwrap_or_default();
+    // toposort emits a node before its successors. A depends on B, so B comes first.
+    let mut order: Vec<String> = sorted
+        .into_iter()
+        .rev()
+        .filter_map(|index| subgraph.node_weight(index).cloned())
+        .collect();
+    let mut rest: Vec<String> = wanted
+        .into_iter()
+        .filter(|id| !order.contains(id))
+        .collect();
+    rest.sort();
+    order.extend(rest);
+    DeployOrder {
+        order,
+        cycles: Vec::new(),
+    }
+}
+
+/// Strongly connected components with more than one node, plus self-loops.
+pub fn cycles(graph: &GraphSnapshot, env: Option<Env>) -> Vec<Vec<String>> {
+    let indexed = index(graph, env, |_| true);
+    let nodes: Vec<NodeIndex> = indexed.graph.node_indices().collect();
+    cycles_from(&indexed, &nodes)
+}
+
+/// Library impact is disabled. There are no internal libraries.
+#[must_use]
+pub fn library_impact_disabled() -> &'static str {
+    "libraries disabled"
+}
+
+/// Highest in-degree, betweenness, and articulation points. At most 20.
+pub fn critical_nodes(graph: &GraphSnapshot, env: Option<Env>) -> Vec<CriticalNode> {
+    let indexed = index(graph, env, |_| true);
+    let between = betweenness(&indexed.undirected);
+    let cuts = petgraph::algo::articulation_points::articulation_points(&indexed.undirected);
+    let mut ranked = Vec::new();
+    for index in indexed.graph.node_indices() {
+        let id = indexed.graph[index].clone();
+        let in_degree = indexed
+            .graph
+            .edges_directed(index, Direction::Incoming)
+            .count();
+        let betweenness = between.get(&index).copied().unwrap_or(0.0);
+        let articulation = cuts.contains(&index);
+        if in_degree == 0 && betweenness == 0.0 && !articulation {
+            continue;
+        }
+        ranked.push(CriticalNode {
+            id,
+            in_degree,
+            betweenness,
+            articulation,
+        });
+    }
+    ranked.sort_by(|left, right| {
+        right
+            .betweenness
+            .partial_cmp(&left.betweenness)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| right.in_degree.cmp(&left.in_degree))
+            .then_with(|| right.articulation.cmp(&left.articulation))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    ranked.truncate(20);
+    ranked
+}
+
+/// Nodes with no active edge.
+pub fn orphans(graph: &GraphSnapshot) -> Vec<String> {
+    let indexed = index(graph, None, |_| true);
+    let mut connected = BTreeSet::new();
+    for edge in indexed.graph.edge_indices() {
+        if let Some((from, to)) = indexed.graph.edge_endpoints(edge) {
+            connected.insert(indexed.graph[from].clone());
+            connected.insert(indexed.graph[to].clone());
+        }
+    }
+    graph
+        .nodes
+        .iter()
+        .map(|node| node.id.clone())
+        .filter(|id| !connected.contains(id))
+        .collect()
+}
+
+/// Compare two snapshots by node id and edge id.
+#[must_use]
+pub fn diff(left: &GraphSnapshot, right: &GraphSnapshot) -> SnapshotDiff {
+    let left_nodes: BTreeSet<_> = left.nodes.iter().map(|node| node.id.as_str()).collect();
+    let right_nodes: BTreeSet<_> = right.nodes.iter().map(|node| node.id.as_str()).collect();
+    let left_edges: BTreeSet<_> = left.edges.iter().map(|edge| edge.id.as_str()).collect();
+    let right_edges: BTreeSet<_> = right.edges.iter().map(|edge| edge.id.as_str()).collect();
+    SnapshotDiff {
+        nodes_added: difference(&right_nodes, &left_nodes),
+        nodes_removed: difference(&left_nodes, &right_nodes),
+        edges_added: difference(&right_edges, &left_edges),
+        edges_removed: difference(&left_edges, &right_edges),
+    }
+}
+
+/// Edges whose evidence covers `at`.
+#[must_use]
+pub fn edges_at(graph: &GraphSnapshot, at: &Timestamp) -> Vec<Edge> {
+    graph
+        .edges
+        .iter()
+        .filter(|edge| edge_covers(edge, at))
+        .cloned()
+        .collect()
+}
+
+fn edge_covers(edge: &Edge, at: &Timestamp) -> bool {
+    edge.sources.iter().any(|source| {
+        source.first_seen.as_str() <= at.as_str() && at.as_str() <= source.last_seen.as_str()
+    })
+}
+
+fn walk(
+    graph: &GraphSnapshot,
+    component: &str,
+    env: Option<Env>,
+    depth: Option<usize>,
+    outgoing: bool,
+) -> Result<Vec<Visit>, Error> {
+    let start_id = resolve_id(graph, component)
+        .ok_or_else(|| Error::Validation(format!("unknown node `{component}`")))?;
+    let indexed = index(graph, env, |_| true);
+    let start = *indexed
+        .ids
+        .get(&start_id)
+        .ok_or_else(|| Error::Validation(format!("unknown node `{component}`")))?;
+    if depth == Some(0) {
+        return Ok(Vec::new());
+    }
+    let direction = if outgoing {
+        Direction::Outgoing
+    } else {
+        Direction::Incoming
+    };
+    let mut seen = BTreeSet::from([start]);
+    let mut queue = VecDeque::from([(start, 0_usize)]);
+    let mut visits = Vec::new();
+    while let Some((node, distance)) = queue.pop_front() {
+        let next = distance + 1;
+        if depth.is_some_and(|limit| next > limit) {
+            continue;
+        }
+        for neighbor in indexed.graph.neighbors_directed(node, direction) {
+            if !seen.insert(neighbor) {
+                continue;
+            }
+            visits.push(Visit {
+                id: indexed.graph[neighbor].clone(),
+                depth: next,
+            });
+            queue.push_back((neighbor, next));
+        }
+    }
+    visits.sort_by(|left, right| left.depth.cmp(&right.depth).then(left.id.cmp(&right.id)));
+    Ok(visits)
+}
+
+struct Indexed {
+    graph: Graph<String, (), petgraph::Directed>,
+    undirected: Graph<String, (), petgraph::Undirected>,
+    ids: BTreeMap<String, NodeIndex>,
+}
+
+fn index(graph: &GraphSnapshot, env: Option<Env>, keep: impl Fn(&Edge) -> bool) -> Indexed {
+    let mut directed = Graph::new();
+    let mut undirected = Graph::new_undirected();
+    let mut ids = BTreeMap::new();
+    for node in &graph.nodes {
+        let index = directed.add_node(node.id.clone());
+        undirected.add_node(node.id.clone());
+        ids.insert(node.id.clone(), index);
+    }
+    for edge in &graph.edges {
+        if !edge.active || !env_matches(edge, env) || !keep(edge) {
+            continue;
+        }
+        let Some(&from) = ids.get(&edge.from_id) else {
+            continue;
+        };
+        let Some(&to) = ids.get(&edge.to_id) else {
+            continue;
+        };
+        directed.add_edge(from, to, ());
+        if from != to {
+            undirected.add_edge(from, to, ());
+        }
+    }
+    Indexed {
+        graph: directed,
+        undirected,
+        ids,
+    }
+}
+
+fn env_matches(edge: &Edge, env: Option<Env>) -> bool {
+    match env {
+        Some(env) => edge.env == Some(env) || edge.env.is_none(),
+        None => true,
+    }
+}
+
+fn deploy_edge(edge: &Edge) -> bool {
+    if edge.criticality == Criticality::Soft {
+        return false;
+    }
+    matches!(
+        edge.edge_type,
+        EdgeType::DeclaredDependsOn | EdgeType::ObservedCalls
+    )
+}
+
+fn resolve_id(graph: &GraphSnapshot, name: &str) -> Option<String> {
+    if graph.nodes.iter().any(|node| node.id == name) {
+        return Some(name.to_owned());
+    }
+    let component = format!("component:{name}");
+    graph
+        .nodes
+        .iter()
+        .any(|node| node.id == component)
+        .then_some(component)
+}
+
+fn induced(indexed: &Indexed, nodes: &[NodeIndex]) -> Graph<String, (), petgraph::Directed> {
+    let mut subgraph = Graph::new();
+    let mut map = HashMap::new();
+    for index in nodes {
+        let added = subgraph.add_node(indexed.graph[*index].clone());
+        map.insert(*index, added);
+    }
+    for edge in indexed.graph.edge_references() {
+        if let (Some(&from), Some(&to)) = (map.get(&edge.source()), map.get(&edge.target())) {
+            subgraph.add_edge(from, to, ());
+        }
+    }
+    subgraph
+}
+
+fn cycles_from(indexed: &Indexed, nodes: &[NodeIndex]) -> Vec<Vec<String>> {
+    let subgraph = induced(indexed, nodes);
+    let mut cycles = Vec::new();
+    for component in petgraph::algo::tarjan_scc(&subgraph) {
+        if component.len() > 1 {
+            let mut names: Vec<String> = component
+                .into_iter()
+                .filter_map(|index| subgraph.node_weight(index).cloned())
+                .collect();
+            names.sort();
+            cycles.push(names);
+        }
+    }
+    for index in subgraph.node_indices() {
+        if subgraph.contains_edge(index, index)
+            && let Some(name) = subgraph.node_weight(index)
+        {
+            cycles.push(vec![name.clone()]);
+        }
+    }
+    cycles.sort();
+    cycles
+}
+
+fn betweenness(graph: &Graph<String, (), petgraph::Undirected>) -> HashMap<NodeIndex, f64> {
+    let nodes: Vec<NodeIndex> = graph.node_indices().collect();
+    let mut score: HashMap<NodeIndex, f64> = HashMap::new();
+    for start in &nodes {
+        let mut stack = Vec::new();
+        let mut predecessors: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::new();
+        let mut sigma: HashMap<NodeIndex, f64> = HashMap::new();
+        let mut distance: HashMap<NodeIndex, i32> = HashMap::new();
+        for node in &nodes {
+            sigma.insert(*node, 0.0);
+            distance.insert(*node, -1);
+        }
+        sigma.insert(*start, 1.0);
+        distance.insert(*start, 0);
+        let mut queue = VecDeque::from([*start]);
+        while let Some(node) = queue.pop_front() {
+            stack.push(node);
+            let next = distance[&node] + 1;
+            for neighbor in graph.neighbors(node) {
+                if distance[&neighbor] < 0 {
+                    distance.insert(neighbor, next);
+                    queue.push_back(neighbor);
+                }
+                if distance[&neighbor] == next {
+                    *sigma.entry(neighbor).or_insert(0.0) += sigma[&node];
+                    predecessors.entry(neighbor).or_default().push(node);
+                }
+            }
+        }
+        let mut delta: HashMap<NodeIndex, f64> = HashMap::new();
+        while let Some(node) = stack.pop() {
+            let node_delta = delta.get(&node).copied().unwrap_or(0.0);
+            if let Some(preds) = predecessors.get(&node) {
+                for predecessor in preds {
+                    let share = (sigma[predecessor] / sigma[&node]) * (1.0 + node_delta);
+                    *delta.entry(*predecessor).or_insert(0.0) += share;
+                }
+            }
+            if node != *start {
+                *score.entry(node).or_insert(0.0) += node_delta;
+            }
+        }
+    }
+    for value in score.values_mut() {
+        *value /= 2.0;
+    }
+    score
+}
+
+fn difference(left: &BTreeSet<&str>, right: &BTreeSet<&str>) -> Vec<String> {
+    left.difference(right)
+        .map(|item| (*item).to_owned())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids;
+    use crate::models::{EdgeAttrs, EdgeSource, EdgeStatus, Node, NodeType, SourceKind};
+
+    fn node(id: &str) -> Node {
+        Node {
+            id: id.to_owned(),
+            node_type: NodeType::Component,
+            attrs: BTreeMap::new(),
+        }
+    }
+
+    fn edge(
+        from: &str,
+        to: &str,
+        kind: EdgeType,
+        env: Option<Env>,
+        soft: bool,
+        active: bool,
+    ) -> Edge {
+        Edge {
+            id: ids::edge_id(kind, from, to, env),
+            edge_type: kind,
+            from_id: from.to_owned(),
+            to_id: to.to_owned(),
+            env,
+            sources: vec![EdgeSource {
+                kind: SourceKind::Static,
+                first_seen: Timestamp::parse("2026-01-01T00:00:00Z").unwrap(),
+                last_seen: Timestamp::parse("2026-01-15T00:00:00Z").unwrap(),
+                evidence_ref: None,
+            }],
+            status: EdgeStatus::DeclaredOnly,
+            criticality: if soft {
+                Criticality::Soft
+            } else {
+                Criticality::Hard
+            },
+            active,
+            attrs: EdgeAttrs::default(),
+        }
+    }
+
+    fn fixture() -> GraphSnapshot {
+        GraphSnapshot {
+            schema_version: "0.1.0".to_owned(),
+            run_id: "test".to_owned(),
+            generated_at: Timestamp::parse("2026-01-15T00:00:00Z").unwrap(),
+            sources: BTreeMap::new(),
+            nodes: vec![
+                node("component:a"),
+                node("component:b"),
+                node("component:c"),
+                node("component:d"),
+                node("component:e"),
+                node("component:f"),
+            ],
+            edges: vec![
+                edge(
+                    "component:a",
+                    "component:b",
+                    EdgeType::DeclaredDependsOn,
+                    Some(Env::Prod),
+                    false,
+                    true,
+                ),
+                edge(
+                    "component:b",
+                    "component:c",
+                    EdgeType::DeclaredDependsOn,
+                    Some(Env::Prod),
+                    false,
+                    true,
+                ),
+                edge(
+                    "component:c",
+                    "component:a",
+                    EdgeType::DeclaredDependsOn,
+                    Some(Env::Prod),
+                    false,
+                    true,
+                ),
+                edge(
+                    "component:e",
+                    "component:f",
+                    EdgeType::ObservedCalls,
+                    Some(Env::Prod),
+                    true,
+                    true,
+                ),
+                edge(
+                    "component:a",
+                    "component:d",
+                    EdgeType::DeclaredDependsOn,
+                    Some(Env::Prod),
+                    false,
+                    false,
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn dependencies_and_consumers_respect_depth_and_active_edges() {
+        let graph = fixture();
+        let direct = dependencies(&graph, "a", Some(Env::Prod), Some(1)).unwrap();
+        assert_eq!(
+            direct,
+            vec![Visit {
+                id: "component:b".into(),
+                depth: 1
+            }]
+        );
+        let deep = dependencies(&graph, "a", Some(Env::Prod), None).unwrap();
+        assert!(
+            deep.iter()
+                .any(|visit| visit.id == "component:c" && visit.depth == 2)
+        );
+        let consumers = consumers(&graph, "b", Some(Env::Prod), Some(1)).unwrap();
+        assert_eq!(consumers[0].id, "component:a");
+        assert!(dependencies(&graph, "missing", None, None).is_err());
+        assert!(
+            dependencies(&graph, "a", Some(Env::Prod), Some(0))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn impact_is_the_ancestor_set() {
+        let graph = fixture();
+        let affected = impact(&graph, "c", Some(Env::Prod)).unwrap();
+        let ids: Vec<_> = affected.into_iter().map(|visit| visit.id).collect();
+        assert!(ids.contains(&"component:a".to_owned()));
+        assert!(ids.contains(&"component:b".to_owned()));
+    }
+
+    #[test]
+    fn deploy_order_reports_the_cycle_and_ignores_soft_edges() {
+        let graph = fixture();
+        let blocked = deploy_order(
+            &graph,
+            &["a".into(), "b".into(), "c".into()],
+            Some(Env::Prod),
+        );
+        assert!(blocked.order.is_empty());
+        assert!(blocked.cycles.iter().any(|cycle| cycle.len() == 3));
+        let soft = deploy_order(&graph, &["e".into(), "f".into()], Some(Env::Prod));
+        assert!(soft.cycles.is_empty());
+        assert_eq!(soft.order.len(), 2);
+    }
+
+    #[test]
+    fn deploy_order_puts_the_dependency_first_when_there_is_no_cycle() {
+        let mut graph = fixture();
+        graph.edges.retain(|edge| edge.from_id != "component:c");
+        let order = deploy_order(&graph, &["a".into(), "b".into()], Some(Env::Prod));
+        assert!(order.cycles.is_empty());
+        assert_eq!(
+            order.order,
+            vec!["component:b".to_owned(), "component:a".to_owned()]
+        );
+    }
+
+    #[test]
+    fn cycles_empty_graph_and_orphans() {
+        let empty = GraphSnapshot {
+            schema_version: "0.1.0".to_owned(),
+            run_id: "test".to_owned(),
+            generated_at: Timestamp::parse("2026-01-15T00:00:00Z").unwrap(),
+            sources: BTreeMap::new(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        };
+        assert!(cycles(&empty, None).is_empty());
+        assert!(orphans(&empty).is_empty());
+        assert!(critical_nodes(&empty, None).is_empty());
+        let graph = fixture();
+        assert!(
+            cycles(&graph, Some(Env::Prod))
+                .iter()
+                .any(|cycle| cycle.len() == 3)
+        );
+        assert_eq!(orphans(&graph), vec!["component:d".to_owned()]);
+        let mut lonely = graph.clone();
+        lonely.edges.clear();
+        assert!(orphans(&lonely).contains(&"component:d".to_owned()));
+    }
+
+    #[test]
+    fn critical_nodes_rank_the_middle_of_a_line() {
+        let graph = GraphSnapshot {
+            schema_version: "0.1.0".to_owned(),
+            run_id: "test".to_owned(),
+            generated_at: Timestamp::parse("2026-01-15T00:00:00Z").unwrap(),
+            sources: BTreeMap::new(),
+            nodes: vec![
+                node("component:a"),
+                node("component:b"),
+                node("component:c"),
+            ],
+            edges: vec![
+                edge(
+                    "component:a",
+                    "component:b",
+                    EdgeType::DeclaredDependsOn,
+                    None,
+                    false,
+                    true,
+                ),
+                edge(
+                    "component:b",
+                    "component:c",
+                    EdgeType::DeclaredDependsOn,
+                    None,
+                    false,
+                    true,
+                ),
+            ],
+        };
+        let ranked = critical_nodes(&graph, None);
+        assert_eq!(ranked[0].id, "component:b");
+        assert!(ranked[0].articulation);
+        assert!(ranked[0].betweenness > 0.0);
+        assert!(ranked.len() <= 20);
+    }
+
+    #[test]
+    fn diff_and_at_filter_by_id_and_time() {
+        let left = fixture();
+        let mut right = fixture();
+        right.nodes.push(node("component:z"));
+        let diff = diff(&left, &right);
+        assert_eq!(diff.nodes_added, vec!["component:z".to_owned()]);
+        assert!(diff.nodes_removed.is_empty());
+        let at = Timestamp::parse("2026-01-10T00:00:00Z").unwrap();
+        assert!(!edges_at(&left, &at).is_empty());
+        let before = Timestamp::parse("2025-01-01T00:00:00Z").unwrap();
+        assert!(edges_at(&left, &before).is_empty());
+        assert_eq!(library_impact_disabled(), "libraries disabled");
+    }
+}

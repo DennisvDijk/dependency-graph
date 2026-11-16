@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>depgraph</title>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+<style>
+body { font-family: sans-serif; margin: 0; }
+#bar { display: flex; gap: 8px; padding: 8px; flex-wrap: wrap; }
+#cy { height: 70vh; border-top: 1px solid #ccc; }
+#detail { padding: 8px; border-top: 1px solid #ccc; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>depgraph</h1>
+<div id="bar">
+<label>env <select id="env"><option value="">all</option><option>dev</option><option>acc</option><option>prod</option></select></label>
+<label>status <select id="status"><option value="">all</option><option>both</option><option>observed_only</option><option>declared_only</option><option>candidate</option><option>n/a</option></select></label>
+<label>owner <input id="owner" placeholder="owner"></label>
+<label>system <input id="system" placeholder="system"></label>
+<label>search <input id="search" placeholder="name or alias"></label>
+</div>
+<div id="cy"></div>
+<div id="detail">Select a node.</div>
+<script>
+const GRAPH = /*GRAPH*/;
+const ALIASES = /*ALIASES*/;
+function nameOf(id) { return id.startsWith("component:") ? id.slice(10) : id; }
+function aliasHit(query) {
+  const q = query.toLowerCase();
+  if (!q) return null;
+  for (const [alias, target] of Object.entries(ALIASES)) {
+    if (alias.toLowerCase() === q) return target;
+  }
+  return null;
+}
+function elements() {
+  const env = document.getElementById("env").value;
+  const status = document.getElementById("status").value;
+  const owner = document.getElementById("owner").value.toLowerCase();
+  const system = document.getElementById("system").value.toLowerCase();
+  const query = document.getElementById("search").value.toLowerCase();
+  const aliased = aliasHit(query);
+  const nodes = GRAPH.nodes.filter(node => {
+    const attrs = node.attrs || {};
+    if (owner && String(attrs.owner || "").toLowerCase() !== owner) return false;
+    if (system && String(attrs.system || "").toLowerCase() !== system) return false;
+    if (query) {
+      const name = nameOf(node.id).toLowerCase();
+      if (!name.includes(query) && node.id.toLowerCase() !== query && name !== aliased) return false;
+    }
+    return true;
+  });
+  const ids = new Set(nodes.map(node => node.id));
+  const edges = GRAPH.edges.filter(edge => {
+    if (!edge.active) return false;
+    if (env && edge.env && edge.env !== env) return false;
+    if (status && edge.status !== status) return false;
+    return ids.has(edge.from_id) && ids.has(edge.to_id);
+  });
+  return {
+    nodes: nodes.map(node => ({ data: { id: node.id, label: nameOf(node.id) } })),
+    edges: edges.map(edge => ({ data: { id: edge.id, source: edge.from_id, target: edge.to_id, label: edge.type } }))
+  };
+}
+const cy = cytoscape({
+  container: document.getElementById("cy"),
+  elements: elements(),
+  style: [
+    { selector: "node", style: { label: "data(label)", "background-color": "#4a6fa5", color: "#111" } },
+    { selector: "edge", style: { "curve-style": "bezier", "target-arrow-shape": "triangle", label: "data(label)", "font-size": 8 } }
+  ]
+});
+function redraw() {
+  cy.elements().remove();
+  cy.add(elements());
+  cy.layout({ name: "grid" }).run();
+}
+for (const id of ["env", "status", "owner", "system", "search"]) {
+  document.getElementById(id).addEventListener("input", redraw);
+}
+cy.on("tap", "node", event => {
+  const id = event.target.id();
+  const node = GRAPH.nodes.find(item => item.id === id);
+  const edges = GRAPH.edges.filter(edge => edge.from_id === id || edge.to_id === id);
+  document.getElementById("detail").textContent = JSON.stringify({ node: node, edges: edges }, null, 2);
+});
+</script>
+</body>
+</html>
