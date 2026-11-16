@@ -419,3 +419,144 @@ esac
     assert!(raw.contains("orders-py-prod"), "{raw}");
     assert!(raw.contains("billing-ex-prod"), "{raw}");
 }
+
+#[test]
+fn azure_vnet_flow_finds_vm_nodes_without_service_configuration() {
+    let built = build(&["--azure-fixture", "{cloud}/azure-flows"], None);
+    let graph: Value =
+        serde_json::from_str(&fs::read_to_string(built.root.join("data/snapshot.json")).unwrap())
+            .unwrap();
+    let nodes: Vec<_> = graph["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| {
+            n["id"]
+                .as_str()
+                .unwrap()
+                .starts_with("resource:infra:azvm-")
+        })
+        .collect();
+    assert_eq!(nodes.len(), 2, "{nodes:#?}");
+    assert!(
+        nodes.iter().any(|n| n["attrs"]["display_name"]
+            == "11111111-1111-1111-1111-111111111111/rg-app/orders-host")
+    );
+    assert!(nodes.iter().any(|n| n["attrs"]["display_name"]
+        == "11111111-1111-1111-1111-111111111111/rg-app/billing-host"));
+    let ids: BTreeSet<_> = nodes.iter().map(|n| n["id"].as_str().unwrap()).collect();
+    let edges: Vec<_> = graph["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "network_traffic" && ids.contains(e["from_id"].as_str().unwrap()))
+        .collect();
+    assert_eq!(edges.len(), 2, "{edges:#?}");
+    for edge in edges {
+        assert!(ids.contains(edge["to_id"].as_str().unwrap()));
+        assert!(edge["env"].is_null());
+        assert_eq!(
+            edge["sources"][0]["evidence_ref"],
+            "azure-vnet-traffic-analytics"
+        );
+        assert!(edge["attrs"].get("calls_total").is_none());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn azure_flow_one_run_flag_finds_workspaces_without_configuration() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("config")).unwrap();
+    for name in [
+        "config.yaml",
+        "pilot.yaml",
+        "sdk_hints.yaml",
+        "aliases.yaml",
+        "environments.yaml",
+    ] {
+        fs::copy(
+            manifest().join("config").join(name),
+            root.join("config").join(name),
+        )
+        .unwrap();
+    }
+    let az = root.join("az");
+    fs::write(&az, r##"#!/bin/sh
+case "$1 $2 $3 $4 $5" in
+  'network asg list '*) printf '%s' '[]' ;;
+  'network nsg list '*) printf '%s' '[]' ;;
+  'monitor log-analytics workspace list '*) printf '%s' '[{"name":"ws","resourceGroup":"rg","customerId":"workspace-id"}]' ;;
+  'monitor log-analytics workspace table list') printf '%s' '[{"name":"NTANetAnalytics"}]' ;;
+  'monitor log-analytics query '*) if [ "$FLOW_FAIL" = yes ]; then exit 1; fi; /bin/cat "$FLOW_FIXTURES/vnet-flows.json" ;;
+  *) exit 1 ;;
+esac
+"##).unwrap();
+    fs::set_permissions(&az, fs::Permissions::from_mode(0o755)).unwrap();
+    let result = depgraph(root)
+        .args(["collect", "--set", "full", "--fixture"])
+        .arg(manifest().join("tests/fixtures/landscape"))
+        .args(["--azure-flow-logs", "--output", "data"])
+        .env("PATH", root)
+        .env(
+            "FLOW_FIXTURES",
+            manifest().join("tests/fixtures/cloud/azure-flows"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let raw = fs::read_to_string(root.join("data/raw/azure_flow_logs.jsonl")).unwrap();
+    assert!(raw.contains("rg-app/orders-host"), "{raw}");
+    assert!(raw.contains("rg-app/billing-host"), "{raw}");
+    assert!(!raw.contains("denied-host"), "{raw}");
+    let retry = depgraph(root)
+        .args(["collect", "--set", "full", "--fixture"])
+        .arg(manifest().join("tests/fixtures/landscape"))
+        .args(["--azure-flow-logs", "--output", "data"])
+        .env("PATH", root)
+        .env("FLOW_FAIL", "yes")
+        .env(
+            "FLOW_FIXTURES",
+            manifest().join("tests/fixtures/cloud/azure-flows"),
+        )
+        .output()
+        .unwrap();
+    assert!(retry.status.success());
+    assert!(String::from_utf8_lossy(&retry.stderr).contains("previous flow records are retained"));
+    assert_eq!(
+        fs::read_to_string(root.join("data/raw/azure_flow_logs.jsonl")).unwrap(),
+        raw
+    );
+}
+
+#[test]
+fn aws_network_flow_does_not_require_environment_mapping() {
+    let fixture = tempfile::tempdir().unwrap();
+    let original = manifest().join("tests/fixtures/cloud/aws-flows");
+    for name in [
+        "network-interfaces.json",
+        "flow-events.json",
+        "ecs-tasks.json",
+    ] {
+        let text = fs::read_to_string(original.join(name))
+            .unwrap()
+            .replace("orders-py-prod", "orders-py")
+            .replace("billing-ex-prod", "billing-ex");
+        fs::write(fixture.path().join(name), text).unwrap();
+    }
+    let path = fixture.path().to_string_lossy();
+    let built = build(&["--aws-fixture", &path], None);
+    assert!(
+        built
+            .edges
+            .contains("network_traffic component:orders-py -> component:billing-ex - n/a cloud"),
+        "{:#?}",
+        built.edges
+    );
+}

@@ -103,8 +103,16 @@ guess_namespaces: true
 ## Optional: VPC flow logs between ECS services
 
 To include network traffic, enable VPC Flow Logs separately in AWS and publish
-**default-format** records to CloudWatch Logs. Then opt in under `aws:` in
-`config/config.yaml`; depgraph discovers active flow logs and their log groups:
+**default-format** records to CloudWatch Logs. To discover them for one run,
+without editing configuration, use:
+
+```bash
+depgraph collect --set full --aws-flow-logs
+depgraph build
+```
+
+For regular collection, opt in under `aws:` in `config/config.yaml`; depgraph
+discovers active flow logs and their log groups:
 
 ```yaml
 aws:
@@ -131,8 +139,7 @@ directions; they carry no request count and do not affect dependency drift or
 impact calculations. Only accepted, complete default-format VPC records and
 running ECS service tasks are included. This does not yet identify Lambda,
 RDS, ECS on EC2 without task ENIs, stopped tasks, cross-account identities,
-NAT-translated endpoints, custom flow-log formats, S3 logs, or Azure flow
-logs. Flow logging itself can have gaps; an absent edge doesn't prove there was
+NAT-translated endpoints, custom flow-log formats, or S3 logs. Flow logging itself can have gaps; an absent edge doesn't prove there was
 no traffic. Model mappings still have to resolve to known repo components.
 
 To try the packet mapping without an AWS account, use the saved example:
@@ -143,5 +150,33 @@ depgraph collect --set full --fixture tests/fixtures/landscape \
 depgraph build
 ```
 
-Azure NSG flow logs are being retired; new Azure collection should use VNet
-flow logs. See [Microsoft's migration notice](https://learn.microsoft.com/en-us/azure/network-watcher/nsg-flow-logs-overview).
+## Optional: Azure VNet flow evidence
+
+For one run, with no per-service configuration:
+
+```bash
+depgraph collect --set full --azure-flow-logs
+depgraph build
+```
+
+The reader discovers Log Analytics workspaces in the Azure CLI's selected
+subscription and queries those with the `NTANetAnalytics` table. It needs
+existing VNet flow logs with Traffic Analytics already enabled, workspace
+listing and table-list permissions, and read/query permission on their data;
+it doesn't enable logging or create resources. Azure Monitor queries can
+incur charges. The default AWS CLI region and Azure CLI subscription set the
+scope. Follow your CLI's usual account and region selection to change it.
+
+The graph shows accepted packet traffic between Azure VM infrastructure nodes
+using the VM identities enriched by Traffic Analytics. It does not claim that
+a VM's traffic belongs to a particular application: a VM can host many
+services. Packet directions are not dependency or call directions; each
+observed direction appears independently and does not affect drift or impact.
+Flows lacking unambiguous VM identity or packet data are left out. Environment
+is left unknown when not configured. Each workspace is capped at 10,000
+results; on an incomplete query the previous Azure flow data is retained and
+a warning is printed. For regular collection, set `azure.enabled: true` and
+`azure.flow_logs: true`; no workspace list or per-service mappings are needed.
+
+Azure NSG flow logs are being retired; the reader uses the VNet Traffic
+Analytics table instead. See [Microsoft's migration notice](https://learn.microsoft.com/en-us/azure/network-watcher/nsg-flow-logs-overview).

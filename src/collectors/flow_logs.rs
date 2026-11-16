@@ -165,6 +165,87 @@ pub(super) fn aws_flows(account: &AwsAccount, env: Option<&str>) -> Vec<RawRecor
     }).collect()
 }
 
+/// Convert Azure Traffic Analytics' enriched VM-to-VM flow rows into infrastructure
+/// nodes and packet-direction evidence. Virtual machines are not application services.
+pub(super) fn azure_flows(rows: &Value, env: Option<&str>) -> Vec<RawRecord> {
+    use sha2::{Digest, Sha256};
+    fn vm(row: &Value, side: &str) -> Option<(String, String)> {
+        let identity = row.get(format!("{side}Vm"))?.as_str()?.trim();
+        let subscription = row.get(format!("{side}Subscription"))?.as_str()?.trim();
+        let valid_sub = subscription.len() == 36
+            && subscription.bytes().enumerate().all(|(i, ch)| {
+                if matches!(i, 8 | 13 | 18 | 23) {
+                    ch == b'-'
+                } else {
+                    ch.is_ascii_hexdigit()
+                }
+            });
+        let (group, name) = identity.split_once('/')?;
+        if !valid_sub || group.is_empty() || name.is_empty() || name.contains('/') {
+            return None;
+        }
+        let display_name = format!("{subscription}/{group}/{name}");
+        let canonical = display_name.to_ascii_lowercase();
+        let digest = hex::encode(Sha256::digest(canonical.as_bytes()));
+        let readable = super::cloud::kebab_name(name);
+        if readable.is_empty() {
+            return None;
+        }
+        Some((format!("azvm-{readable}-{}", &digest[..20]), display_name))
+    }
+    let mut nodes = BTreeMap::<String, String>::new();
+    let mut flows = BTreeMap::<(String, String), chrono::DateTime<chrono::Utc>>::new();
+    for row in rows.as_array().into_iter().flatten() {
+        if row.get("FlowStatus").and_then(Value::as_str) != Some("A") {
+            continue;
+        }
+        let (Some((src, src_name)), Some((dst, dst_name))) = (vm(row, "Src"), vm(row, "Dest"))
+        else {
+            continue;
+        };
+        if src == dst {
+            continue;
+        }
+        let Some(time) = row
+            .get("FlowEndTime")
+            .and_then(Value::as_str)
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|v| v.with_timezone(&chrono::Utc))
+        else {
+            continue;
+        };
+        let forward = super::cloud::count(row.get("PacketsSrcToDest")) > 0;
+        let reverse = super::cloud::count(row.get("PacketsDestToSrc")) > 0;
+        if !forward && !reverse {
+            continue;
+        }
+        nodes.insert(src.clone(), src_name);
+        nodes.insert(dst.clone(), dst_name);
+        for (from, to, present) in [(&src, &dst, forward), (&dst, &src, reverse)] {
+            if present {
+                flows
+                    .entry((from.clone(), to.clone()))
+                    .and_modify(|at| *at = (*at).max(time))
+                    .or_insert(time);
+            }
+        }
+    }
+    let mut records: Vec<RawRecord> = nodes
+        .into_iter()
+        .map(|(name, display_name)| RawRecord {
+            collector: "azure_flow_logs".into(),
+            kind: "network_node".into(),
+            payload: json!({"name":name,"display_name":display_name}),
+        })
+        .collect();
+    records.extend(flows.into_iter().map(|((source,destination), at)| RawRecord {
+        collector: "azure_flow_logs".into(), kind: "network_flow".into(), payload: json!({
+            "source":source,"destination":destination,"source_kind":"infra","env":env.unwrap_or(""),"last_seen":at.to_rfc3339()
+        })
+    }));
+    records
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

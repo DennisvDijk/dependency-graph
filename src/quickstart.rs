@@ -32,6 +32,7 @@ azure:
   enabled: false
   subscriptions: []          # empty: the az default subscription
   log_analytics_workspaces: []  # workspace ids with Application Insights data
+  flow_logs: false           # opt in to discover VNet Traffic Analytics
   # env: prod
 kubernetes:
   live_read: false

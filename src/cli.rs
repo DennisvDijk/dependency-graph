@@ -159,6 +159,9 @@ pub struct CollectArgs {
     /// `aws.enabled` is false.
     #[arg(long)]
     pub aws: bool,
+    /// Discover AWS VPC flow logs for this run (also enables AWS collection).
+    #[arg(long)]
+    pub aws_flow_logs: bool,
     /// Saved `aws` CLI output (`security-groups.json`, `service-graph.json`, ...).
     #[arg(long)]
     pub aws_fixture: Option<PathBuf>,
@@ -166,6 +169,9 @@ pub struct CollectArgs {
     /// `azure.enabled` is false.
     #[arg(long)]
     pub azure: bool,
+    /// Discover Azure VNet flow analytics for this run (also enables Azure collection).
+    #[arg(long)]
+    pub azure_flow_logs: bool,
     /// Saved `az` CLI output (`asgs.json`, `nsgs.json`, `dependencies.json`).
     #[arg(long)]
     pub azure_fixture: Option<PathBuf>,
@@ -738,14 +744,14 @@ fn cloud_records(args: &CollectArgs) -> Result<Vec<crate::raw::RawRecord>, Error
     let mut records = Vec::new();
     if let Some(dir) = &args.aws_fixture {
         records.extend(collectors::records_from_aws_dir(dir, aws.env.as_deref())?);
-    } else if args.aws || (uses_config && aws.enabled) {
+    } else if args.aws || args.aws_flow_logs || (uses_config && aws.enabled) {
         let live = collectors::AwsLive {
             profile: aws.profile.clone(),
             regions: aws.regions.clone(),
             env: aws.env.clone(),
             xray: aws.xray,
             flow_log_group: aws.flow_log_group.clone(),
-            flow_logs: aws.flow_logs,
+            flow_logs: aws.flow_logs || args.aws_flow_logs,
         };
         let (found, warnings) = collectors::records_from_aws(&live, chrono::Utc::now())?;
         for warning in &warnings {
@@ -759,11 +765,12 @@ fn cloud_records(args: &CollectArgs) -> Result<Vec<crate::raw::RawRecord>, Error
             dir,
             azure.env.as_deref(),
         )?);
-    } else if args.azure || (uses_config && azure.enabled) {
+    } else if args.azure || args.azure_flow_logs || (uses_config && azure.enabled) {
         let live = collectors::AzureLive {
             subscriptions: azure.subscriptions.clone(),
             workspaces: azure.log_analytics_workspaces.clone(),
             env: azure.env.clone(),
+            flow_logs: azure.flow_logs || args.azure_flow_logs,
         };
         let (found, warnings) = collectors::records_from_azure(&live)?;
         for warning in &warnings {

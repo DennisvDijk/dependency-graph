@@ -136,6 +136,9 @@ pub struct AzureConfig {
     /// Environment of these subscriptions. Empty: an env word in the name.
     #[serde(default)]
     pub env: Option<String>,
+    /// Discover VNet Traffic Analytics workspaces and network flows. Off by default.
+    #[serde(default)]
+    pub flow_logs: bool,
 }
 
 /// GitLab connection settings. `base_url` is a placeholder until a human confirms it.
