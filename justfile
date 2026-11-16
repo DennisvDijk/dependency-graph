@@ -29,3 +29,7 @@ mcp-cursor:
 
 completions:
 	cargo run -- completions bash
+
+# Full flow on the bundled sample data. No token, no network.
+demo:
+	scripts/demo.sh

@@ -156,7 +156,7 @@ fn render_scored(format: OutputFormat, visits: &[crate::score::ScoredVisit]) -> 
             let mut lines = vec!["depth\tpath_score\tid".to_owned()];
             for visit in visits {
                 lines.push(format!(
-                    "{}\t{}\t{}",
+                    "{}\t{:.3}\t{}",
                     visit.depth, visit.path_score, visit.id
                 ));
             }

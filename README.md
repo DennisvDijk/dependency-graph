@@ -4,7 +4,7 @@ Self-hosted dependency graph for runtime dependencies and deployments.
 
 The tool is Rust. This repository lives on GitHub for now; the code will live in GitLab later. It reads GitLab (local access via `glab`), declared manifests in those repos, Istio metrics, and optionally Tempo and Datadog. It does not write back to those systems. Decisions: [ADR-001](docs/decisions/ADR-001-aannames.md), [ADR-002](docs/decisions/ADR-002-rust-en-github.md), [ADR-003](docs/decisions/ADR-003-runtime-bron.md), [ADR-004](docs/decisions/ADR-004-pilot-en-datadog.md), [ADR-005](docs/decisions/ADR-005-mcp-server.md), [ADR-006](docs/decisions/ADR-006-volledige-scan.md), [ADR-007](docs/decisions/ADR-007-resource-kinds.md), [ADR-008](docs/decisions/ADR-008-runtime-istio.md), [ADR-009](docs/decisions/ADR-009-sbom-overgeslagen.md), [ADR-010](docs/decisions/ADR-010-entra-optioneel.md), [ADR-011](docs/decisions/ADR-011-confidence-en-padscore.md), [ADR-012](docs/decisions/ADR-012-graph-database.md), [ADR-013](docs/decisions/ADR-013-portaal.md).
 
-Start here: [docs/quickstart.md](docs/quickstart.md) (install, `init`, `doctor`, first answer). No tokens, kubeconfigs, or production data belong in this repo. Config uses `example.com`.
+Start here: **[docs/tutorials](docs/tutorials/README.md)**: try it on sample data in five minutes (`scripts/demo.sh`), add your service, cover Terraform, Python and open-source apps, connect your AI agent. Short version: [docs/quickstart.md](docs/quickstart.md). No tokens, kubeconfigs, or production data belong in this repo. Config uses `example.com`.
 
 ## Layout
 

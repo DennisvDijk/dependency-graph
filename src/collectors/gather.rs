@@ -145,14 +145,7 @@ pub async fn records_from_gitlab(
         ));
         if set == GatherSet::Full {
             let tree = client.repository_tree(project.id, &branch).await?;
-            for item in tree
-                .into_iter()
-                .filter(|item| item.item_type == "blob")
-                .take(40)
-            {
-                if !interesting_manifest(&item.path) {
-                    continue;
-                }
+            for item in manifest_items(tree) {
                 if let Some(text) = client.file_text(project.id, &item.path, &branch).await? {
                     records.extend(records_from_file(
                         &project.path_with_namespace,
@@ -169,7 +162,27 @@ pub async fn records_from_gitlab(
     Ok((records, warnings))
 }
 
+/// Manifest files read per project in a full run. The cap applies after the
+/// filter, so a large source tree (Python, Terraform, monorepos) does not push
+/// its deploy manifests past it.
+const MAX_MANIFESTS_PER_PROJECT: usize = 200;
+
+/// Blobs worth reading, capped after filtering.
+fn manifest_items(tree: Vec<crate::gitlab::TreeItem>) -> Vec<crate::gitlab::TreeItem> {
+    tree.into_iter()
+        .filter(|item| item.item_type == "blob" && interesting_manifest(&item.path))
+        .take(MAX_MANIFESTS_PER_PROJECT)
+        .collect()
+}
+
 fn records_from_catalog(project_path: &str, yaml: &str) -> Vec<RawRecord> {
+    crate::catalog::yaml_documents(yaml)
+        .into_iter()
+        .flat_map(|doc| records_from_catalog_doc(project_path, doc))
+        .collect()
+}
+
+fn records_from_catalog_doc(project_path: &str, yaml: &str) -> Vec<RawRecord> {
     let value: Value = yaml_serde::from_str(yaml).unwrap_or(Value::Null);
     let kind = value
         .get("kind")
@@ -581,4 +594,54 @@ struct FixtureDeployment {
     #[serde(rename = "ref")]
     reference: String,
     created_at: String,
+}
+
+#[cfg(test)]
+mod manifest_selection_tests {
+    use super::*;
+    use crate::gitlab::TreeItem;
+
+    fn blob(path: &str) -> TreeItem {
+        TreeItem {
+            path: path.to_owned(),
+            item_type: "blob".to_owned(),
+        }
+    }
+
+    #[test]
+    fn manifests_after_many_source_files_are_still_read() {
+        let mut tree: Vec<TreeItem> = (0..500)
+            .map(|index| blob(&format!("src/app/module_{index}.py")))
+            .collect();
+        tree.push(TreeItem {
+            path: "deploy".to_owned(),
+            item_type: "tree".to_owned(),
+        });
+        tree.push(blob("deploy/deployment.yaml"));
+        tree.push(blob("terraform/main.tf"));
+        let paths: Vec<String> = manifest_items(tree)
+            .into_iter()
+            .map(|item| item.path)
+            .collect();
+        assert_eq!(paths, ["deploy/deployment.yaml", "terraform/main.tf"]);
+    }
+
+    #[test]
+    fn manifest_count_is_capped_per_project() {
+        let tree = (0..MAX_MANIFESTS_PER_PROJECT + 50)
+            .map(|index| blob(&format!("k8s/{index}.yaml")))
+            .collect();
+        assert_eq!(manifest_items(tree).len(), MAX_MANIFESTS_PER_PROJECT);
+    }
+
+    #[test]
+    fn a_catalog_file_with_two_entities_yields_both() {
+        let yaml = "# third-party apps run by the platform team\n---\napiVersion: backstage.io/v1alpha1\nkind: Component\nmetadata:\n  name: keycloak\nspec:\n  type: service\n---\napiVersion: backstage.io/v1alpha1\nkind: Resource\nmetadata:\n  name: redis-cache\nspec:\n  type: database\n";
+        let records = records_from_catalog("example-group/platform/third-party", yaml);
+        let names: Vec<&str> = records
+            .iter()
+            .filter_map(|record| record.payload["name"].as_str())
+            .collect();
+        assert_eq!(names, ["keycloak", "redis-cache"]);
+    }
 }

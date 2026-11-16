@@ -1,5 +1,7 @@
 # Quickstart
 
+Want a guided tour instead? See the [tutorials](tutorials/README.md), or run `scripts/demo.sh` for the full flow on sample data.
+
 From a checkout to a first answer, locally, without a token in the repo.
 
 ```sh

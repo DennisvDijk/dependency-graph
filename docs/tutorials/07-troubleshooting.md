@@ -1,0 +1,25 @@
+# 7. Troubleshooting
+
+Start with `depgraph doctor`. Every `fail` line ends with a `next:` line that says what to do.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `error: rustc 1.99… is not supported` or a toolchain error on install | Older Rust than the pinned 1.100.0 | Install with [rustup](https://rustup.rs); it reads `rust-toolchain.toml`. On Homebrew: `brew install rustup` and put it first on `PATH`. |
+| `fail token: no token` | No GitLab credentials | `glab auth login --hostname <host>` or `export GITLAB_TOKEN=…` |
+| `fail glab: glab is not on PATH` | glab not installed | Install [glab](https://gitlab.com/gitlab-org/cli), or use `GITLAB_TOKEN` |
+| `fail snapshot: … is missing` | No graph built yet | `depgraph collect --set full --output data && depgraph build` |
+| `fail snapshot: snapshot is N days old` | Scheduled refresh stopped | Check the refresh pipeline. With sample data this is expected: `doctor --now <time>`. |
+| `--env prod` shows no observed edges; drift is all `declared_only` | Kubernetes namespaces are not mapped | Fill in `k8s_namespaces` per environment in `config/environments.yaml` ([tutorial 6](06-real-data.md#2-environments-the-step-people-miss)) |
+| My service shows up as two nodes, such as `payments` and `payments-api` | Workload name differs from catalog name | Add an alias in `config/aliases.yaml`, or align `app.kubernetes.io/name` |
+| `build` reports many unresolved names | Missing aliases or catalog files | See above; `depgraph orphans` lists what is loose |
+| `path_score` is 0 | The edge has no observed calls (declared only, or no Prometheus data for that env) | Expected. Scores need Istio traffic. |
+| A Helm-deployed or open-source app is missing, or has no owner | Helm templates are not rendered | Add a `catalog-info.yaml` in its deploy repo ([tutorial 8](08-terraform-python-open-source.md#open-source-apps-you-run)) |
+| A Terraform stack shows as one node | By design: one `resource:infra` node per repo | Split stacks into repos if you need them apart |
+| `library-impact` says `libraries disabled` | Package dependencies are not tracked yet | See [tutorial 8, limits](08-terraform-python-open-source.md#what-is-not-covered-yet) |
+| `validate-catalog` says a `dependsOn` does not resolve | The target's file was not passed | Pass the target's `catalog-info.yaml` too |
+| `timeline`: `missing field …` | Export has a different shape | Match `tests/fixtures/phase4/deployments.yaml` and `incidents.yaml` |
+| MCP client cannot connect | Server not running, other port, or running in Docker with `--insecure-local` | Start `depgraph serve-mcp --insecure-local` on the host; check the URL from `mcp-config` |
+| `serve-mcp --insecure-local` refuses to start with `--bind 0.0.0.0:…` | By design: no auth means loopback only | Configure an identity provider ([mcp.md](../mcp.md)) for shared use |
+| MR check job is green but posts nothing | Image without `depgraph`, no snapshot, or no bot token; the job is `allow_failure` | Check the job log; see [tutorial 5](05-mr-check.md) |
+
+Still stuck? Run the failing command with the sample data from [tutorial 1](01-try-it.md). If it works there, the issue is config or data; if not, open an issue with the command and its output, after removing anything internal.

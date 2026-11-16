@@ -263,26 +263,33 @@ fn path_scores(
     {
         incoming.entry(edge.to_id.as_str()).or_default().push(edge);
     }
+    // Best score per node over every path. A declared edge and an observed
+    // edge can join the same pair; the stronger one must win, whatever the
+    // edge order. Factors are at most 1, so a cycle never improves a score
+    // and the relaxation ends.
     let mut best: BTreeMap<String, f64> = BTreeMap::new();
     let mut queue = VecDeque::from([(target.to_owned(), 1.0_f64, 0_usize)]);
-    let mut seen = BTreeSet::from([target.to_owned()]);
     while let Some((node, score, depth)) = queue.pop_front() {
         if depth > graph.nodes.len() {
             continue;
         }
+        if node != target && best.get(&node).is_some_and(|known| *known > score) {
+            continue;
+        }
         for edge in incoming.get(node.as_str()).into_iter().flatten() {
-            if seen.contains(&edge.from_id) {
+            if edge.from_id == target {
                 continue;
             }
             let next = score
                 * weights.get(&edge.id).copied().unwrap_or(0.0)
                 * hardness.factor(edge.criticality);
-            seen.insert(edge.from_id.clone());
-            let entry = best.entry(edge.from_id.clone()).or_insert(0.0);
-            if next > *entry {
-                *entry = next;
+            match best.get(&edge.from_id) {
+                Some(known) if *known >= next => {}
+                _ => {
+                    best.insert(edge.from_id.clone(), next);
+                    queue.push_back((edge.from_id.clone(), next, depth + 1));
+                }
             }
-            queue.push_back((edge.from_id.clone(), next, depth + 1));
         }
     }
     best
@@ -371,6 +378,38 @@ mod tests {
         let stats = measure(&graph);
         assert_eq!(stats.active_edges, 2);
         assert!(stats.query_p95_ms < 2000.0);
+    }
+
+    #[test]
+    fn path_score_takes_the_strongest_edge_between_the_same_pair() {
+        let node = |id: &str| Node {
+            id: id.into(),
+            node_type: NodeType::Component,
+            attrs: BTreeMap::new(),
+        };
+        // A declared edge without calls comes first; the observed edge with
+        // all of a's calls must still decide the score.
+        let mut declared = edge("component:a", "component:b", 0, Criticality::Hard);
+        declared.edge_type = EdgeType::DeclaredDependsOn;
+        declared.attrs.calls_7d = None;
+        declared.id = ids::edge_id(
+            EdgeType::DeclaredDependsOn,
+            "component:a",
+            "component:b",
+            Some(Env::Prod),
+        );
+        let observed = edge("component:a", "component:b", 100, Criticality::Hard);
+        let graph = GraphSnapshot {
+            schema_version: "0.1.0".into(),
+            run_id: "t".into(),
+            generated_at: Timestamp::parse("2026-01-15T00:00:00Z").unwrap(),
+            sources: BTreeMap::new(),
+            nodes: vec![node("component:a"), node("component:b")],
+            edges: vec![declared, observed],
+        };
+        let ranked = ranked_impact(&graph, "b", Some(Env::Prod), Hardness::default()).unwrap();
+        assert_eq!(ranked[0].id, "component:a");
+        assert!((ranked[0].path_score - 1.0).abs() < 1e-9);
     }
 
     #[test]

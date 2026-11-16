@@ -46,19 +46,21 @@ pub fn validate_catalog_files(paths: &[impl AsRef<Path>]) -> Result<Vec<CatalogE
         let path = path.as_ref();
         let text = fs::read_to_string(path)
             .map_err(|err| Error::Validation(format!("reading {}: {err}", path.display())))?;
-        let value: Value = yaml_serde::from_str(&text).map_err(|err| {
-            Error::Validation(redact::redact(&format!(
-                "{} is not YAML: {err}",
-                path.display()
-            )))
-        })?;
-        if let Err(error) = validator.validate(&value) {
-            return Err(Error::Validation(format!(
-                "{} failed catalog schema: {error}",
-                path.display()
-            )));
+        for doc in yaml_documents(&text) {
+            let value: Value = yaml_serde::from_str(doc).map_err(|err| {
+                Error::Validation(redact::redact(&format!(
+                    "{} is not YAML: {err}",
+                    path.display()
+                )))
+            })?;
+            if let Err(error) = validator.validate(&value) {
+                return Err(Error::Validation(format!(
+                    "{} failed catalog schema: {error}",
+                    path.display()
+                )));
+            }
+            entities.push(entity_from_value(path.display().to_string(), &value)?);
         }
-        entities.push(entity_from_value(path.display().to_string(), &value)?);
     }
     let known: BTreeSet<(String, String)> = entities
         .iter()
@@ -85,6 +87,32 @@ pub fn validate_catalog_files(paths: &[impl AsRef<Path>]) -> Result<Vec<CatalogE
     } else {
         Err(Error::Validation(errors.join("\n")))
     }
+}
+
+/// Split a YAML stream on `---` separator lines. Backstage allows several
+/// entities in one `catalog-info.yaml`. Chunks with only comments or blank
+/// lines are dropped.
+#[must_use]
+pub fn yaml_documents(text: &str) -> Vec<&str> {
+    let mut docs = Vec::new();
+    let mut start = 0;
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        if line.trim_end() == "---" {
+            docs.push(&text[start..offset]);
+            start = offset + line.len();
+        }
+        offset += line.len();
+    }
+    docs.push(&text[start..]);
+    docs.into_iter()
+        .filter(|doc| {
+            doc.lines().any(|line| {
+                let line = line.trim();
+                !line.is_empty() && !line.starts_with('#')
+            })
+        })
+        .collect()
 }
 
 fn entity_from_value(path: String, value: &Value) -> Result<CatalogEntity, Error> {
@@ -139,6 +167,15 @@ fn parse_entity_ref(reference: &str) -> Result<(String, String), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn yaml_documents_splits_on_separator_lines_only() {
+        let text = "---\nkind: Component\nmetadata:\n  name: a\n  description: \"a---b\"\n---\n# comment only\n---\nkind: Resource\n";
+        let docs = super::yaml_documents(text);
+        assert_eq!(docs.len(), 2);
+        assert!(docs[0].contains("a---b"));
+        assert!(docs[1].starts_with("kind: Resource"));
+    }
+
     use super::*;
 
     #[test]

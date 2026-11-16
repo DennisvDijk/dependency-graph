@@ -1,0 +1,4 @@
+# Example incidents for `depgraph timeline`. A Datadog export can be reduced to this shape offline.
+- started_at: "2026-01-14T13:42:00Z"
+  env: prod
+  title: payments-api 5xx above 2%
