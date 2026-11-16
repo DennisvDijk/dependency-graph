@@ -51,11 +51,11 @@ pub enum ResourceKind {
     ModelEndpoint,
     /// An identity provider.
     IdentityProvider,
-    /// A Kubernetes NetworkPolicy. Accepted in ADR-006.
+    /// A Kubernetes NetworkPolicy. Accepted in ADR-007.
     NetworkPolicy,
-    /// A firewall rule declared in a repo. Accepted in ADR-006.
+    /// A firewall rule declared in a repo. Accepted in ADR-007.
     FirewallRule,
-    /// An infrastructure component from IaC. Accepted in ADR-006.
+    /// An infrastructure component from IaC. Accepted in ADR-007.
     Infra,
     /// Anything else that still needs a node.
     Other,

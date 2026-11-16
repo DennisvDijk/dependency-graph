@@ -1,4 +1,4 @@
-//! Turn a fixture directory or a live GitLab group into raw records.
+//! Turn a fixture directory or a live GitLab selection into raw records.
 //!
 //! Fixture mode does not open a socket. Live mode uses the GitLab client.
 //! `kubernetes.live_read` is the only path that may call kubectl, and only
@@ -10,8 +10,10 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use chrono::{DateTime, Utc};
+
 use crate::error::Error;
-use crate::gitlab::GitLabClient;
+use crate::gitlab::{GitLabClient, ProjectFilter};
 use crate::normalize::merge::version_rank;
 use crate::raw::RawRecord;
 use crate::repo_scan::kubernetes_app_names;
@@ -94,22 +96,39 @@ pub fn records_from_fixture(dir: &Path, set: GatherSet) -> Result<Vec<RawRecord>
     Ok(records)
 }
 
+/// Which GitLab projects a live collect reads.
+///
+/// Empty `groups` and `projects` scan every project the token can see.
+/// The same rules as `depgraph inventory` apply, including the explicit-project
+/// opt-in and the archived-project warnings.
+pub struct GitlabScope<'a> {
+    /// Group or subgroup paths.
+    pub groups: &'a [String],
+    /// Explicit project paths.
+    pub projects: &'a [String],
+    /// Filters for the group or full-scan list.
+    pub filter: &'a ProjectFilter,
+    /// Clock for `min_last_activity`.
+    pub now: DateTime<Utc>,
+}
+
 /// Read GitLab. `live` is consulted only when `live_read` is true.
+///
+/// The returned warnings are archived explicit projects that were skipped.
 ///
 /// # Errors
 ///
 /// Returns an error when the API call fails.
 pub async fn records_from_gitlab(
     client: &GitLabClient,
-    groups: &[String],
+    scope: GitlabScope<'_>,
     catalog_file: &str,
     set: GatherSet,
     live: Option<&dyn LiveRead>,
-) -> Result<Vec<RawRecord>, Error> {
-    let mut projects = Vec::new();
-    for group in groups {
-        projects.extend(client.list_group_projects(group).await?);
-    }
+) -> Result<(Vec<RawRecord>, Vec<String>), Error> {
+    let (projects, warnings) = client
+        .select_scope(scope.groups, scope.projects, scope.filter, scope.now)
+        .await?;
     let mut records = Vec::new();
     for project in projects {
         let branch = project
@@ -147,7 +166,7 @@ pub async fn records_from_gitlab(
     if let Some(live) = live {
         records.extend(live.list_workloads()?);
     }
-    Ok(records)
+    Ok((records, warnings))
 }
 
 fn records_from_catalog(project_path: &str, yaml: &str) -> Vec<RawRecord> {

@@ -94,9 +94,12 @@ pub struct CollectArgs {
     /// GitLab base URL override.
     #[arg(long)]
     pub base_url: Option<String>,
-    /// Group override. Repeatable.
+    /// Group or subgroup path. Repeat to override `gitlab.groups`.
     #[arg(long)]
     pub group: Vec<String>,
+    /// Project path. Repeat to override `gitlab.projects`.
+    #[arg(long = "project")]
+    pub project_path: Vec<String>,
 }
 
 /// `depgraph build`.
@@ -367,24 +370,42 @@ fn run_collect(args: CollectArgs) -> Result<(), Error> {
         collectors::records_from_fixture(fixture, set)?
     } else {
         let project = config::load_project(Path::new("."))?;
-        let base_url = args.base_url.unwrap_or(project.config.gitlab.base_url);
+        let filter = project.config.gitlab.project_filter()?;
+        let base_url = args
+            .base_url
+            .unwrap_or_else(|| project.config.gitlab.base_url.clone());
         let groups = if args.group.is_empty() {
-            project.config.gitlab.groups
+            project.config.gitlab.groups.clone()
         } else {
             args.group
         };
+        let projects = if args.project_path.is_empty() {
+            project.config.gitlab.projects.clone()
+        } else {
+            args.project_path
+        };
+        let catalog_file = project.config.gitlab.catalog_file.clone();
+        let per_page = project.config.gitlab.per_page;
         let token = crate::gitlab::resolve_token(&base_url)?;
-        let client =
-            crate::gitlab::GitLabClient::new(base_url, token, project.config.gitlab.per_page)?;
+        let client = crate::gitlab::GitLabClient::new(base_url, token, per_page)?;
         let live = live_reader(&project.config.kubernetes)?;
-        tokio_runtime()?.block_on(collectors::records_from_gitlab(
+        let (records, warnings) = tokio_runtime()?.block_on(collectors::records_from_gitlab(
             &client,
-            &groups,
-            &project.config.gitlab.catalog_file,
+            collectors::GitlabScope {
+                groups: &groups,
+                projects: &projects,
+                filter: &filter,
+                now: chrono::Utc::now(),
+            },
+            &catalog_file,
             set,
             live.as_ref()
                 .map(|reader| reader as &dyn collectors::LiveRead),
-        ))?
+        ))?;
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
+        records
     };
     let output = args.output.unwrap_or_else(|| PathBuf::from("data"));
     write_raw_dir(&output.join("raw"), &records)?;

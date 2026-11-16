@@ -19,7 +19,9 @@ mod sbom_links;
 
 pub use crate::raw::RawRecord;
 pub use base::{CollectSet, Collector, all, collect};
-pub use gather::{GatherSet, KubectlRead, LiveRead, records_from_fixture, records_from_gitlab};
+pub use gather::{
+    GatherSet, GitlabScope, KubectlRead, LiveRead, records_from_fixture, records_from_gitlab,
+};
 
 #[cfg(test)]
 mod tests {

@@ -1,4 +1,4 @@
-# ADR-006: Resource-kinds voor netwerk en infra
+# ADR-007: Resource-kinds voor netwerk en infra
 
 - Status: geaccepteerd
 - Datum: 2026-11-16
