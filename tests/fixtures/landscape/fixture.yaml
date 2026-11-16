@@ -1,0 +1,9 @@
+projects:
+  - path: example-group/shop/orders-py
+    dir: orders-py
+  - path: example-group/shop/notifications
+    dir: notifications
+  - path: example-group/platform/third-party
+    dir: third-party
+  - path: example-group/platform/infra-network
+    dir: infra-network

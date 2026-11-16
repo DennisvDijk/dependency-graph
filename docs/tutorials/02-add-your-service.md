@@ -41,7 +41,8 @@ spec:
 The rules that matter:
 
 - **One name everywhere.** `metadata.name`, the OpenTelemetry `service.name` and the Kubernetes label `app.kubernetes.io/name` should be the same. That is how a runtime call from a pod gets matched to your catalog entry. If a workload name cannot change, ask whoever runs depgraph to add an alias (see [tutorial 6](06-real-data.md#aliases)).
-- **`dependsOn` is for hard dependencies**: if it is down, you are down. Anything you degrade gracefully without goes in `depgraph/soft-dependencies` (comma-separated project paths). This sets the hardness used in impact scores: hard 1.0, unknown 0.5, soft 0.2.
+- **`dependsOn` lists what you need.** It does not make a dependency "hard" by itself: impact scores treat it as *unknown* (factor 0.5) until there is evidence. Evidence is either a failed chaos experiment (*hard*, 1.0) or you saying you can live without it (*soft*, 0.2).
+- **`depgraph/soft-dependencies`** marks what you degrade gracefully without (fallback, cache, async). Comma-separated; each entry may be a bare name (`notifications`), a project path (`example-group/notifications`) or an entity ref (`component:default/notifications`). A soft dependency does not have to be in `dependsOn` too: naming it here is enough to create the edge, and runtime calls on that edge inherit *soft*.
 - **Environments** in your `.gitlab-ci.yml` `environment:` should be one of `development`, `acceptance`, `staging`, `production` (or `dev`, `acc`, `prod`). Another name will not map to an environment until the mapping is extended.
 - **Do not commit** tokens, kubeconfigs or internal URLs with credentials in them. depgraph rejects credentialed URLs and known token shapes in the graph anyway.
 

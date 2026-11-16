@@ -118,6 +118,24 @@
       "attrs": {}
     },
     {
+      "id": "edge:a592cb6621b0fca78ae8906a04724f7325cb09a8bc11dd9053de4725b9e03303",
+      "type": "declared_depends_on",
+      "from_id": "component:payments-api",
+      "to_id": "resource:firewall-rule:payments-egress",
+      "env": null,
+      "sources": [
+        {
+          "kind": "static",
+          "first_seen": "2026-01-15T00:00:00Z",
+          "last_seen": "2026-01-15T00:00:00Z"
+        }
+      ],
+      "status": "n/a",
+      "criticality": "unknown",
+      "active": true,
+      "attrs": {}
+    },
+    {
       "id": "edge:c17a5d9fd91294cf8c12f75601f865fb6cef247542b891b0c0448635b21407c0",
       "type": "declared_depends_on",
       "from_id": "component:payments-api",
@@ -125,12 +143,12 @@
       "env": null,
       "sources": [
         {
-          "kind": "catalog",
+          "kind": "static",
           "first_seen": "2026-01-15T00:00:00Z",
           "last_seen": "2026-01-15T00:00:00Z"
         }
       ],
-      "status": "declared_only",
+      "status": "n/a",
       "criticality": "unknown",
       "active": true,
       "attrs": {}
@@ -143,12 +161,12 @@
       "env": null,
       "sources": [
         {
-          "kind": "catalog",
+          "kind": "static",
           "first_seen": "2026-01-15T00:00:00Z",
           "last_seen": "2026-01-15T00:00:00Z"
         }
       ],
-      "status": "declared_only",
+      "status": "n/a",
       "criticality": "unknown",
       "active": true,
       "attrs": {}

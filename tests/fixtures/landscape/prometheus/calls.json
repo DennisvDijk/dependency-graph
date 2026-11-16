@@ -1,0 +1,77 @@
+{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {
+          "source_workload": "orders",
+          "source_workload_namespace": "shop-prod",
+          "destination_workload": "keycloak",
+          "destination_workload_namespace": "platform-prod",
+          "request_protocol": "http",
+          "destination_service": "keycloak.platform-prod.svc.cluster.local"
+        },
+        "value": [
+          1768435200,
+          "300"
+        ]
+      },
+      {
+        "metric": {
+          "source_workload": "orders",
+          "source_workload_namespace": "shop-prod",
+          "destination_workload": "notifications",
+          "destination_workload_namespace": "shop-prod",
+          "request_protocol": "http",
+          "destination_service": "notifications.shop-prod.svc.cluster.local"
+        },
+        "value": [
+          1768435200,
+          "100"
+        ]
+      },
+      {
+        "metric": {
+          "source_workload": "orders",
+          "source_workload_namespace": "shop-prod",
+          "destination_workload": "PassthroughCluster",
+          "destination_workload_namespace": "shop-prod",
+          "request_protocol": "https",
+          "destination_service": "api.openai.com"
+        },
+        "value": [
+          1768435200,
+          "100"
+        ]
+      },
+      {
+        "metric": {
+          "source_workload": "orders",
+          "source_workload_namespace": "shop-acc",
+          "destination_workload": "keycloak",
+          "destination_workload_namespace": "shop-acc",
+          "request_protocol": "http",
+          "destination_service": "keycloak.shop-acc.svc.cluster.local"
+        },
+        "value": [
+          1768435200,
+          "20"
+        ]
+      },
+      {
+        "metric": {
+          "source_workload": "orders",
+          "source_workload_namespace": "qa",
+          "destination_workload": "keycloak",
+          "destination_workload_namespace": "qa",
+          "request_protocol": "http"
+        },
+        "value": [
+          1768435200,
+          "5"
+        ]
+      }
+    ]
+  }
+}

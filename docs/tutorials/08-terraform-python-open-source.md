@@ -43,12 +43,13 @@ spec:
     - resource:default/infra-network
 ```
 
-Now `depgraph consumers resource:infra:infra-network` lists every service that breaks when that stack does. Run it before a risky `terraform apply`.
+Now `depgraph consumers resource:infra:infra-network` lists every service that depends on that stack. Run it before a risky `terraform apply`.
 
 Tips:
 
 - **One stack, one repo** gives the clearest graph. A monorepo with many stacks shows up as a single node. If you need them apart, split the stacks, or describe each one in a separate repo's catalog file.
-- Terraform *inside* a service repo (a bucket or queue for that service) becomes `resource:infra:<service-repo>` and is linked to that service automatically.
+- Terraform *inside* a service repo (a bucket or queue for that service) becomes `resource:infra:<service-repo>` and is linked to that service automatically. Network policies and firewall rules in a service repo are linked the same way: by their `app.kubernetes.io/name` label, or, without a label, to the only service in that repo.
+- Infra, network-policy and firewall edges are structural: they have status `n/a` and never show up in drift, since no runtime call ever "confirms" a VPC.
 - Use `spec.type: database`, `queue`, `topic` and so on for a single managed resource with its own repo, such as an RDS instance. These are the kinds from ADR-007: `database`, `topic`, `queue`, `external-api`, `model-endpoint`, `identity-provider`, `network-policy`, `firewall-rule`, `infra`, `other`.
 
 ## Python
@@ -107,7 +108,7 @@ Then services declare it like anything else (`dependsOn: [component:default/keyc
 
 Things to know:
 
-- **Helm charts are not rendered.** depgraph notes that a repo has a chart, but it reads plain Kubernetes YAML only. A templated label (`{{ .Chart.Name }}`) is not a name. The catalog file above is how a Helm-deployed app gets its node.
+- **Helm charts are not rendered.** depgraph reads plain Kubernetes YAML only and skips any file containing `{{`, so a chart adds no nodes and no noise. The catalog file above is how a Helm-deployed app gets its node.
 - **Check the real pod label.** Upstream charts often label pods `app.kubernetes.io/name: keycloak` but sometimes `app: keycloak-0` or similar. If Istio reports a different name, add an alias in `config/aliases.yaml` (`keycloak-0: keycloak`).
 - **Upgrades:** the deploy repo's GitLab `environment:` deployments show up in `depgraph timeline`, so a Keycloak upgrade sits next to the incident it caused.
 - **Out of the mesh?** Apps without an Istio sidecar produce no observed traffic. Their declared edges still count; drift then shows them as `declared_only`, which is expected.
@@ -118,16 +119,21 @@ Calls that leave the cluster through Istio show up as `resource:external-api:<ho
 
 ## Try it on sample data
 
-The repository's tests show each case. To see a Terraform repo, a Python service and Keycloak together, make three folders and a `fixture.yaml` that lists them, then:
+`tests/fixtures/landscape/` holds all of this in one place: a Python service (`orders-py`), a Terraform-only repo, Keycloak and Redis in one deploy repo with a Helm chart, a soft dependency, an OpenAI egress call and an unmapped namespace. `tests/landscape.rs` asserts every node and edge it must produce, so it doubles as a reference for what to expect. To run it yourself from a checkout:
 
 ```sh
-depgraph collect --set full --fixture <folder> --output data
-depgraph build --raw data/raw --output data/snapshot.json
+mkdir -p /tmp/landscape/config && cp config/*.yaml /tmp/landscape/config/
+cp tests/fixtures/landscape/{aliases,environments}.yaml /tmp/landscape/config/
+cd /tmp/landscape
+depgraph collect --set full --output data \
+  --fixture "$OLDPWD/tests/fixtures/landscape" \
+  --prometheus-fixture "$OLDPWD/tests/fixtures/landscape/prometheus"
+depgraph build
 depgraph deps orders-py --snapshot data/snapshot.json
-# component:keycloak, deployment:orders-py@prod, resource:infra:infra-network
+depgraph impact keycloak --env prod --snapshot data/snapshot.json   # 0.300: 60% of calls x unknown 0.5
 ```
 
-The layout of a fixture folder is in `tests/fixtures/phase1/` (`fixture.yaml`, `deployments.yaml`, one folder per repo).
+The build prints one hint, for the `qa` namespace, which the sample leaves unmapped on purpose.
 
 ## What is not covered yet
 

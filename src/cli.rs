@@ -778,11 +778,68 @@ fn run_build(args: BuildArgs) -> Result<(), Error> {
         output.display(),
         built.unresolved.len()
     );
+    for line in namespace_hints(&built.unresolved, &environments) {
+        eprintln!("{line}");
+    }
     match crate::store::archive_snapshot(&output) {
         Ok(path) => println!("archived {}", path.display()),
         Err(err) => eprintln!("warning: snapshot was not archived: {err}"),
     }
     Ok(())
+}
+
+/// Setup hints for calls dropped because their namespace is not mapped.
+fn namespace_hints(
+    unresolved: &[normalize::merge::Unresolved],
+    environments: &config::EnvIndex,
+) -> Vec<String> {
+    let mut dropped: std::collections::BTreeMap<String, u64> = Default::default();
+    for row in unresolved
+        .iter()
+        .filter(|row| row.kind == "environment" && row.reason == "namespace is not mapped")
+    {
+        for namespace in row
+            .name
+            .split(" and ")
+            .filter(|namespace| environments.resolve_namespace(namespace).is_none())
+        {
+            *dropped.entry(namespace.to_string()).or_default() += row.volume;
+        }
+    }
+    if dropped.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "hint: calls in {} namespace(s) were left out because config/environments.yaml does not map them:",
+        dropped.len()
+    )];
+    let mut suggested: std::collections::BTreeMap<crate::models::Env, Vec<&str>> =
+        Default::default();
+    for (namespace, calls) in &dropped {
+        let guess = environments.suggest_namespace(namespace);
+        let advice = match guess {
+            Some(env) => format!("looks like {env}"),
+            None => "no guess; map it yourself or ignore it".to_string(),
+        };
+        lines.push(format!("  {namespace} ({calls} calls): {advice}"));
+        if let Some(env) = guess {
+            suggested.entry(env).or_default().push(namespace);
+        }
+    }
+    if !suggested.is_empty() {
+        lines.push(
+            "  check the guesses, then add them under the matching keys in config/environments.yaml:"
+                .to_string(),
+        );
+        for (env, namespaces) in &suggested {
+            lines.push(format!("    {env}:"));
+            lines.push(format!("      k8s_namespaces: [{}]", namespaces.join(", ")));
+        }
+    }
+    lines.push(
+        "  then run depgraph build again (docs/tutorials/07-troubleshooting.md).".to_string(),
+    );
+    lines
 }
 
 fn read_raw_dir(dir: &Path) -> Result<Vec<crate::raw::RawRecord>, Error> {

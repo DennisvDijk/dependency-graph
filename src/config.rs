@@ -441,6 +441,38 @@ impl EnvIndex {
     pub fn resolve_namespace(&self, name: &str) -> Option<Env> {
         self.by_namespace.get(&name.to_ascii_lowercase()).copied()
     }
+
+    /// Suggest an environment for an unmapped namespace, for a setup hint only.
+    ///
+    /// The first or last `-` segment must be a canonical env (`dev`, `acc`,
+    /// `prod`) or a mapped GitLab/OTel name, and all matches must agree.
+    /// The graph never uses this: unmapped namespaces stay unresolved (ADR-008).
+    #[must_use]
+    pub fn suggest_namespace(&self, name: &str) -> Option<Env> {
+        let lower = name.to_ascii_lowercase();
+        let segments: Vec<&str> = lower.split('-').filter(|part| !part.is_empty()).collect();
+        let candidates = match segments.as_slice() {
+            [] => Vec::new(),
+            [only] => vec![*only],
+            [first, .., last] => vec![*first, *last],
+        };
+        let mut found: Option<Env> = None;
+        for segment in candidates {
+            let env = match segment {
+                "dev" => Some(Env::Dev),
+                "acc" => Some(Env::Acc),
+                "prod" => Some(Env::Prod),
+                other => self.by_name.get(other).copied(),
+            };
+            match (found, env) {
+                (_, None) => {}
+                (None, Some(env)) => found = Some(env),
+                (Some(left), Some(right)) if left == right => {}
+                (Some(_), Some(_)) => return None,
+            }
+        }
+        found
+    }
 }
 
 /// Alias table. Each alias names exactly one component.
@@ -1178,6 +1210,23 @@ prod:
             environments.index().unwrap().resolve("development"),
             Some(Env::Dev)
         );
+    }
+
+    #[test]
+    fn namespace_suggestions_use_the_first_or_last_segment() {
+        let index = parse_environments(
+            "dev:\n  gitlab: [development]\nacc:\n  gitlab: [staging]\nprod:\n  gitlab: [production]\n",
+        )
+        .unwrap()
+        .index()
+        .unwrap();
+        assert_eq!(index.suggest_namespace("shop-prod"), Some(Env::Prod));
+        assert_eq!(index.suggest_namespace("staging-shop"), Some(Env::Acc));
+        assert_eq!(index.suggest_namespace("dev"), Some(Env::Dev));
+        assert_eq!(index.suggest_namespace("qa"), None);
+        assert_eq!(index.suggest_namespace("prod-to-dev"), None);
+        assert_eq!(index.suggest_namespace("shop-prod"), Some(Env::Prod));
+        assert_eq!(index.resolve_namespace("shop-prod"), None);
     }
 
     #[test]

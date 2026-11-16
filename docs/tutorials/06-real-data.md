@@ -51,6 +51,19 @@ prod:
 
 **Istio calls are placed in an environment through the Kubernetes namespace.** With `k8s_namespaces: []` (the default) runtime calls have no environment, so `--env prod` shows no observed edges and drift shows everything as `declared_only`. List every namespace for each environment. `depgraph resolve-env <name>` checks a single name.
 
+You do not have to know the namespaces up front. Run `depgraph build` once: it lists each namespace whose calls were left out, guesses the environment from a `-prod` / `-acc` / `-dev` (or `staging`, `production`…) prefix or suffix, and prints the YAML to paste:
+
+```text
+hint: calls in 2 namespace(s) were left out because config/environments.yaml does not map them:
+  shop-prod (500 calls): looks like prod
+  qa (5 calls): no guess; map it yourself or ignore it
+  check the guesses, then add them under the matching keys in config/environments.yaml:
+    prod:
+      k8s_namespaces: [shop-prod]
+```
+
+The guess is only a hint. Nothing is mapped until it is in the file (ADR-008).
+
 ## 3. Aliases
 
 When a workload's name differs from its catalog name, map it in `config/aliases.yaml`:

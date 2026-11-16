@@ -273,6 +273,10 @@ fn records_from_file(project_path: &str, path: &str, text: &str) -> Vec<RawRecor
         }
         return records;
     }
+    // Helm and other Go templates are not rendered; their names are not names.
+    if text.contains("{{") {
+        return records;
+    }
     for doc in text.split("\n---\n") {
         let kind = yaml_kind(doc);
         let name = yaml_metadata_name(doc).unwrap_or_default();
@@ -632,6 +636,12 @@ mod manifest_selection_tests {
             .map(|index| blob(&format!("k8s/{index}.yaml")))
             .collect();
         assert_eq!(manifest_items(tree).len(), MAX_MANIFESTS_PER_PROJECT);
+    }
+
+    #[test]
+    fn templated_manifests_are_skipped() {
+        let text = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: {{ .Release.Name }}\n  labels:\n    app.kubernetes.io/name: {{ .Chart.Name }}\n";
+        assert!(records_from_file("group/app", "chart/templates/deployment.yaml", text).is_empty());
     }
 
     #[test]

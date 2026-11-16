@@ -1,0 +1,3 @@
+kind: FirewallRule
+metadata:
+  name: orders-egress

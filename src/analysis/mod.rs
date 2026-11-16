@@ -492,10 +492,12 @@ pub(crate) fn drift_markdown(graph: &GraphSnapshot, env: Env) -> String {
                     observed_only.push(edge);
                 }
             }
+            // Structural links (IaC, network policy, firewall) are never in
+            // mesh traffic. A declared pair that is observed is listed once,
+            // by its observed edge, which carries the call count.
+            EdgeType::DeclaredDependsOn if crate::normalize::merge::is_structural(&edge.to_id) => {}
             EdgeType::DeclaredDependsOn => {
-                if observed_here.contains(&edge_pair(edge)) {
-                    both.push(edge);
-                } else {
+                if !observed_here.contains(&edge_pair(edge)) {
                     declared_only.push(edge);
                 }
             }

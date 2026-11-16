@@ -9,9 +9,12 @@ Start with `depgraph doctor`. Every `fail` line ends with a `next:` line that sa
 | `fail glab: glab is not on PATH` | glab not installed | Install [glab](https://gitlab.com/gitlab-org/cli), or use `GITLAB_TOKEN` |
 | `fail snapshot: … is missing` | No graph built yet | `depgraph collect --set full --output data && depgraph build` |
 | `fail snapshot: snapshot is N days old` | Scheduled refresh stopped | Check the refresh pipeline. With sample data this is expected: `doctor --now <time>`. |
-| `--env prod` shows no observed edges; drift is all `declared_only` | Kubernetes namespaces are not mapped | Fill in `k8s_namespaces` per environment in `config/environments.yaml` ([tutorial 6](06-real-data.md#2-environments-the-step-people-miss)) |
+| `--env prod` shows no observed edges; drift is all `declared_only` | Kubernetes namespaces are not mapped | Paste the block that `depgraph build` prints after `hint:` into `config/environments.yaml` ([tutorial 6](06-real-data.md#2-environments-the-step-people-miss)) |
 | My service shows up as two nodes, such as `payments` and `payments-api` | Workload name differs from catalog name | Add an alias in `config/aliases.yaml`, or align `app.kubernetes.io/name` |
 | `build` reports many unresolved names | Missing aliases or catalog files | See above; `depgraph orphans` lists what is loose |
+| Impact treats a `dependsOn` as 0.5, not as hard | By design: `dependsOn` is *unknown* until a failed chaos experiment marks it hard | Mark what you can live without in `depgraph/soft-dependencies`; hard needs experiment evidence |
+| A soft dependency shows no edge | The name in `depgraph/soft-dependencies` does not resolve | It accepts a name, project path or `component:default/<name>`; check `unresolved.csv` for a `soft_dependency` row |
+| A network policy or firewall rule is not linked to my service | No `app.kubernetes.io/name` label, and the repo holds several services | Add the label to the manifest |
 | `path_score` is 0 | The edge has no observed calls (declared only, or no Prometheus data for that env) | Expected. Scores need Istio traffic. |
 | A Helm-deployed or open-source app is missing, or has no owner | Helm templates are not rendered | Add a `catalog-info.yaml` in its deploy repo ([tutorial 8](08-terraform-python-open-source.md#open-source-apps-you-run)) |
 | A Terraform stack shows as one node | By design: one `resource:infra` node per repo | Split stacks into repos if you need them apart |
