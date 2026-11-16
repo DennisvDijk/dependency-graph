@@ -127,7 +127,7 @@ resource "aws_security_group_rule" "billing_to_keycloak" {
 2. Its `app`, `service`, `component` or `Name` tag.
 3. Its group name (`name`, `name_prefix`, `GroupName`), or else the Terraform label.
 
-**Names are matched to services you already have.** `orders-py-prod-sg`, `prod-orders-py` and `${var.env}-orders-py-sg` all find `orders-py`: depgraph drops words like `sg`, `ecs`, `lambda`, `svc` and environment names (`prod`, `staging`, your own GitLab names) from either end until a known service matches, and applies `config/aliases.yaml`. Nothing new is invented: a group whose name matches no service goes to `unresolved.csv` ("no component matches this cloud resource"). Fix it with one alias line, for example `legacy-batch-sg: batch-runner`.
+**Names are matched to services you already have.** `orders-py-prod-sg`, `prod-orders-py` and `${var.env}-orders-py-sg` all find `orders-py`: depgraph drops words like `sg`, `ecs`, `lambda`, `svc` and environment names (`prod`, `staging`, your own GitLab names) from either end until a known service matches, and applies `config/aliases.yaml`. Nothing new is invented: a group whose name matches no service goes to `unresolved.json` ("no component matches this cloud resource"). Fix it with one alias line, for example `legacy-batch-sg: batch-runner`.
 
 **Which rules count**: inline `ingress` / `egress` blocks with `security_groups`, `aws_security_group_rule`, `aws_vpc_security_group_ingress_rule` / `egress_rule`, and in CloudFormation `SecurityGroupIngress` / `SecurityGroupEgress` (inline or standalone) with `SourceSecurityGroupId` / `DestinationSecurityGroupId`. `!Ref` and `!GetAtt` work. CIDR and prefix-list rules add nothing, because an IP range is not a service.
 
@@ -137,7 +137,7 @@ Edges are **candidates**: the security group allows the traffic, nobody has seen
 
 - A `Dockerfile` (or compose file) in a repo sets `container: true` on the repo's components.
 - Image names come from the `depgraph/image-repository` catalog annotation; depgraph does not parse `FROM` lines.
-- In `docker-compose.yml` / `compose.yaml`, each `depends_on` becomes a candidate edge **when both services are components** in the graph. Local-only helpers such as `postgres` are not services, so they end up in `unresolved.csv` and not in the graph. Declare a real database as a catalog `Resource` instead.
+- In `docker-compose.yml` / `compose.yaml`, each `depends_on` becomes a candidate edge **when both services are components** in the graph. Local-only helpers such as `postgres` are not services, so they end up in `unresolved.json` and not in the graph. Declare a real database as a catalog `Resource` instead.
 - Containers outside Kubernetes (plain Docker hosts) have no Istio traffic, so they only get declared and candidate edges.
 
 ## Kubernetes clusters

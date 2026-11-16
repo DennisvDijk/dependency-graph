@@ -156,7 +156,15 @@ fn aws_account_ties_services_databases_and_real_calls() {
             "observed_calls component:notifications -> component:keycloak prod observed_only cloud",
         ])
     );
-    let unresolved = fs::read_to_string(cloud.root.join("data/unresolved.csv")).unwrap();
+    let unresolved_json = fs::read_to_string(cloud.root.join("data/unresolved.json")).unwrap();
+    let report: depgraph::normalize::merge::UnresolvedReport =
+        serde_json::from_str(&unresolved_json).unwrap();
+    let unresolved = report
+        .records
+        .iter()
+        .map(|r| format!("{},{},{},{}", r.kind, r.name, r.reason, r.volume))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         unresolved.contains("resource,batch-runner-sg,no component matches this cloud resource"),
         "{unresolved}"
@@ -195,7 +203,15 @@ fn azure_subscription_ties_asgs_and_application_insights_calls() {
             "observed_calls component:billing-ex -> resource:external-api:api-stripe-com prod observed_only cloud",
         ])
     );
-    let unresolved = fs::read_to_string(cloud.root.join("data/unresolved.csv")).unwrap();
+    let unresolved_json = fs::read_to_string(cloud.root.join("data/unresolved.json")).unwrap();
+    let report: depgraph::normalize::merge::UnresolvedReport =
+        serde_json::from_str(&unresolved_json).unwrap();
+    let unresolved = report
+        .records
+        .iter()
+        .map(|r| format!("{},{},{},{}", r.kind, r.name, r.reason, r.volume))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         unresolved.contains(
             "environment,edge-proxy-rs,environment is not known; set env in the cloud config"
@@ -226,7 +242,15 @@ fn guessed_namespaces_are_used_only_when_switched_on() {
     assert!(on.edges.contains(acc), "{:#?}", on.edges);
     assert!(on.stderr.contains("shop-acc -> acc"), "{}", on.stderr);
     // `qa` has no env word, so it is not guessed either way.
-    let unresolved = fs::read_to_string(on.root.join("data/unresolved.csv")).unwrap();
+    let unresolved_json = fs::read_to_string(on.root.join("data/unresolved.json")).unwrap();
+    let report: depgraph::normalize::merge::UnresolvedReport =
+        serde_json::from_str(&unresolved_json).unwrap();
+    let unresolved = report
+        .records
+        .iter()
+        .map(|r| format!("{},{},{},{}", r.kind, r.name, r.reason, r.volume))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         unresolved.contains("environment,qa,namespace is not mapped"),
         "{unresolved}"

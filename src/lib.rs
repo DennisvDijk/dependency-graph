@@ -18,6 +18,7 @@ pub mod gitlab;
 pub mod ids;
 pub mod inventory;
 pub mod mcp;
+pub mod model_config;
 pub mod models;
 pub mod normalize;
 pub mod propose;
@@ -28,6 +29,7 @@ pub mod redact;
 pub mod repo_scan;
 pub mod score;
 pub mod store;
+pub mod suggest;
 pub mod timeline;
 
 pub use error::Error;

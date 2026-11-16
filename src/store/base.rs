@@ -60,7 +60,7 @@ pub struct Coverage {
     pub declared_only: u64,
     /// Edges whose status is `candidate`.
     pub candidates: u64,
-    /// Rows in `unresolved.csv`.
+    /// Rows in `unresolved.json`.
     pub unresolved: u64,
     /// Resource nodes created because the destination was outside the mesh.
     pub inferred_resources: u64,

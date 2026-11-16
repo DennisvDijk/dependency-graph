@@ -15,7 +15,7 @@ resource "aws_db_instance" "orders" {
   vpc_security_group_ids = [aws_security_group.orders_db.id]
 }
 
-# No service called legacy-batch exists: reported in unresolved.csv, not drawn.
+# No service called legacy-batch exists: reported in unresolved.json, not drawn.
 resource "aws_security_group" "legacy" {
   name = "legacy-batch-sg"
 

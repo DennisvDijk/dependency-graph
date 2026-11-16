@@ -13,14 +13,14 @@ Start with `depgraph doctor`. Every `fail` line ends with a `next:` line that sa
 | My service shows up as two nodes, such as `payments` and `payments-api` | Workload name differs from catalog name | Add an alias in `config/aliases.yaml`, or align `app.kubernetes.io/name` |
 | `build` reports many unresolved names | Missing aliases or catalog files | See above; `depgraph orphans` lists what is loose |
 | Impact treats a `dependsOn` as 0.5, not as hard | By design: `dependsOn` is *unknown* until a failed chaos experiment marks it hard | Mark what you can live without in `depgraph/soft-dependencies`; hard needs experiment evidence |
-| A soft dependency shows no edge | The name in `depgraph/soft-dependencies` does not resolve | It accepts a name, project path or `component:default/<name>`; check `unresolved.csv` for a `soft_dependency` row |
+| A soft dependency shows no edge | The name in `depgraph/soft-dependencies` does not resolve | It accepts a name, project path or `component:default/<name>`; check `unresolved.json` for a `soft_dependency` row |
 | A network policy or firewall rule is not linked to my service | No `app.kubernetes.io/name` label, and the repo holds several services | Add the label to the manifest |
 | A StatefulSet, CronJob or DaemonSet does not show up | No `app.kubernetes.io/name` label on it | Add the label; the name comes from there, not from `metadata.name` |
 | `languages` is missing on a node | The repo has no recognized build file at any depth, or only inside a build folder | Expected for deploy-only repos; see [tutorial 8](08-terraform-python-open-source.md#python-elixir-rust-and-other-languages) |
-| `unresolved.csv` says "no component matches this cloud resource" | An AWS security group (or the service it is attached to) has a name that contains no known service | Add one line to `config/aliases.yaml`: `<name-from-the-row>: <service>` |
-| `unresolved.csv` says "environment is not known; set env in the cloud config" | A call seen by X-Ray or Application Insights has no environment word in its service name | Set `env: prod` (or dev/acc) under `aws:` or `azure:` in `config/config.yaml` ([tutorial 9](09-cloud-discovery.md#environments)) |
+| `unresolved.json` says "no component matches this cloud resource" | An AWS security group (or the service it is attached to) has a name that contains no known service | Add one line to `config/aliases.yaml`: `<name-from-the-row>: <service>` |
+| `unresolved.json` says "environment is not known; set env in the cloud config" | A call seen by X-Ray or Application Insights has no environment word in its service name | Set `env: prod` (or dev/acc) under `aws:` or `azure:` in `config/config.yaml` ([tutorial 9](09-cloud-discovery.md#environments)) |
 | `collect --aws` / `--azure` fails with "could not run" or "failed. Check that you are signed in" | The CLI is missing, not signed in, or the role may not list security groups | Run `aws sts get-caller-identity` or `az account show`; other calls that fail (no Lambda access, no X-Ray) only print a warning |
-| `unresolved.csv` lists `postgres`, `redis` or similar as `candidate_call` | A docker-compose `depends_on` points at a local helper, not a service | Harmless. Declare real databases as catalog `Resource`s |
+| `unresolved.json` lists `postgres`, `redis` or similar as `candidate_call` | A docker-compose `depends_on` points at a local helper, not a service | Harmless. Declare real databases as catalog `Resource`s |
 | `path_score` is 0 | The edge has no observed calls (declared only, or no Prometheus data for that env) | Expected. Scores need Istio traffic. |
 | A Helm-deployed or open-source app is missing, or has no owner | Helm templates are not rendered | Add a `catalog-info.yaml` in its deploy repo ([tutorial 8](08-terraform-python-open-source.md#open-source-apps-you-run)) |
 | A Terraform stack shows as one node | By design: one `resource:infra` node per repo | Split stacks into repos if you need them apart |
@@ -32,3 +32,43 @@ Start with `depgraph doctor`. Every `fail` line ends with a `next:` line that sa
 | MR check job is green but posts nothing | Image without `depgraph`, no snapshot, or no bot token; the job is `allow_failure` | Check the job log; see [tutorial 5](05-mr-check.md) |
 
 Still stuck? Run the failing command with the sample data from [tutorial 1](01-try-it.md). If it works there, the issue is config or data; if not, open an issue with the command and its output, after removing anything internal.
+
+## Review suggestions for unresolved names
+
+After `depgraph build`, run `depgraph suggest`. It reads the versioned
+`data/unresolved.json` report and `data/snapshot.json`, and prints possible
+alias and namespace additions. Review each suggestion and add it to the
+existing configuration if it is correct; the command never edits files or
+changes the graph. Ambiguous and unrecognized names can remain unresolved.
+An older `unresolved.csv` may remain on disk after upgrading; it is no longer
+updated and should not be used as the current report.
+
+For optional AI suggestions without interactive setup, set `OPENAI_BASE_URL` to your OpenAI-compatible
+API base URL (for example `https://models.example.com/v1`), set
+`OPENAI_API_KEY` in your environment if the endpoint needs a key, and run
+`depgraph suggest --llm --model-id <model-name>`. You can set `OPENAI_MODEL`
+instead of passing `--model-id`. An endpoint must support the Chat Completions
+API and return a JSON object in its message content. HTTPS is required except
+for local endpoints on localhost. No endpoint is contacted unless `--llm` is
+specified. Unmatched names and known component names are sent to the endpoint;
+its operator's privacy and billing terms apply. AI output is marked for review
+and cannot change your configuration. Do not commit API keys to the repository.
+
+### Save model settings on a developer computer
+
+Run `depgraph model-setup` once in an interactive terminal. Enter your API base
+URL and model, then paste the key at the hidden prompt (or leave it blank for a
+provider that needs no key). The URL and model are saved in your user settings;
+the key is stored in macOS Keychain, Windows Credential Manager, or the Linux
+Secret Service. Linux requires an available, unlocked desktop secret service.
+If no supported store is available, setup fails rather than saving plaintext.
+Run `depgraph suggest --llm` to use these settings. Run setup again to change
+them; an old key for a different endpoint stays in your system secret store
+until you remove it there. A stored key is only used for its saved endpoint.
+
+For headless jobs, supply `OPENAI_BASE_URL` and `OPENAI_MODEL`, plus either
+`OPENAI_API_KEY_FILE` pointing to an orchestrator-mounted secret file, or
+`OPENAI_API_KEY` injected by your secrets manager. Do not set both key inputs.
+Explicit key inputs take precedence over the system store. An endpoint override
+cannot reuse a saved key for a different endpoint. No value is printed. Mount
+secret files with appropriate access controls and never commit their contents.

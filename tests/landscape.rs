@@ -213,7 +213,15 @@ fn no_edge_points_at_a_missing_node() {
 #[test]
 fn helm_templates_add_nothing_and_unmapped_namespaces_are_reported() {
     let built = build();
-    let unresolved = fs::read_to_string(built.root.join("data/unresolved.csv")).unwrap();
+    let unresolved_json = fs::read_to_string(built.root.join("data/unresolved.json")).unwrap();
+    let report: depgraph::normalize::merge::UnresolvedReport =
+        serde_json::from_str(&unresolved_json).unwrap();
+    let unresolved = report
+        .records
+        .iter()
+        .map(|r| format!("{},{},{},{}", r.kind, r.name, r.reason, r.volume))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(!unresolved.contains("{{"), "{unresolved}");
     assert!(
         unresolved.contains("environment,qa,namespace is not mapped,5"),

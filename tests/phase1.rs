@@ -61,8 +61,15 @@ fn graph_is_golden_and_idempotent() {
             .iter()
             .any(|row| row.name.contains("unknown-api"))
     );
-    let unresolved = depgraph::normalize::merge::unresolved_csv(&first.unresolved);
-    assert!(unresolved.starts_with("kind,name,reason,volume\n"));
+    let report = depgraph::normalize::merge::UnresolvedReport {
+        schema_version: "1.0.0".into(),
+        records: first.unresolved.clone(),
+    };
+    let text = serde_json::to_string(&report).unwrap();
+    assert_eq!(
+        serde_json::from_str::<depgraph::normalize::merge::UnresolvedReport>(&text).unwrap(),
+        report
+    );
 }
 
 #[test]
