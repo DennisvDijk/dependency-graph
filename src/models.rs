@@ -242,6 +242,9 @@ pub struct EdgeAttrs {
     /// Protocol name, such as `http` or `grpc`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
+    /// Call counter when the query window is one day because retention is under 7 days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls_total: Option<u64>,
     /// `true` when the call is synchronous.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<bool>,

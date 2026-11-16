@@ -4,13 +4,14 @@
 //! returns a stub error instead of inventing answers. `petgraph` arrives with
 //! the first algorithm (ADR-002).
 
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
 use crate::error::Error;
-use crate::models::{Edge, Env, GraphSnapshot, Node};
+use crate::models::{Edge, EdgeType, Env, GraphSnapshot, Node};
 
 /// How a read command prints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,20 +233,121 @@ pub fn cycles(request: &ReadRequest) -> Result<(), Error> {
 
 /// Components affected by a library.
 ///
+/// Libraries are disabled, so this does not read the graph.
+///
 /// # Errors
 ///
-/// Returns [`Error::NotImplemented`] in F0-1.
+/// This function does not fail.
 pub fn library_impact(request: &ReadRequest) -> Result<(), Error> {
-    reject(request)
+    let _ = request;
+    println!("libraries disabled");
+    Ok(())
 }
 
-/// Declared versus observed drift.
+/// Declared versus observed drift, one markdown file per environment.
 ///
 /// # Errors
 ///
-/// Returns [`Error::NotImplemented`] in F0-1.
-pub fn drift(request: &ReadRequest) -> Result<(), Error> {
-    reject(request)
+/// Returns an error when the snapshot cannot be read or the directory cannot
+/// be written.
+pub fn drift(request: &ReadRequest, output: &Path) -> Result<(), Error> {
+    let graph = load_graph(request)?;
+    fs::create_dir_all(output)?;
+    for env in [Env::Dev, Env::Acc, Env::Prod] {
+        let path = output.join(format!("{env}.md"));
+        fs::write(&path, drift_markdown(&graph, env))?;
+        println!("wrote {}", path.display());
+    }
+    Ok(())
+}
+
+fn drift_markdown(graph: &GraphSnapshot, env: Env) -> String {
+    let declared: BTreeSet<(String, String)> = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.edge_type == EdgeType::DeclaredDependsOn)
+        .map(edge_pair)
+        .collect();
+    let observed_here: BTreeSet<(String, String)> = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.edge_type == EdgeType::ObservedCalls && edge.env == Some(env))
+        .map(edge_pair)
+        .collect();
+    let mut both = Vec::new();
+    let mut observed_only = Vec::new();
+    let mut declared_only = Vec::new();
+    let mut candidates = Vec::new();
+    let mut inactive = Vec::new();
+    for edge in &graph.edges {
+        let in_env = edge.env == Some(env) || edge.env.is_none();
+        if !edge.active && in_env {
+            inactive.push(edge);
+            continue;
+        }
+        if !edge.active {
+            continue;
+        }
+        match edge.edge_type {
+            EdgeType::ObservedCalls if edge.env == Some(env) => {
+                if declared.contains(&edge_pair(edge)) {
+                    both.push(edge);
+                } else {
+                    observed_only.push(edge);
+                }
+            }
+            EdgeType::DeclaredDependsOn => {
+                if observed_here.contains(&edge_pair(edge)) {
+                    both.push(edge);
+                } else {
+                    declared_only.push(edge);
+                }
+            }
+            EdgeType::CandidateCalls if in_env => candidates.push(edge),
+            _ => {}
+        }
+    }
+    let mut lines = vec![format!("# Drift {env}"), String::new()];
+    push_section(&mut lines, "both", &both);
+    push_section(&mut lines, "observed_only", &observed_only);
+    push_section(&mut lines, "declared_only", &declared_only);
+    push_section(&mut lines, "candidate", &candidates);
+    push_section(&mut lines, "inactive", &inactive);
+    lines.join("\n")
+}
+
+fn edge_pair(edge: &Edge) -> (String, String) {
+    (edge.from_id.clone(), edge.to_id.clone())
+}
+
+fn push_section(lines: &mut Vec<String>, title: &str, edges: &[&Edge]) {
+    let mut edges = edges.to_vec();
+    edges.sort_by(|left, right| {
+        (&left.from_id, &left.to_id, left.edge_type.as_str()).cmp(&(
+            &right.from_id,
+            &right.to_id,
+            right.edge_type.as_str(),
+        ))
+    });
+    lines.push(format!("## {title}"));
+    lines.push(String::new());
+    if edges.is_empty() {
+        lines.push("_none_".to_owned());
+    }
+    for edge in edges {
+        let calls = edge
+            .attrs
+            .calls_7d
+            .map(|value| format!(" calls_7d={value}"))
+            .or_else(|| {
+                edge.attrs
+                    .calls_total
+                    .map(|value| format!(" calls_total={value}"))
+            })
+            .unwrap_or_default();
+        lines.push(format!("- {} -> {}{calls}", edge.from_id, edge.to_id));
+    }
+    lines.push(String::new());
 }
 
 /// Edges marked hard.

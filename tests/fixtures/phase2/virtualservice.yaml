@@ -1,0 +1,11 @@
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: payments-api
+spec:
+  hosts:
+    - billing-api
+  http:
+    - route:
+        - destination:
+            host: billing-api.payments-prod.svc.cluster.local

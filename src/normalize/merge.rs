@@ -29,6 +29,26 @@ pub struct Unresolved {
     pub name: String,
     /// Why it was skipped.
     pub reason: String,
+    /// Call volume, when the row came from telemetry. Zero otherwise.
+    pub volume: u64,
+}
+
+/// Inputs for one pure build. `generated_at` is the reference time.
+pub struct MergeOptions<'a> {
+    /// Alias table. Unknown names are not guessed past this table.
+    pub aliases: &'a Aliases,
+    /// Namespace and source-env map.
+    pub environments: &'a EnvIndex,
+    /// Reference time for expiry. Not read from the clock.
+    pub generated_at: &'a Timestamp,
+    /// Run id copied onto the snapshot.
+    pub run_id: &'a str,
+    /// When false, library records are unresolved instead of nodes.
+    pub libraries_enabled: bool,
+    /// Days after `last_seen` before an edge is inactive.
+    pub edge_expiry_days: u32,
+    /// Days after `last_seen` before an edge is dropped.
+    pub retention_days: u32,
 }
 
 /// Graph plus the side files a build writes.
@@ -40,6 +60,8 @@ pub struct BuildOutput {
     pub unresolved: Vec<Unresolved>,
     /// Versions that lost the precedence check.
     pub mismatches: Vec<DeploymentMismatch>,
+    /// Counts for `meta.json`.
+    pub coverage: crate::store::Coverage,
 }
 
 /// Merge records. `libraries_enabled` false drops library nodes and edges.
@@ -50,18 +72,21 @@ pub struct BuildOutput {
 /// resulting graph breaks an invariant.
 pub fn merge_records(
     records: &[RawRecord],
-    aliases: &Aliases,
-    environments: &EnvIndex,
-    generated_at: &Timestamp,
-    run_id: &str,
-    libraries_enabled: bool,
+    options: &MergeOptions<'_>,
 ) -> Result<BuildOutput, Error> {
+    let aliases = options.aliases;
+    let environments = options.environments;
+    let generated_at = options.generated_at;
+    let run_id = options.run_id;
+    let libraries_enabled = options.libraries_enabled;
     let mut components: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut resources: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut resource_links: Vec<(String, String, String)> = Vec::new();
     let mut deployments: Vec<DeploymentCand> = Vec::new();
     let mut unresolved = Vec::new();
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    let mut observed: BTreeMap<ObservedKey, ObservedAgg> = BTreeMap::new();
+    let mut candidates: Vec<CandidateCall> = Vec::new();
 
     for record in records {
         *counts.entry(record.collector.clone()).or_insert(0) += 1;
@@ -69,7 +94,12 @@ pub fn merge_records(
             "component" => {
                 let name = canonical_name(required_str(&record.payload, "name")?, aliases);
                 if !ids::is_kebab_case(&name) {
-                    unresolved.push(unresolved_row("component", &name, "name is not kebab-case"));
+                    unresolved.push(unresolved_row(
+                        "component",
+                        &name,
+                        "name is not kebab-case",
+                        0,
+                    ));
                     continue;
                 }
                 let deps = record
@@ -93,6 +123,7 @@ pub fn merge_records(
                         "resource",
                         name,
                         "kind or name is not canonical",
+                        0,
                     ));
                     continue;
                 }
@@ -118,6 +149,7 @@ pub fn merge_records(
                         "environment",
                         environment,
                         "no canonical environment",
+                        0,
                     ));
                     continue;
                 };
@@ -141,11 +173,38 @@ pub fn merge_records(
                     "library",
                     &record.payload.to_string(),
                     "libraries are disabled",
+                    0,
                 ));
             }
-            other => unresolved.push(unresolved_row("record", other, "ignored record kind")),
+            "observed_call" => absorb_observed(record, &mut observed)?,
+            "candidate_call" => {
+                candidates.push(CandidateCall {
+                    source: required_str(&record.payload, "source")?.to_owned(),
+                    destination: required_str(&record.payload, "destination")?.to_owned(),
+                    namespace: record
+                        .payload
+                        .get("namespace")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .to_owned(),
+                });
+            }
+            other => unresolved.push(unresolved_row("record", other, "ignored record kind", 0)),
         }
     }
+
+    let mut inferred = BTreeSet::new();
+    let mut runtime_edges = runtime_edges(&mut RuntimeBuild {
+        observed: &observed,
+        candidates: &candidates,
+        components: &components,
+        resources: &mut resources,
+        inferred: &mut inferred,
+        unresolved: &mut unresolved,
+        environments,
+        aliases,
+        generated_at,
+    });
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
@@ -158,10 +217,15 @@ pub fn merge_records(
     }
     for (kind, name) in resources.keys() {
         let parsed = ResourceKind::parse(kind).expect("kind checked");
+        let id = ids::resource_id(parsed, name).map_err(Error::Validation)?;
+        let mut attrs = BTreeMap::new();
+        if inferred.contains(&id) {
+            attrs.insert("inferred".to_owned(), serde_json::Value::Bool(true));
+        }
         nodes.push(Node {
-            id: ids::resource_id(parsed, name).map_err(Error::Validation)?,
+            id,
             node_type: NodeType::Resource,
-            attrs: BTreeMap::new(),
+            attrs,
         });
     }
 
@@ -179,7 +243,12 @@ pub fn merge_records(
         for dep in deps {
             match resolve_ref(dep, &component_ids, &resource_ids) {
                 Some(to_id) => edges.push(depends_edge(&from_id, &to_id, generated_at)),
-                None => unresolved.push(unresolved_row("depends_on", dep, &format!("from {from}"))),
+                None => unresolved.push(unresolved_row(
+                    "depends_on",
+                    dep,
+                    &format!("from {from}"),
+                    0,
+                )),
             }
         }
     }
@@ -199,6 +268,7 @@ pub fn merge_records(
                 "deployment",
                 &deployment.component,
                 "component was not declared",
+                0,
             ));
             continue;
         }
@@ -244,6 +314,14 @@ pub fn merge_records(
         let stamp = Timestamp::parse(&winner.created_at).unwrap_or_else(|_| generated_at.clone());
         edges.push(deployed_edge(&from_id, &deployment_id, env, &stamp));
     }
+    edges.append(&mut runtime_edges);
+    assign_status(&mut edges);
+    expire_edges(
+        &mut edges,
+        generated_at,
+        options.edge_expiry_days,
+        options.retention_days,
+    );
 
     let mut sources = BTreeMap::new();
     for (name, count) in counts {
@@ -268,29 +346,29 @@ pub fn merge_records(
     };
     graph.canonicalize();
     crate::normalize::validate(&graph, Some(aliases)).into_result()?;
-    unresolved.sort_by(|left, right| {
-        (&left.kind, &left.name, &left.reason).cmp(&(&right.kind, &right.name, &right.reason))
-    });
-    unresolved.dedup();
+    collapse_unresolved(&mut unresolved);
     mismatches
         .sort_by(|left, right| (&left.component, &left.env).cmp(&(&right.component, &right.env)));
+    let coverage = coverage_of(&graph, &unresolved);
     Ok(BuildOutput {
         graph,
         unresolved,
         mismatches,
+        coverage,
     })
 }
 
 /// CSV body for unresolved names, including the header and a trailing newline.
 #[must_use]
 pub fn unresolved_csv(rows: &[Unresolved]) -> String {
-    let mut lines = vec!["kind,name,reason".to_owned()];
+    let mut lines = vec!["kind,name,reason,volume".to_owned()];
     for row in rows {
         lines.push(format!(
-            "{},{},{}",
+            "{},{},{},{}",
             csv(&row.kind),
             csv(&row.name),
-            csv(&row.reason)
+            csv(&row.reason),
+            row.volume
         ));
     }
     let mut text = lines.join("\n");
@@ -411,12 +489,32 @@ fn cmp_same_rank(left: &DeploymentCand, right: &DeploymentCand) -> std::cmp::Ord
     std::cmp::Ordering::Equal
 }
 
-fn unresolved_row(kind: &str, name: &str, reason: &str) -> Unresolved {
+fn unresolved_row(kind: &str, name: &str, reason: &str, volume: u64) -> Unresolved {
     Unresolved {
         kind: kind.to_owned(),
         name: name.to_owned(),
         reason: reason.to_owned(),
+        volume,
     }
+}
+
+fn collapse_unresolved(rows: &mut Vec<Unresolved>) {
+    rows.sort_by(|left, right| {
+        (&left.kind, &left.name, &left.reason).cmp(&(&right.kind, &right.name, &right.reason))
+    });
+    let mut collapsed: Vec<Unresolved> = Vec::new();
+    for row in rows.drain(..) {
+        if let Some(last) = collapsed.last_mut()
+            && last.kind == row.kind
+            && last.name == row.name
+            && last.reason == row.reason
+        {
+            last.volume += row.volume;
+            continue;
+        }
+        collapsed.push(row);
+    }
+    *rows = collapsed;
 }
 
 fn csv(value: &str) -> String {
@@ -425,6 +523,457 @@ fn csv(value: &str) -> String {
     } else {
         value.to_owned()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ObservedKey {
+    source: String,
+    destination: String,
+    source_namespace: String,
+    destination_namespace: String,
+    external: bool,
+    external_host: String,
+    protocol: String,
+    window: String,
+}
+
+struct ObservedAgg {
+    calls: u64,
+    errors: u64,
+    p95_ms: Option<f64>,
+    last_seen: String,
+}
+
+struct CandidateCall {
+    source: String,
+    destination: String,
+    namespace: String,
+}
+
+fn absorb_observed(
+    record: &RawRecord,
+    observed: &mut BTreeMap<ObservedKey, ObservedAgg>,
+) -> Result<(), Error> {
+    let source = required_str(&record.payload, "source")?;
+    let destination = required_str(&record.payload, "destination")?;
+    let key = ObservedKey {
+        source: source.to_owned(),
+        destination: destination.to_owned(),
+        source_namespace: text_field(&record.payload, "source_namespace"),
+        destination_namespace: text_field(&record.payload, "destination_namespace"),
+        external: record
+            .payload
+            .get("external")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+        external_host: text_field(&record.payload, "external_host"),
+        protocol: text_field(&record.payload, "protocol"),
+        window: text_field(&record.payload, "window"),
+    };
+    let calls = json_u64(&record.payload, "calls");
+    let errors = json_u64(&record.payload, "errors");
+    let last_seen = text_field(&record.payload, "last_seen");
+    let p95_ms = record
+        .payload
+        .get("p95_ms")
+        .and_then(|value| value.as_f64())
+        .filter(|value| value.is_finite());
+    let entry = observed.entry(key).or_insert_with(|| ObservedAgg {
+        calls: 0,
+        errors: 0,
+        p95_ms: None,
+        last_seen: last_seen.clone(),
+    });
+    entry.calls += calls;
+    entry.errors += errors;
+    if last_seen >= entry.last_seen {
+        entry.last_seen = last_seen;
+        if p95_ms.is_some() {
+            entry.p95_ms = p95_ms;
+        }
+    }
+    Ok(())
+}
+
+fn text_field(payload: &serde_json::Value, field: &str) -> String {
+    payload
+        .get(field)
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_owned()
+}
+
+fn json_u64(payload: &serde_json::Value, field: &str) -> u64 {
+    payload
+        .get(field)
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0)
+}
+
+struct RuntimeBuild<'a> {
+    observed: &'a BTreeMap<ObservedKey, ObservedAgg>,
+    candidates: &'a [CandidateCall],
+    components: &'a BTreeMap<String, BTreeSet<String>>,
+    resources: &'a mut BTreeMap<(String, String), String>,
+    inferred: &'a mut BTreeSet<String>,
+    unresolved: &'a mut Vec<Unresolved>,
+    environments: &'a EnvIndex,
+    aliases: &'a Aliases,
+    generated_at: &'a Timestamp,
+}
+
+fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
+    let RuntimeBuild {
+        observed,
+        candidates,
+        components,
+        resources,
+        inferred,
+        unresolved,
+        environments,
+        aliases,
+        generated_at,
+    } = build;
+    let mut edges = Vec::new();
+    for (key, agg) in observed.iter() {
+        let source = canonical_name(&key.source, aliases);
+        let source_id = format!("component:{source}");
+        if !components.contains_key(&source) {
+            unresolved.push(unresolved_row(
+                "observed_call",
+                &key.source,
+                "source is not a known component",
+                agg.calls,
+            ));
+            continue;
+        }
+        let env = match observed_env(key, environments) {
+            Ok(env) => env,
+            Err(message) => {
+                unresolved.push(unresolved_row(
+                    "environment",
+                    &message,
+                    "namespace is not mapped",
+                    agg.calls,
+                ));
+                continue;
+            }
+        };
+        let to_id = if key.external {
+            let name = if key.external_host.is_empty() {
+                key.destination.clone()
+            } else {
+                key.external_host.clone()
+            };
+            if !ids::is_kebab_case(&name) {
+                unresolved.push(unresolved_row(
+                    "observed_call",
+                    &name,
+                    "external host is not kebab-case",
+                    agg.calls,
+                ));
+                continue;
+            }
+            let id = format!("resource:external-api:{name}");
+            resources.insert(
+                ("external-api".to_owned(), name),
+                "runtime_edges".to_owned(),
+            );
+            inferred.insert(id.clone());
+            id
+        } else {
+            let destination = canonical_name(&key.destination, aliases);
+            if !components.contains_key(&destination) {
+                unresolved.push(unresolved_row(
+                    "observed_call",
+                    &key.destination,
+                    "destination is not a known component",
+                    agg.calls,
+                ));
+                continue;
+            }
+            format!("component:{destination}")
+        };
+        edges.push(observed_edge(
+            &source_id,
+            &to_id,
+            env,
+            key,
+            agg,
+            generated_at,
+        ));
+    }
+    for candidate in candidates.iter() {
+        let source = canonical_name(&candidate.source, aliases);
+        let destination = canonical_name(&candidate.destination, aliases);
+        if !components.contains_key(&source) || !components.contains_key(&destination) {
+            let missing = if components.contains_key(&source) {
+                &candidate.destination
+            } else {
+                &candidate.source
+            };
+            unresolved.push(unresolved_row(
+                "candidate_call",
+                missing,
+                "name is not a known component",
+                0,
+            ));
+            continue;
+        }
+        let env = if candidate.namespace.is_empty() {
+            None
+        } else {
+            match environments.resolve_namespace(&candidate.namespace) {
+                Some(env) => Some(env),
+                None => {
+                    unresolved.push(unresolved_row(
+                        "environment",
+                        &candidate.namespace,
+                        "namespace is not mapped",
+                        0,
+                    ));
+                    continue;
+                }
+            }
+        };
+        edges.push(candidate_edge(
+            &format!("component:{source}"),
+            &format!("component:{destination}"),
+            env,
+            generated_at,
+        ));
+    }
+    fold_same_id(edges)
+}
+
+fn fold_same_id(edges: Vec<Edge>) -> Vec<Edge> {
+    let mut folded: BTreeMap<String, Edge> = BTreeMap::new();
+    for edge in edges {
+        if let Some(existing) = folded.get_mut(&edge.id) {
+            merge_measurement(existing, &edge);
+        } else {
+            folded.insert(edge.id.clone(), edge);
+        }
+    }
+    folded.into_values().collect()
+}
+
+fn merge_measurement(existing: &mut Edge, extra: &Edge) {
+    let left_calls = existing.attrs.calls_7d.unwrap_or(0);
+    let right_calls = extra.attrs.calls_7d.unwrap_or(0);
+    let left_errors = existing.attrs.error_rate_7d.unwrap_or(0.0) * left_calls as f64;
+    let right_errors = extra.attrs.error_rate_7d.unwrap_or(0.0) * right_calls as f64;
+    if existing.attrs.calls_7d.is_some() || extra.attrs.calls_7d.is_some() {
+        let calls = left_calls + right_calls;
+        existing.attrs.calls_7d = Some(calls);
+        if calls > 0 {
+            existing.attrs.error_rate_7d = Some((left_errors + right_errors) / calls as f64);
+        }
+    }
+    if existing.attrs.calls_total.is_some() || extra.attrs.calls_total.is_some() {
+        existing.attrs.calls_total =
+            Some(existing.attrs.calls_total.unwrap_or(0) + extra.attrs.calls_total.unwrap_or(0));
+    }
+    if existing.attrs.protocol.is_none() {
+        existing.attrs.protocol.clone_from(&extra.attrs.protocol);
+    }
+    if let (Some(current), Some(added)) = (existing.sources.first_mut(), extra.sources.first()) {
+        if added.last_seen > current.last_seen {
+            current.last_seen = added.last_seen.clone();
+            existing.attrs.p95_ms_7d = extra.attrs.p95_ms_7d.or(existing.attrs.p95_ms_7d);
+        }
+        if added.first_seen < current.first_seen {
+            current.first_seen = added.first_seen.clone();
+        }
+    }
+}
+
+fn observed_env(key: &ObservedKey, environments: &EnvIndex) -> Result<Env, String> {
+    let source = environments.resolve_namespace(&key.source_namespace);
+    if key.external {
+        return source.ok_or_else(|| key.source_namespace.clone());
+    }
+    let destination = environments.resolve_namespace(&key.destination_namespace);
+    match (source, destination) {
+        (Some(left), Some(right)) if left == right => Ok(left),
+        (Some(_), Some(_)) => Err(format!(
+            "{} and {}",
+            key.source_namespace, key.destination_namespace
+        )),
+        (None, _) => Err(key.source_namespace.clone()),
+        (_, None) => Err(key.destination_namespace.clone()),
+    }
+}
+
+fn observed_edge(
+    from_id: &str,
+    to_id: &str,
+    env: Env,
+    key: &ObservedKey,
+    agg: &ObservedAgg,
+    generated_at: &Timestamp,
+) -> Edge {
+    let edge_type = EdgeType::ObservedCalls;
+    let last_seen = Timestamp::parse(&agg.last_seen).unwrap_or_else(|_| generated_at.clone());
+    let mut attrs = EdgeAttrs::default();
+    if key.window == "7d" {
+        attrs.calls_7d = Some(agg.calls);
+        if agg.calls > 0 {
+            let errors = agg.errors.min(agg.calls);
+            attrs.error_rate_7d = Some(errors as f64 / agg.calls as f64);
+        }
+        attrs.p95_ms_7d = agg.p95_ms;
+    } else {
+        attrs.calls_total = Some(agg.calls);
+    }
+    if !key.protocol.is_empty() {
+        attrs.protocol = Some(key.protocol.clone());
+    }
+    Edge {
+        id: ids::edge_id(edge_type, from_id, to_id, Some(env)),
+        edge_type,
+        from_id: from_id.to_owned(),
+        to_id: to_id.to_owned(),
+        env: Some(env),
+        sources: vec![EdgeSource {
+            kind: SourceKind::Istio,
+            first_seen: last_seen.clone(),
+            last_seen,
+            evidence_ref: Some(format!("prometheus:istio_requests_total[{}]", key.window)),
+        }],
+        status: EdgeStatus::ObservedOnly,
+        criticality: Default::default(),
+        active: true,
+        attrs,
+    }
+}
+
+fn candidate_edge(from_id: &str, to_id: &str, env: Option<Env>, generated_at: &Timestamp) -> Edge {
+    let edge_type = EdgeType::CandidateCalls;
+    Edge {
+        id: ids::edge_id(edge_type, from_id, to_id, env),
+        edge_type,
+        from_id: from_id.to_owned(),
+        to_id: to_id.to_owned(),
+        env,
+        sources: vec![EdgeSource {
+            kind: SourceKind::Static,
+            first_seen: generated_at.clone(),
+            last_seen: generated_at.clone(),
+            evidence_ref: Some("manifest".to_owned()),
+        }],
+        status: EdgeStatus::Candidate,
+        criticality: Default::default(),
+        active: true,
+        attrs: EdgeAttrs::default(),
+    }
+}
+
+fn assign_status(edges: &mut [Edge]) {
+    let observed: BTreeSet<(String, String)> = edges
+        .iter()
+        .filter(|edge| edge.edge_type == EdgeType::ObservedCalls)
+        .map(|edge| (edge.from_id.clone(), edge.to_id.clone()))
+        .collect();
+    let declared: BTreeSet<(String, String)> = edges
+        .iter()
+        .filter(|edge| edge.edge_type == EdgeType::DeclaredDependsOn)
+        .map(|edge| (edge.from_id.clone(), edge.to_id.clone()))
+        .collect();
+    for edge in edges {
+        let pair = (edge.from_id.clone(), edge.to_id.clone());
+        edge.status = match edge.edge_type {
+            EdgeType::DeclaredDependsOn => {
+                if observed.contains(&pair) {
+                    EdgeStatus::Both
+                } else {
+                    EdgeStatus::DeclaredOnly
+                }
+            }
+            EdgeType::ObservedCalls => {
+                if declared.contains(&pair) {
+                    EdgeStatus::Both
+                } else {
+                    EdgeStatus::ObservedOnly
+                }
+            }
+            EdgeType::CandidateCalls => EdgeStatus::Candidate,
+            _ => EdgeStatus::NotApplicable,
+        };
+    }
+}
+
+fn expire_edges(
+    edges: &mut Vec<Edge>,
+    generated_at: &Timestamp,
+    edge_expiry_days: u32,
+    retention_days: u32,
+) {
+    let Ok(generated) = generated_at.to_datetime() else {
+        return;
+    };
+    edges.retain(|edge| {
+        let last = edge
+            .sources
+            .iter()
+            .filter_map(|source| source.last_seen.to_datetime().ok())
+            .max();
+        let Some(last) = last else {
+            return true;
+        };
+        let age = (generated - last).num_days().max(0);
+        age < i64::from(retention_days)
+    });
+    for edge in edges {
+        let last = edge
+            .sources
+            .iter()
+            .filter_map(|source| source.last_seen.to_datetime().ok())
+            .max();
+        if let Some(last) = last {
+            let age = (generated - last).num_days().max(0);
+            if age >= i64::from(edge_expiry_days) {
+                edge.active = false;
+            }
+        }
+    }
+}
+
+fn coverage_of(graph: &GraphSnapshot, unresolved: &[Unresolved]) -> crate::store::Coverage {
+    let mut coverage = crate::store::Coverage {
+        components: graph
+            .nodes
+            .iter()
+            .filter(|node| node.node_type == NodeType::Component)
+            .count() as u64,
+        unresolved: unresolved.len() as u64,
+        inferred_resources: graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.attrs
+                    .get("inferred")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+            })
+            .count() as u64,
+        ..crate::store::Coverage::default()
+    };
+    for edge in &graph.edges {
+        match edge.edge_type {
+            EdgeType::DeclaredDependsOn => coverage.declared_edges += 1,
+            EdgeType::ObservedCalls => coverage.observed_edges += 1,
+            _ => {}
+        }
+        match edge.status {
+            EdgeStatus::Both => coverage.both += 1,
+            EdgeStatus::ObservedOnly => coverage.observed_only += 1,
+            EdgeStatus::DeclaredOnly => coverage.declared_only += 1,
+            EdgeStatus::Candidate => coverage.candidates += 1,
+            EdgeStatus::NotApplicable => {}
+        }
+    }
+    coverage
 }
 
 #[derive(Clone)]

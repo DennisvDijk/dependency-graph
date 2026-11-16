@@ -21,11 +21,15 @@ fn built() -> depgraph::normalize::merge::BuildOutput {
     let generated_at = Timestamp::parse("2026-01-15T00:00:00Z").unwrap();
     merge_records(
         &records,
-        &aliases,
-        &environments,
-        &generated_at,
-        "local",
-        false,
+        &depgraph::normalize::merge::MergeOptions {
+            aliases: &aliases,
+            environments: &environments,
+            generated_at: &generated_at,
+            run_id: "local",
+            libraries_enabled: false,
+            edge_expiry_days: 30,
+            retention_days: 90,
+        },
     )
     .unwrap()
 }
@@ -58,7 +62,7 @@ fn graph_is_golden_and_idempotent() {
             .any(|row| row.name.contains("unknown-api"))
     );
     let unresolved = depgraph::normalize::merge::unresolved_csv(&first.unresolved);
-    assert!(unresolved.starts_with("kind,name,reason\n"));
+    assert!(unresolved.starts_with("kind,name,reason,volume\n"));
 }
 
 #[test]

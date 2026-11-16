@@ -56,7 +56,7 @@ pub enum Command {
     /// Show components affected by a library.
     LibraryImpact(ReadArgs),
     /// Show declared versus observed drift.
-    Drift(ReadArgs),
+    Drift(DriftArgs),
     /// List hard edges.
     Critical(ReadArgs),
     /// List nodes with no edges.
@@ -100,6 +100,23 @@ pub struct CollectArgs {
     /// Project path. Repeat to override `gitlab.projects`.
     #[arg(long = "project")]
     pub project_path: Vec<String>,
+    /// Recorded Prometheus responses (`calls.json`, `errors.json`, `latency.json`).
+    #[arg(long)]
+    pub prometheus_fixture: Option<PathBuf>,
+    /// Query `prometheus.url` with read-only GETs.
+    #[arg(long)]
+    pub prometheus: bool,
+}
+
+/// `depgraph drift`.
+#[derive(Debug, clap::Args)]
+pub struct DriftArgs {
+    /// Shared snapshot flags.
+    #[command(flatten)]
+    pub read: ReadArgs,
+    /// Directory for `dev.md`, `acc.md`, and `prod.md`. Defaults to `drift_report`.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 }
 
 /// `depgraph build`.
@@ -347,7 +364,10 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::LibraryImpact(args) => {
             analysis::library_impact(&read_request("library-impact", args))
         }
-        Command::Drift(args) => analysis::drift(&read_request("drift", args)),
+        Command::Drift(args) => {
+            let output = args.output.unwrap_or_else(|| PathBuf::from("drift_report"));
+            analysis::drift(&read_request("drift", args.read), &output)
+        }
         Command::Critical(args) => analysis::critical(&read_request("critical", args)),
         Command::Orphans(args) => analysis::orphans(&read_request("orphans", args)),
         Command::Diff(args) => analysis::diff(&read_request("diff", args)),
@@ -366,8 +386,13 @@ fn run_collect(args: CollectArgs) -> Result<(), Error> {
         collectors::CollectSet::Fast => collectors::GatherSet::Fast,
         collectors::CollectSet::Full => collectors::GatherSet::Full,
     };
-    let records = if let Some(fixture) = &args.fixture {
+    let prometheus_only =
+        args.fixture.is_none() && (args.prometheus_fixture.is_some() || args.prometheus);
+    let runtime = prometheus_records(&args)?;
+    let mut records = if let Some(fixture) = &args.fixture {
         collectors::records_from_fixture(fixture, set)?
+    } else if prometheus_only {
+        Vec::new()
     } else {
         let project = config::load_project(Path::new("."))?;
         let filter = project.config.gitlab.project_filter()?;
@@ -407,6 +432,7 @@ fn run_collect(args: CollectArgs) -> Result<(), Error> {
         }
         records
     };
+    records.extend(runtime);
     let output = args.output.unwrap_or_else(|| PathBuf::from("data"));
     write_raw_dir(&output.join("raw"), &records)?;
     println!(
@@ -415,6 +441,36 @@ fn run_collect(args: CollectArgs) -> Result<(), Error> {
         output.display()
     );
     Ok(())
+}
+
+fn prometheus_records(args: &CollectArgs) -> Result<Vec<crate::raw::RawRecord>, Error> {
+    if args.prometheus_fixture.is_none() && !args.prometheus {
+        return Ok(Vec::new());
+    }
+    let project = config::load_project(Path::new("."))?;
+    let prom = &project.config.prometheus;
+    let window = collectors::query_window(prom.window_days, prom.retention_days);
+    let filter = collectors::RuntimeFilter {
+        health_paths: prom.health_paths.clone(),
+        test_clients: prom.test_clients.clone(),
+    };
+    if let Some(dir) = &args.prometheus_fixture {
+        return collectors::records_from_prometheus_dir(dir, window, &filter);
+    }
+    let token = match &prom.token_env {
+        Some(name) => Some(std::env::var(name).map_err(|_| {
+            Error::Config(format!(
+                "environment variable {name} is not set. The token was not read."
+            ))
+        })?),
+        None => None,
+    };
+    tokio_runtime()?.block_on(collectors::query_prometheus(
+        &prom.url,
+        window,
+        &filter,
+        token.as_deref(),
+    ))
 }
 
 fn live_reader(
@@ -475,16 +531,30 @@ fn run_build(args: BuildArgs) -> Result<(), Error> {
     let environments =
         config::parse_environments(&fs::read_to_string("config/environments.yaml")?)?.index()?;
     let generated_at = generated_at_from(&records);
-    let libraries = config::load_project(Path::new("."))
+    let loaded = config::load_project(Path::new(".")).ok();
+    let libraries = loaded
+        .as_ref()
         .map(|project| project.config.libraries.enabled)
         .unwrap_or(false);
+    let edge_expiry_days = loaded
+        .as_ref()
+        .map(|project| project.config.edge_expiry_days)
+        .unwrap_or(30);
+    let retention_days = loaded
+        .as_ref()
+        .map(|project| project.config.retention_days)
+        .unwrap_or(90);
     let built = normalize::merge::merge_records(
         &records,
-        &aliases,
-        &environments,
-        &generated_at,
-        "local",
-        libraries,
+        &normalize::merge::MergeOptions {
+            aliases: &aliases,
+            environments: &environments,
+            generated_at: &generated_at,
+            run_id: "local",
+            libraries_enabled: libraries,
+            edge_expiry_days,
+            retention_days,
+        },
     )?;
     let output = args
         .output
@@ -499,6 +569,7 @@ fn run_build(args: BuildArgs) -> Result<(), Error> {
     let meta = crate::store::Meta {
         collectors: Default::default(),
         deployment_mismatches: built.mismatches,
+        coverage: built.coverage,
     };
     fs::write(
         &meta_path,
@@ -543,13 +614,12 @@ fn read_raw_dir(dir: &Path) -> Result<Vec<crate::raw::RawRecord>, Error> {
 fn generated_at_from(records: &[crate::raw::RawRecord]) -> crate::models::Timestamp {
     let mut latest = "1970-01-01T00:00:00Z".to_owned();
     for record in records {
-        if let Some(created) = record
-            .payload
-            .get("created_at")
-            .and_then(|value| value.as_str())
-            && created > latest.as_str()
-        {
-            latest = created.to_owned();
+        for field in ["created_at", "last_seen"] {
+            if let Some(created) = record.payload.get(field).and_then(|value| value.as_str())
+                && created > latest.as_str()
+            {
+                latest = created.to_owned();
+            }
         }
     }
     crate::models::Timestamp::parse(latest)

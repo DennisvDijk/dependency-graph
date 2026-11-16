@@ -1,0 +1,127 @@
+{
+  "schema_version": "0.1.0",
+  "run_id": "local",
+  "generated_at": "2026-01-15T00:00:00Z",
+  "sources": {
+    "gitlab_inventory": {
+      "status": "ok",
+      "finished_at": "2026-01-15T00:00:00Z",
+      "count": 2
+    },
+    "k8s_workloads": {
+      "status": "ok",
+      "finished_at": "2026-01-15T00:00:00Z",
+      "count": 1
+    },
+    "runtime_edges": {
+      "status": "ok",
+      "finished_at": "2026-01-15T00:00:00Z",
+      "count": 4
+    }
+  },
+  "nodes": [
+    {
+      "id": "component:billing-api",
+      "type": "component",
+      "attrs": {}
+    },
+    {
+      "id": "component:payments-api",
+      "type": "component",
+      "attrs": {}
+    },
+    {
+      "id": "resource:external-api:api-stripe-com",
+      "type": "resource",
+      "attrs": {
+        "inferred": true
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:6aaec4d166acdcc592284a22feecf0cab4312bafc2f78939ce9f6d6a323479b1",
+      "type": "declared_depends_on",
+      "from_id": "component:payments-api",
+      "to_id": "component:billing-api",
+      "env": null,
+      "sources": [
+        {
+          "kind": "catalog",
+          "first_seen": "2026-01-15T00:00:00Z",
+          "last_seen": "2026-01-15T00:00:00Z"
+        }
+      ],
+      "status": "both",
+      "criticality": "unknown",
+      "active": true,
+      "attrs": {}
+    },
+    {
+      "id": "edge:739255e1d018a80886800629bf3cae2bba08110b17d7fb31d00bf24104a6a7fa",
+      "type": "observed_calls",
+      "from_id": "component:payments-api",
+      "to_id": "component:billing-api",
+      "env": "prod",
+      "sources": [
+        {
+          "kind": "istio",
+          "first_seen": "2026-01-15T00:00:00Z",
+          "last_seen": "2026-01-15T00:00:00Z",
+          "evidence_ref": "prometheus:istio_requests_total[7d]"
+        }
+      ],
+      "status": "both",
+      "criticality": "unknown",
+      "active": true,
+      "attrs": {
+        "calls_7d": 100,
+        "error_rate_7d": 0.25,
+        "p95_ms_7d": 40.0,
+        "protocol": "http"
+      }
+    },
+    {
+      "id": "edge:803af3ca6fecdedf8b2408f4515533b2da7ec3cd50eda7b3595d113b80ad8f39",
+      "type": "candidate_calls",
+      "from_id": "component:payments-api",
+      "to_id": "component:billing-api",
+      "env": null,
+      "sources": [
+        {
+          "kind": "static",
+          "first_seen": "2026-01-15T00:00:00Z",
+          "last_seen": "2026-01-15T00:00:00Z",
+          "evidence_ref": "manifest"
+        }
+      ],
+      "status": "candidate",
+      "criticality": "unknown",
+      "active": true,
+      "attrs": {}
+    },
+    {
+      "id": "edge:bdd1d72acc0779e78a58802f396bbe792f831169be44035dc8bb0483b8607b48",
+      "type": "observed_calls",
+      "from_id": "component:payments-api",
+      "to_id": "resource:external-api:api-stripe-com",
+      "env": "prod",
+      "sources": [
+        {
+          "kind": "istio",
+          "first_seen": "2026-01-15T00:00:00Z",
+          "last_seen": "2026-01-15T00:00:00Z",
+          "evidence_ref": "prometheus:istio_requests_total[7d]"
+        }
+      ],
+      "status": "observed_only",
+      "criticality": "unknown",
+      "active": true,
+      "attrs": {
+        "calls_7d": 8,
+        "error_rate_7d": 0.0,
+        "protocol": "https"
+      }
+    }
+  ]
+}

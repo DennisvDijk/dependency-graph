@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {
+          "source_workload": "payments",
+          "source_workload_namespace": "payments-prod",
+          "destination_workload": "billing-api",
+          "destination_workload_namespace": "payments-prod",
+          "destination_service": "billing-api.payments-prod.svc.cluster.local",
+          "request_protocol": "http"
+        },
+        "value": [1768435200, "25"]
+      }
+    ]
+  }
+}

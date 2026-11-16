@@ -38,6 +38,38 @@ pub struct Meta {
     /// Deployments dropped because another version won for the same component and env.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deployment_mismatches: Vec<DeploymentMismatch>,
+    /// How much of the graph is declared, observed, or still unresolved.
+    #[serde(default, skip_serializing_if = "Coverage::is_empty")]
+    pub coverage: Coverage,
+}
+
+/// Counts written next to the snapshot. Derived from the graph, not the clock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Coverage {
+    /// Component nodes.
+    pub components: u64,
+    /// `declared_depends_on` edges.
+    pub declared_edges: u64,
+    /// `observed_calls` edges.
+    pub observed_edges: u64,
+    /// Edges whose status is `both`.
+    pub both: u64,
+    /// Edges whose status is `observed_only`.
+    pub observed_only: u64,
+    /// Edges whose status is `declared_only`.
+    pub declared_only: u64,
+    /// Edges whose status is `candidate`.
+    pub candidates: u64,
+    /// Rows in `unresolved.csv`.
+    pub unresolved: u64,
+    /// Resource nodes created because the destination was outside the mesh.
+    pub inferred_resources: u64,
+}
+
+impl Coverage {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// One component and environment had more than one deployment version.
