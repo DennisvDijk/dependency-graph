@@ -1,0 +1,4 @@
+# AI Platform team owns depgraph (ADR-001, question 14).
+# @ai-platform is a placeholder slug. The code will live in GitLab eventually;
+# this GitHub repository is the build home for now. Keep .gitlab-ci.yml.
+* @ai-platform

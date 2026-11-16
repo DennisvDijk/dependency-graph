@@ -1,0 +1,23 @@
+# Source environment names map onto exactly one of dev, acc, prod.
+dev:
+  gitlab:
+    - development
+  otel:
+    - dev
+    - development
+  k8s_namespaces: []
+acc:
+  gitlab:
+    - acceptance
+    - staging
+  otel:
+    - acc
+    - staging
+  k8s_namespaces: []
+prod:
+  gitlab:
+    - production
+  otel:
+    - prod
+    - production
+  k8s_namespaces: []

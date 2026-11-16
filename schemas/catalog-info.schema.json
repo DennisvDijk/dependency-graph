@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/depgraph/catalog-info.schema.json",
+  "title": "catalog-info.yaml",
+  "description": "Stub schema for a Backstage catalog-info.yaml document. F0-5 completes the rules; F0-1 only locks the fields depgraph reads.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "backstage.io/v1alpha1" },
+    "kind": { "const": "Component" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "Canonical component name."
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "properties": {
+            "gitlab.com/project-slug": { "type": "string" },
+            "depgraph/otel-service-name": { "type": "string" },
+            "depgraph/k8s-app-name": { "type": "string" },
+            "depgraph/image-repository": { "type": "string" },
+            "depgraph/soft-dependencies": { "type": "string" }
+          }
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "lifecycle", "owner"],
+      "properties": {
+        "type": { "enum": ["service", "job", "library", "website"] },
+        "lifecycle": { "enum": ["experimental", "production", "deprecated"] },
+        "owner": { "type": "string", "minLength": 1 },
+        "system": { "type": "string" },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(component|resource):default/[a-z0-9]+(-[a-z0-9]+)*$"
+          }
+        }
+      }
+    }
+  }
+}

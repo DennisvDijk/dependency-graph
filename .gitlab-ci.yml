@@ -1,0 +1,130 @@
+# Pipeline for when depgraph runs inside GitLab.
+# This repository itself is on GitHub (ADR-002). GitHub Actions is the CI that
+# gates the tool repo. These jobs are the collector pipeline from the plan.
+#
+# `build` is `depgraph build` (the graph), not `cargo build`. The Rust image
+# compiles the binary in before_script so every job can call it. A static
+# musl binary is a later packaging step; runners already benefit from one
+# binary and no virtualenv.
+#
+# Create three schedules in the GitLab UI (CI/CD → Schedules). The YAML cannot
+# register cron entries itself:
+#   fast    0 */6 * * *   COLLECT_SET=fast
+#   full    30 3 * * *    COLLECT_SET=full
+#   weekly  0 7 * * 1     COLLECT_SET=full  SCHEDULE_KIND=weekly
+#
+# F0-1: collect, build, publish, site, and drift-issue exit 2
+# ("not implemented in F0-1"). Scheduled jobs assert that exit code so the
+# empty pipeline stays green. Replace the assertion when the command exists.
+
+stages:
+  - test
+  - collect
+  - build
+  - publish
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+
+default:
+  image: rust:1.100.0-bookworm
+  interruptible: true
+
+.test-template: &rust_job
+  before_script:
+    - cargo build --release --locked
+
+test:
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - when: on_success
+  script:
+    - cargo fmt --all -- --check
+    - cargo clippy --all-targets --all-features -- -D warnings
+    - cargo test --all-targets --all-features
+    - cargo build --release --locked
+    - ./target/release/depgraph validate tests/fixtures/empty-graph.json
+    - |
+      set +e
+      ./target/release/depgraph collect --set fast
+      code=$?
+      set -e
+      test "$code" -eq 2
+
+collect:
+  <<: *rust_job
+  stage: collect
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  script:
+    - |
+      test -n "${COLLECT_SET}"
+      set +e
+      ./target/release/depgraph collect --set "${COLLECT_SET}"
+      code=$?
+      set -e
+      test "$code" -eq 2
+
+build:
+  <<: *rust_job
+  stage: build
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  script:
+    - |
+      set +e
+      ./target/release/depgraph build
+      code=$?
+      set -e
+      test "$code" -eq 2
+
+publish-snapshot:
+  <<: *rust_job
+  stage: publish
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  script:
+    - |
+      set +e
+      ./target/release/depgraph publish snapshot
+      code=$?
+      set -e
+      test "$code" -eq 2
+
+pages:
+  <<: *rust_job
+  stage: publish
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  script:
+    - |
+      set +e
+      ./target/release/depgraph site
+      code=$?
+      set -e
+      test "$code" -eq 2
+      mkdir -p public
+      printf '%s\n' '<!DOCTYPE html><meta charset="utf-8"><title>depgraph</title><p>The site is not implemented in F0-1.</p>' > public/index.html
+  artifacts:
+    paths:
+      - public
+
+drift-issue:
+  <<: *rust_job
+  stage: publish
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_KIND == "weekly"
+  script:
+    - |
+      set +e
+      ./target/release/depgraph publish drift-issue
+      code=$?
+      set -e
+      test "$code" -eq 2
