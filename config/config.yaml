@@ -67,6 +67,16 @@ contract_paths:
   - schema/**
 edge_expiry_days: 30
 retention_days: 90
+# ADR-010: generic OAuth resource server. Set provider: entra to derive Entra v2 endpoints.
+# Tenant and client ids below are placeholders. DEPGRAPH_ENTRA_TENANT_ID and
+# DEPGRAPH_ENTRA_CLIENT_ID override them and are never written here.
+auth:
+  provider: generic
+  tenant_id: 00000000-0000-0000-0000-000000000000
+  client_id: 11111111-1111-1111-1111-111111111111
+  audience: api://11111111-1111-1111-1111-111111111111
+  allowed_roles: []
+  allowed_groups: []
 # ADR-005: OAuth 2.1 resource server. No client secret and no JWT in this file.
 mcp:
   issuer: https://idp.example.com

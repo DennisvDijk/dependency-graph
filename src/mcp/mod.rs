@@ -5,9 +5,15 @@
 //! The access token is validated here and is not forwarded.
 
 mod auth;
+mod clients;
 mod server;
 
-pub use auth::JwksCache;
+pub use clients::render as render_client_config;
+
+pub use auth::{
+    AccessPolicy, AuthKind, EntraEndpoints, JwksCache, authorize_with_jwks, entra_endpoints,
+    jwks_from_discovery, policy_from_config,
+};
 pub use server::{McpState, router, serve};
 
 use crate::error::Error;
@@ -82,8 +88,7 @@ pub const TOOLS: &[Tool] = &[
 pub fn serve_blocking(
     bind: &str,
     insecure: bool,
-    issuer: &str,
-    audience: &str,
+    policy: auth::AccessPolicy,
     jwks_url: &str,
     snapshot: &std::path::Path,
     aliases: crate::config::Aliases,
@@ -92,9 +97,7 @@ pub fn serve_blocking(
         .enable_all()
         .build()
         .map_err(Error::Io)?;
-    runtime.block_on(serve(
-        bind, insecure, issuer, audience, jwks_url, snapshot, aliases,
-    ))
+    runtime.block_on(serve(bind, insecure, policy, jwks_url, snapshot, aliases))
 }
 
 #[cfg(test)]
@@ -129,8 +132,7 @@ mod tests {
         let error = serve_blocking(
             "0.0.0.0:9",
             true,
-            "https://idp.example.com",
-            "http://127.0.0.1:8080",
+            auth::AccessPolicy::generic("https://idp.example.com", "http://127.0.0.1:8080"),
             "https://idp.example.com/jwks",
             std::path::Path::new("missing-snapshot.json"),
             crate::config::Aliases::default(),

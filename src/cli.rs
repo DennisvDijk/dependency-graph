@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::analysis::{self, OutputFormat, ReadRequest};
 use crate::collectors::{self, CollectSet};
@@ -19,7 +19,12 @@ use crate::publish;
 
 /// Self-hosted dependency graph for runtime dependencies and deployments.
 #[derive(Debug, Parser)]
-#[command(name = "depgraph", version, about)]
+#[command(
+    name = "depgraph",
+    version,
+    about,
+    after_long_help = "Examples:\n  depgraph init\n  depgraph doctor\n  depgraph collect --set full --output data\n  depgraph build --raw data/raw --output data/snapshot.json\n  depgraph show payments-api --snapshot data/snapshot.json\n  depgraph serve-mcp --insecure-local --snapshot data/snapshot.json\n  depgraph mcp-config cursor"
+)]
 pub struct Cli {
     /// Command to run.
     #[command(subcommand)]
@@ -79,6 +84,18 @@ pub enum Command {
     ServeMcp(ServeMcpArgs),
     /// Comment on a merge request with prod consumers and contract changes.
     MrCheck(MrCheckArgs),
+    /// Write a minimal config. Does not store tokens.
+    Init(InitArgs),
+    /// Check config, glab, and snapshot freshness.
+    Doctor(DoctorArgs),
+    /// Print an MCP client config snippet.
+    McpConfig(McpConfigArgs),
+    /// Print a shell completion script.
+    Completions(CompletionArgs),
+    /// List archived snapshot runs.
+    Runs(RunsArgs),
+    /// Delete archived runs older than retention_days.
+    Retain(RetainArgs),
 }
 
 /// `depgraph collect`.
@@ -173,6 +190,61 @@ pub struct DriftIssueArgs {
     /// Print the issue body and do not call GitLab.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+/// `depgraph init`.
+#[derive(Debug, clap::Args)]
+pub struct InitArgs {
+    /// Directory that will contain `config/`. Defaults to the current directory.
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
+    /// Replace config files that already exist.
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// `depgraph doctor`.
+#[derive(Debug, clap::Args)]
+pub struct DoctorArgs {
+    /// Reference time for snapshot age. Defaults to the clock.
+    #[arg(long)]
+    pub now: Option<String>,
+    /// Also GET GitLab `/api/v4/version`. Read-only.
+    #[arg(long)]
+    pub online: bool,
+}
+
+/// `depgraph mcp-config`.
+#[derive(Debug, clap::Args)]
+pub struct McpConfigArgs {
+    /// `cursor`, `claude`, `vscode`, or `opencode`.
+    pub client: String,
+}
+
+/// `depgraph completions`.
+#[derive(Debug, clap::Args)]
+pub struct CompletionArgs {
+    /// Shell to generate.
+    pub shell: clap_complete::Shell,
+}
+
+/// `depgraph runs`.
+#[derive(Debug, clap::Args)]
+pub struct RunsArgs {
+    /// Directory that contains `snapshot.json`. Defaults to `data`.
+    #[arg(long)]
+    pub data: Option<PathBuf>,
+}
+
+/// `depgraph retain`.
+#[derive(Debug, clap::Args)]
+pub struct RetainArgs {
+    /// Directory that contains `snapshot.json` and `runs/`. Defaults to `data`.
+    #[arg(long)]
+    pub data: Option<PathBuf>,
+    /// Reference time. Defaults to the clock.
+    #[arg(long)]
+    pub now: Option<String>,
 }
 
 /// `depgraph build`.
@@ -438,6 +510,12 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::ProposeCatalog(args) => propose_catalog(args),
         Command::ServeMcp(args) => run_serve_mcp(args),
         Command::MrCheck(args) => run_mr_check(args),
+        Command::Init(args) => run_init(args),
+        Command::Doctor(args) => run_doctor(args),
+        Command::McpConfig(args) => run_mcp_config(args),
+        Command::Completions(args) => run_completions(args),
+        Command::Runs(args) => run_runs(args),
+        Command::Retain(args) => run_retain(args),
     }
 }
 
@@ -640,6 +718,10 @@ fn run_build(args: BuildArgs) -> Result<(), Error> {
         output.display(),
         built.unresolved.len()
     );
+    match crate::store::archive_snapshot(&output) {
+        Ok(path) => println!("archived {}", path.display()),
+        Err(err) => eprintln!("warning: snapshot was not archived: {err}"),
+    }
     Ok(())
 }
 
@@ -762,16 +844,22 @@ fn run_inventory(args: InventoryArgs) -> Result<(), Error> {
 
 fn run_serve_mcp(args: ServeMcpArgs) -> Result<(), Error> {
     let project = config::load_project(Path::new("."))?;
-    let bind = args.bind.unwrap_or(project.config.mcp.bind);
+    let bind = args
+        .bind
+        .clone()
+        .unwrap_or_else(|| project.config.mcp.bind.clone());
     let snapshot = args
         .snapshot
         .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
+    let (policy, jwks) = crate::mcp::policy_from_config(&project.config)?;
+    if args.insecure_local {
+        eprintln!("next: depgraph mcp-config cursor");
+    }
     crate::mcp::serve_blocking(
         &bind,
         args.insecure_local,
-        &project.config.mcp.issuer,
-        &project.config.mcp.audience,
-        &project.config.mcp.jwks_url,
+        policy,
+        &jwks,
         &snapshot,
         project.aliases,
     )
@@ -856,6 +944,190 @@ fn run_drift_issue(args: DriftIssueArgs) -> Result<(), Error> {
         &token,
         &body,
     ))
+}
+
+fn run_init(args: InitArgs) -> Result<(), Error> {
+    let root = args.dir.unwrap_or_else(|| PathBuf::from("."));
+    let host = glab_host();
+    let written = crate::quickstart::init(&root, host.as_deref(), args.force)?;
+    if written.is_empty() {
+        println!("config already exists. next: depgraph doctor");
+    } else {
+        for path in &written {
+            println!("wrote {path}");
+        }
+        println!("next: depgraph doctor");
+    }
+    if host.is_none() {
+        eprintln!("glab host was not detected. next: glab auth login, then set gitlab.base_url");
+    }
+    Ok(())
+}
+
+fn run_doctor(args: DoctorArgs) -> Result<(), Error> {
+    let now = match args.now {
+        Some(value) => crate::models::Timestamp::parse(value).map_err(Error::Validation)?,
+        None => crate::models::Timestamp::parse(chrono::Utc::now().to_rfc3339())
+            .map_err(Error::Validation)?,
+    };
+    let token_env_set = std::env::var("GITLAB_TOKEN")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let mut checks = crate::doctor::diagnose(Path::new("."), &now, probe_glab(), token_env_set);
+    if args.online {
+        checks.retain(|check| check.name != "connectivity");
+        checks.push(online_gitlab());
+    }
+    let ok = crate::doctor::all_ok(&checks);
+    print!("{}", crate::doctor::render(&checks));
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Config(
+            "doctor found a problem. follow the next: lines above".into(),
+        ))
+    }
+}
+
+fn run_mcp_config(args: McpConfigArgs) -> Result<(), Error> {
+    let project = config::load_project(Path::new(".")).ok();
+    let bind = project
+        .as_ref()
+        .map(|item| item.config.mcp.bind.clone())
+        .unwrap_or_else(|| "127.0.0.1:8080".to_owned());
+    let entra = project
+        .as_ref()
+        .is_some_and(|item| item.config.auth.provider == config::AuthProvider::Entra);
+    let body = crate::mcp::render_client_config(&args.client, &bind, entra)?;
+    print!("{body}");
+    if entra {
+        eprintln!(
+            "Entra is enabled. The client opens a browser. Do not paste a token. next: depgraph serve-mcp"
+        );
+    } else {
+        eprintln!("next: depgraph serve-mcp --insecure-local --snapshot data/snapshot.json");
+    }
+    Ok(())
+}
+
+fn run_completions(args: CompletionArgs) -> Result<(), Error> {
+    let mut command = Cli::command();
+    clap_complete::generate(args.shell, &mut command, "depgraph", &mut std::io::stdout());
+    Ok(())
+}
+
+fn run_runs(args: RunsArgs) -> Result<(), Error> {
+    let data = args.data.unwrap_or_else(|| PathBuf::from("data"));
+    for key in crate::store::list_runs(&data.join("runs"))? {
+        println!("{key}");
+    }
+    Ok(())
+}
+
+fn run_retain(args: RetainArgs) -> Result<(), Error> {
+    let data = args.data.unwrap_or_else(|| PathBuf::from("data"));
+    let now = match args.now {
+        Some(value) => crate::models::Timestamp::parse(value).map_err(Error::Validation)?,
+        None => crate::models::Timestamp::parse(chrono::Utc::now().to_rfc3339())
+            .map_err(Error::Validation)?,
+    };
+    let days = config::load_project(Path::new("."))
+        .map(|project| project.config.retention_days)
+        .unwrap_or(90);
+    let removed = crate::store::retain(&data.join("runs"), &now, days)?;
+    if removed.is_empty() {
+        println!("removed 0 runs");
+    } else {
+        for key in removed {
+            println!("removed {key}");
+        }
+    }
+    Ok(())
+}
+
+fn probe_glab() -> crate::doctor::GlabStatus {
+    match std::process::Command::new("glab")
+        .args(["auth", "status"])
+        .output()
+    {
+        Err(_) => crate::doctor::GlabStatus::Missing,
+        Ok(output) if output.status.success() => crate::doctor::GlabStatus::LoggedIn,
+        Ok(_) => crate::doctor::GlabStatus::LoggedOut,
+    }
+}
+
+fn glab_host() -> Option<String> {
+    let output = std::process::Command::new("glab")
+        .args(["config", "get", "host"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let host = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if host.is_empty() || host.contains([' ', '@']) {
+        None
+    } else {
+        Some(host)
+    }
+}
+
+fn online_gitlab() -> crate::doctor::Check {
+    let project = match config::load_project(Path::new(".")) {
+        Ok(project) => project,
+        Err(err) => {
+            return crate::doctor::Check {
+                name: "connectivity",
+                ok: false,
+                detail: format!("{err}. next: depgraph init"),
+            };
+        }
+    };
+    let url = format!(
+        "{}/api/v4/version",
+        project.config.gitlab.base_url.trim_end_matches('/')
+    );
+    let runtime = match tokio_runtime() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            return crate::doctor::Check {
+                name: "connectivity",
+                ok: false,
+                detail: format!("{err}"),
+            };
+        }
+    };
+    let result = runtime.block_on(async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .map_err(|err| err.to_string())?;
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|_| "could not reach GitLab".to_owned())?;
+        Ok::<_, String>(response.status())
+    });
+    match result {
+        Ok(status) if status.is_success() => crate::doctor::Check {
+            name: "connectivity",
+            ok: true,
+            detail: "GitLab /api/v4/version responded".to_owned(),
+        },
+        Ok(status) => crate::doctor::Check {
+            name: "connectivity",
+            ok: false,
+            detail: format!(
+                "GitLab returned {status}. next: check gitlab.base_url and glab auth login"
+            ),
+        },
+        Err(err) => crate::doctor::Check {
+            name: "connectivity",
+            ok: false,
+            detail: format!("{err}. next: check gitlab.base_url and the network"),
+        },
+    }
 }
 
 fn validate_catalog(args: &ValidateCatalogArgs) -> Result<(), Error> {

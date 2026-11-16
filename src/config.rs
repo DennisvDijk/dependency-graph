@@ -61,6 +61,9 @@ pub struct Config {
     /// MCP resource server. OAuth stays with the external issuer.
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Optional IdP preset. `generic` is the default resource server.
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 /// GitLab connection settings. `base_url` is a placeholder until a human confirms it.
@@ -130,6 +133,48 @@ pub struct McpConfig {
     pub jwks_url: String,
     /// Listen address. `--insecure-local` only allows a loopback address.
     pub bind: String,
+}
+
+/// `generic` keeps issuer and JWKS in `mcp`. `entra` derives them from the tenant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthProvider {
+    /// Any OAuth 2.1 issuer with a JWKS document.
+    #[default]
+    Generic,
+    /// Microsoft Entra ID v2 endpoints.
+    Entra,
+}
+
+/// Identity provider settings. Placeholder IDs only; real values may come from the environment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AuthConfig {
+    /// `generic` or `entra`.
+    pub provider: AuthProvider,
+    /// Entra tenant GUID. Overridden by `DEPGRAPH_ENTRA_TENANT_ID` when set.
+    pub tenant_id: String,
+    /// Entra application id. Overridden by `DEPGRAPH_ENTRA_CLIENT_ID` when set.
+    pub client_id: String,
+    /// Resource indicator. Empty becomes `api://<client_id>` for Entra.
+    pub audience: String,
+    /// App roles that may call the API, in addition to the read role.
+    pub allowed_roles: Vec<String>,
+    /// Group object ids that may call the API. Empty means no group restriction.
+    pub allowed_groups: Vec<String>,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            provider: AuthProvider::Generic,
+            tenant_id: "00000000-0000-0000-0000-000000000000".to_owned(),
+            client_id: "11111111-1111-1111-1111-111111111111".to_owned(),
+            audience: "api://11111111-1111-1111-1111-111111111111".to_owned(),
+            allowed_roles: Vec::new(),
+            allowed_groups: Vec::new(),
+        }
+    }
 }
 
 impl Default for McpConfig {
@@ -987,6 +1032,11 @@ mod tests {
         assert_eq!(project.config.mcp.issuer, "https://idp.example.com");
         assert_eq!(project.config.mcp.audience, "http://127.0.0.1:8080");
         assert_eq!(project.config.mcp.bind, "127.0.0.1:8080");
+        assert_eq!(project.config.auth.provider, AuthProvider::Generic);
+        assert_eq!(
+            project.config.auth.tenant_id,
+            "00000000-0000-0000-0000-000000000000"
+        );
         assert!(project.aliases.aliases.is_empty());
         assert!(project.pilot.apps.is_empty());
         assert!(project.sdk_hints.hints.is_empty());

@@ -118,6 +118,10 @@ fn state(issued: &Issued) -> Arc<McpState> {
     Arc::new(McpState {
         issuer: "https://idp.example.com".into(),
         audience: "http://127.0.0.1:8080".into(),
+        policy: depgraph::mcp::AccessPolicy::generic(
+            "https://idp.example.com",
+            "http://127.0.0.1:8080",
+        ),
         jwks_url: format!("http://{address}/jwks"),
         insecure: false,
         snapshot: snapshot(),

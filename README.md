@@ -4,7 +4,7 @@ Self-hosted dependency graph for runtime dependencies and deployments.
 
 The tool is Rust. This repository lives on GitHub for now; the code will live in GitLab later. It reads GitLab (local access via `glab`), declared manifests in those repos, Istio metrics, and optionally Tempo and Datadog. It does not write back to those systems. Decisions: [ADR-001](docs/decisions/ADR-001-aannames.md), [ADR-002](docs/decisions/ADR-002-rust-en-github.md), [ADR-003](docs/decisions/ADR-003-runtime-bron.md), [ADR-004](docs/decisions/ADR-004-pilot-en-datadog.md), [ADR-005](docs/decisions/ADR-005-mcp-server.md).
 
-Status: **F0-1 only**. Collectors, graph build, analysis, and publishers return `not implemented in F0-1`. `depgraph validate` checks a snapshot for real. No tokens, kubeconfigs, or production data belong in this repo. Config uses `example.com`.
+Start here: [docs/quickstart.md](docs/quickstart.md) (install, `init`, `doctor`, first answer). No tokens, kubeconfigs, or production data belong in this repo. Config uses `example.com`.
 
 ## Layout
 

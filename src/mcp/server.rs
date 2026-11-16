@@ -26,6 +26,8 @@ pub struct McpState {
     pub issuer: String,
     /// Expected audience.
     pub audience: String,
+    /// Signature, issuer, audience, and scope rules.
+    pub policy: crate::mcp::auth::AccessPolicy,
     /// JWKS document URL.
     pub jwks_url: String,
     /// Skip bearer checks. Only valid on a loopback bind.
@@ -60,8 +62,7 @@ pub fn router(state: Arc<McpState>) -> Router {
 pub async fn serve(
     bind: &str,
     insecure: bool,
-    issuer: &str,
-    audience: &str,
+    policy: crate::mcp::auth::AccessPolicy,
     jwks_url: &str,
     snapshot_path: &Path,
     aliases: Aliases,
@@ -83,8 +84,13 @@ pub async fn serve(
         empty_graph()
     };
     let state = Arc::new(McpState {
-        issuer: issuer.to_owned(),
-        audience: audience.to_owned(),
+        issuer: policy.issuer.clone(),
+        audience: policy
+            .audiences
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "http://127.0.0.1:8080".to_owned()),
+        policy,
         jwks_url: jwks_url.to_owned(),
         insecure,
         snapshot,
@@ -122,8 +128,7 @@ async fn mcp(
         };
         if auth::authorize(
             &token,
-            &state.issuer,
-            &state.audience,
+            &state.policy,
             &state.jwks_url,
             &state.jwks,
             &state.http,

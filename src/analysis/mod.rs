@@ -290,6 +290,7 @@ fn render(
                     "from": edge.from_id,
                     "to": edge.to_id,
                     "env": edge.env.map(|env| env.as_str()),
+                    "confidence": crate::analysis::algo::confidence(edge),
                 })).collect::<Vec<_>>(),
             });
             serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_owned())
