@@ -1,6 +1,8 @@
 # Pipeline for when depgraph runs inside GitLab.
 # This repository itself is on GitHub (ADR-002). GitHub Actions is the CI that
-# gates the tool repo. These jobs are the collector pipeline from the plan.
+# gates the tool repo; the `test` job below runs the same checks (fmt, clippy,
+# test, deny) so a GitLab mirror is gated the same way. The other jobs are the
+# collector pipeline from the plan.
 #
 # `build` is `depgraph build` (the graph), not `cargo build`. The Rust image
 # compiles the binary in before_script so every job can call it. A static
@@ -31,9 +33,21 @@ workflow:
     - if: $CI_COMMIT_BRANCH
     - if: $CI_PIPELINE_SOURCE == "schedule"
 
+variables:
+  CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  CARGO_TERM_COLOR: always
+  CARGO_DENY_VERSION: "0.20.2"
+  # Behind a firewall: mirror the cargo-deny release tarball and set
+  # CARGO_DENY_URL in Settings > CI/CD > Variables. Point cargo at your crates
+  # mirror in the runner config when crates.io is not reachable.
+
 default:
   image: rust:1.100.0-bookworm
   interruptible: true
+  cache:
+    key:
+      files: [Cargo.lock]
+    paths: [.cargo/registry, target]
 
 .test-template: &rust_job
   before_script:
@@ -46,6 +60,8 @@ test:
       when: never
     - when: on_success
   script:
+    # The official rust image ships without rustfmt and clippy.
+    - rustup component add rustfmt clippy
     - cargo fmt --all -- --check
     - cargo clippy --all-targets --all-features -- -D warnings
     - cargo test --all-targets --all-features
@@ -54,6 +70,13 @@ test:
     - ./target/release/depgraph collect --set full --fixture tests/fixtures/phase1 --output data
     - ./target/release/depgraph build --raw data/raw --output data/snapshot.json --aliases tests/fixtures/phase1/aliases.yaml
     - ./target/release/depgraph site --snapshot data/snapshot.json --output public
+    - |
+      name="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+      url="${CARGO_DENY_URL:-https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${name}.tar.gz}"
+      curl -fsSL -o /tmp/cargo-deny.tar.gz "$url"
+      tar -xzf /tmp/cargo-deny.tar.gz -C /tmp
+      install -m 0755 "/tmp/${name}/cargo-deny" /usr/local/bin/cargo-deny
+    - cargo deny check
 
 collect:
   <<: *rust_job
