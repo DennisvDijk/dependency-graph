@@ -161,6 +161,7 @@ the graph instead of guessing. All read the same snapshot.
 |---|---|---|
 | Unit tests per collector and rule | each rule does what we wrote | that the rule matches real files |
 | Landscape and cloud fixtures | whole pipeline on a made-up estate, including live-cloud output saved as files | behaviour on a live account |
+| Precision traps (`trap_*` tests in `src/collectors/source.rs`) | code that mentions a service without calling it (comments, docstrings, placeholders, generated and mock files, dead-letter queues) produces nothing, and real calls next to them are still found | traps nobody has thought of yet |
 | Secret-leak test | planted secrets never appear in output | file types we did not plant |
 | Schema and naming tests | output matches the contract | |
 | **Benchmarks** (`tests/benchmark.rs`, `depgraph eval`) | precision and recall on a pinned real open-source system against a hand-written truth list, with a ratchet in CI | accuracy on your estate: tuned on public demos |
@@ -175,5 +176,5 @@ See [`benchmarks.md`](benchmarks.md). The honest gap: nothing replaces running
 - Source reading uses literal-name heuristics; findings are candidates.
 - GitLab release and CI pipelines, and the live AWS/Azure calls, are tested on fixtures and saved CLI output, not on a real runner or account.
 - Service meshes other than Istio telemetry, and Terraform/CloudFormation load balancers, are not read.
-- Dead-letter queues are counted as publishing; computed queue names are not read.
+- Computed queue names are not read. Application code that names a dead-letter queue is not treated as publishing to it.
 - Ownership, API contracts (OpenAPI, AsyncAPI, protobuf) and environments as nodes are not modelled yet.

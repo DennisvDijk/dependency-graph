@@ -25,7 +25,7 @@ const MAX_FILE_BYTES: usize = 400_000;
 const EXTENSIONS: [&str; 11] = [
     ".py", ".ex", ".exs", ".rs", ".js", ".mjs", ".ts", ".go", ".java", ".kt", ".cs",
 ];
-const SKIPPED_DIRS: [&str; 17] = [
+const SKIPPED_DIRS: [&str; 23] = [
     "node_modules",
     "vendor",
     "deps",
@@ -43,6 +43,12 @@ const SKIPPED_DIRS: [&str; 17] = [
     "examples",
     "fixtures",
     "migrations",
+    "__mocks__",
+    "mocks",
+    "mock",
+    "testdata",
+    "e2e",
+    "generated",
 ];
 
 /// Whether a path is application source worth reading.
@@ -57,6 +63,12 @@ pub fn is_source_path(path: &str) -> bool {
         || file.contains("_test.")
         || file.contains(".test.")
         || file.contains(".spec.")
+        || file.contains(".stories.")
+        || file.contains(".generated.")
+        || file.contains(".pb.")
+        || file.contains("_pb2")
+        || file.contains("_mock.")
+        || file.starts_with("mock_")
         || file.ends_with(".min.js")
         || file.ends_with(".d.ts")
     {
@@ -209,8 +221,73 @@ enum Host {
     Skip,
 }
 
+/// Hosts that stand for "put a real one here" or for the machine itself.
+const PLACEHOLDER_HOSTS: [&str; 12] = [
+    "host",
+    "hostname",
+    "host-name",
+    "your-service",
+    "your-host",
+    "my-service",
+    "my-host",
+    "myhost",
+    "service",
+    "server",
+    "host.docker.internal",
+    "kubernetes.docker.internal",
+];
+
+/// A dead-letter queue is where failed messages land. Application code that
+/// names one is almost always a redrive or a config value, not a publisher.
+fn is_dead_letter(name: &str) -> bool {
+    name.contains("dlq") || name.contains("dead-letter") || name.contains("deadletter")
+}
+
+/// Drop a trailing `# ...` or `// ...` comment. `://` is left alone.
+fn strip_trailing_comment(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut cut = line.len();
+    if let Some(at) = line
+        .match_indices("//")
+        .map(|(at, _)| at)
+        .find(|&at| at == 0 || bytes[at - 1] != b':')
+    {
+        cut = at;
+    }
+    if let Some(at) = line.find(" #") {
+        cut = cut.min(at);
+    }
+    &line[..cut]
+}
+
+/// Tracks block comments and docstrings across lines. Returns true when the
+/// line is inside one (or opens one) and must not be read.
+fn in_block(line: &str, open: &mut Option<&'static str>) -> bool {
+    if let Some(closer) = *open {
+        if line.contains(closer) {
+            *open = None;
+        }
+        return true;
+    }
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("/*") && !trimmed[2..].contains("*/") {
+        *open = Some("*/");
+        return true;
+    }
+    for quote in ["\"\"\"", "'''"] {
+        if line.matches(quote).count() % 2 == 1 {
+            *open = Some(quote);
+            return true;
+        }
+    }
+    false
+}
+
 fn classify_host(host: &str) -> Host {
     let host = host.to_ascii_lowercase();
+    if PLACEHOLDER_HOSTS.contains(&host.as_str()) {
+        return Host::Skip;
+    }
     if host.chars().all(|c| c.is_ascii_digit() || c == '.')
         || IGNORED_HOST_SUFFIXES
             .iter()
@@ -305,10 +382,12 @@ fn messaging_name(key: &str, value: &str) -> Option<(&'static str, String)> {
 fn scan(text: &str, findings: &mut BTreeSet<Finding>) {
     let messaging = MARKER.is_match(text);
     let lines: Vec<&str> = text.lines().collect();
-    for (index, line) in lines.iter().enumerate() {
-        if is_comment(line) {
+    let mut block = None;
+    for (index, raw) in lines.iter().enumerate() {
+        if in_block(raw, &mut block) || is_comment(raw) {
             continue;
         }
+        let line = strip_trailing_comment(raw);
         for capture in DATABASE.captures_iter(line) {
             let host = capture[1].to_ascii_lowercase();
             let first = host.split('.').next().unwrap_or(&host);
@@ -347,6 +426,7 @@ fn scan(text: &str, findings: &mut BTreeSet<Finding>) {
                 continue;
             };
             match direction(line, &window) {
+                Some(true) if is_dead_letter(&name) => false,
                 Some(true) => findings.insert(Finding::Publishes(kind, name)),
                 Some(false) => findings.insert(Finding::Consumes(kind, name)),
                 None => false,
@@ -358,7 +438,7 @@ fn scan(text: &str, findings: &mut BTreeSet<Finding>) {
             }
         }
         for capture in KAFKA_PRODUCE.captures_iter(line) {
-            if let Some(name) = kebab(&capture[1]) {
+            if let Some(name) = kebab(&capture[1]).filter(|name| !is_dead_letter(name)) {
                 findings.insert(Finding::Publishes("topic", name));
             }
         }
@@ -461,6 +541,121 @@ l = requests.get("http://localhost:8080/health")
         assert!(got.contains(&"call orders-db database".to_owned()));
         assert_eq!(got.len(), 3, "{got:?}");
         assert!(!got.iter().any(|line| line.contains("secret")));
+    }
+
+    // Precision traps: code that mentions a service without calling it.
+    // Each must produce nothing. They exist so a heuristic change that
+    // starts guessing breaks a test instead of a graph.
+
+    #[test]
+    fn traps_do_not_hide_real_calls_next_to_them() {
+        let text = r#"
+app.use("/api/*", handler)
+r = get("http://billing-ex:4000/charge")  # charge the card
+s = get("http://ledger-ex:4000/post") // post it
+"""
+docstring mentioning http://old-svc/x
+"""
+t = get("http://invoice-ex:4000/new")
+/* http://commented/x */
+u = get("http://tax-ex:4000/rate")
+"#;
+        let got = found("src/a.js", text);
+        for name in ["billing-ex", "ledger-ex", "invoice-ex", "tax-ex"] {
+            assert!(
+                got.contains(&format!("call {name} service")),
+                "{name} missing: {got:?}"
+            );
+        }
+        assert!(
+            !got.iter()
+                .any(|g| g.contains("old-svc") || g.contains("commented")),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn trap_trailing_comments_are_not_calls() {
+        let text =
+            "r = get(url)  # was http://billing-ex:4000/charge\nx = 1 // http://billing-ex/old\n";
+        assert!(
+            found("src/a.py", text).is_empty(),
+            "{:?}",
+            found("src/a.py", text)
+        );
+    }
+
+    #[test]
+    fn trap_docstrings_and_block_comments_are_not_calls() {
+        let text = "\"\"\"\nCalls http://billing-ex:4000/charge in production.\n\"\"\"\n/*\n http://billing-ex/old\n*/\n";
+        assert!(
+            found("src/a.py", text).is_empty(),
+            "{:?}",
+            found("src/a.py", text)
+        );
+    }
+
+    #[test]
+    fn trap_placeholder_and_local_hosts_are_not_calls() {
+        let text = r#"
+a = get("http://<host>/x")
+b = get("http://your-service/x")
+c = get("http://host.docker.internal:8080/x")
+d = get("http://0.0.0.0:8080/x")
+e = get("http://[::1]:8080/x")
+f = get("http://127.0.0.1:8080/x")
+g = get("http://10.0.0.5/x")
+h = get("https://hostname/x")
+"#;
+        assert!(
+            found("src/a.py", text).is_empty(),
+            "{:?}",
+            found("src/a.py", text)
+        );
+    }
+
+    #[test]
+    fn trap_generated_mock_and_test_support_files_are_skipped() {
+        for path in [
+            "src/api.pb.go",
+            "src/api_pb2.py",
+            "src/api_pb2_grpc.py",
+            "src/client_mock.go",
+            "src/mock_client.py",
+            "src/__mocks__/client.js",
+            "src/testdata/client.go",
+            "e2e/client.ts",
+            "src/Client.stories.ts",
+            "src/client.generated.ts",
+        ] {
+            assert!(!is_source_path(path), "{path} should be skipped");
+        }
+    }
+
+    #[test]
+    fn trap_dead_letter_queues_are_not_published_to_by_application_code() {
+        let text = r#"
+sqs.send_message(QueueUrl="https://sqs.eu-west-1.amazonaws.com/123456789012/orders-dlq", MessageBody=b)
+sqs.send_message(QueueUrl="https://sqs.eu-west-1.amazonaws.com/123456789012/orders-dead-letter", MessageBody=b)
+"#;
+        let got = found("src/a.py", text);
+        assert!(got.is_empty(), "{got:?}");
+    }
+
+    #[test]
+    fn trap_format_strings_and_templates_are_not_guessed() {
+        let text = r#"
+a = get("http://%s:8080/x" % host)
+b = get(f"http://{svc}.internal/x")
+c = get("http://" + name + "/x")
+d = get("http://{{ .Values.host }}/x")
+e = get("http://${HOST}:8080/x")
+"#;
+        assert!(
+            found("src/a.py", text).is_empty(),
+            "{:?}",
+            found("src/a.py", text)
+        );
     }
 
     #[test]
