@@ -7,6 +7,8 @@ has: repositories, manifests, infrastructure code, cloud accounts and telemetry.
 This page explains the layers, the methods used in each, and the reasoning. Individual
 decisions live in [`docs/decisions/`](decisions/); naming rules in [`naming.md`](naming.md).
 
+For the construction details (types, rules, tools) see [`graph-construction.md`](graph-construction.md).
+
 ## The shape in one picture
 
 ```text
