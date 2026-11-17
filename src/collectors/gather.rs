@@ -369,6 +369,94 @@ fn records_from_file(project_path: &str, path: &str, text: &str) -> Vec<RawRecor
         }
     }
     records.extend(candidate_records(text));
+    records.extend(gateway_records(text));
+    records
+}
+
+/// Gateways read from Kubernetes `Ingress` and Gateway API `HTTPRoute` objects.
+///
+/// Each becomes a `gateway` node with a `routes_to` edge to every service it
+/// forwards to. The manifest is a declaration, so these are not candidates.
+#[must_use]
+pub fn gateway_records(text: &str) -> Vec<RawRecord> {
+    let mut records = Vec::new();
+    for doc in text.split("\n---\n") {
+        let Ok(value) = yaml_serde::from_str::<serde_json::Value>(doc) else {
+            continue;
+        };
+        let kind = value.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(name) = value
+            .pointer("/metadata/name")
+            .and_then(|v| v.as_str())
+            .filter(|name| crate::ids::is_kebab_case(name))
+        else {
+            continue;
+        };
+        let mut backends: Vec<String> = Vec::new();
+        match kind {
+            "Ingress" => {
+                let spec = value.get("spec").unwrap_or(&serde_json::Value::Null);
+                if let Some(name) = spec
+                    .pointer("/defaultBackend/service/name")
+                    .and_then(|v| v.as_str())
+                {
+                    backends.push(name.to_owned());
+                }
+                for rule in spec
+                    .get("rules")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                {
+                    for path in rule
+                        .pointer("/http/paths")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(name) = path
+                            .pointer("/backend/service/name")
+                            .and_then(|v| v.as_str())
+                        {
+                            backends.push(name.to_owned());
+                        }
+                    }
+                }
+            }
+            "HTTPRoute" | "GRPCRoute" => {
+                for rule in value
+                    .pointer("/spec/rules")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                {
+                    for backend in rule
+                        .get("backendRefs")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(name) = backend.get("name").and_then(|v| v.as_str()) {
+                            backends.push(name.to_owned());
+                        }
+                    }
+                }
+            }
+            _ => continue,
+        }
+        backends.sort();
+        backends.dedup();
+        for backend in backends {
+            if crate::ids::is_kebab_case(&backend) {
+                records.push(record(
+                    "k8s_workloads",
+                    "resource_link",
+                    json!({"edge": "routes_to", "from_kind": "gateway", "from": name,
+                           "to_kind": "component", "to": backend}),
+                ));
+            }
+        }
+    }
     records
 }
 
@@ -835,6 +923,24 @@ struct FixtureDeployment {
 
 #[cfg(test)]
 mod manifest_selection_tests {
+    #[test]
+    fn ingress_and_http_route_become_gateways_with_routes() {
+        let text = "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: edge\nspec:\n  defaultBackend:\n    service:\n      name: web\n  rules:\n    - http:\n        paths:\n          - backend:\n              service:\n                name: api\n---\napiVersion: gateway.networking.k8s.io/v1\nkind: HTTPRoute\nmetadata:\n  name: mesh-route\nspec:\n  rules:\n    - backendRefs:\n        - name: api\n";
+        let mut found: Vec<String> = gateway_records(text)
+            .iter()
+            .map(|r| format!("{}->{}", r.payload["from"], r.payload["to"]))
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                "\"edge\"->\"api\"",
+                "\"edge\"->\"web\"",
+                "\"mesh-route\"->\"api\""
+            ]
+        );
+    }
+
     use super::*;
     use crate::gitlab::TreeItem;
 

@@ -136,6 +136,8 @@ pub enum EdgeType {
     PublishesTo,
     /// Component consumes from a topic or queue.
     ConsumesFrom,
+    /// A gateway, ingress or load balancer forwards traffic to a service.
+    RoutesTo,
 }
 
 impl EdgeType {
@@ -153,6 +155,7 @@ impl EdgeType {
             Self::UsesLibrary => "uses_library",
             Self::PublishesTo => "publishes_to",
             Self::ConsumesFrom => "consumes_from",
+            Self::RoutesTo => "routes_to",
         }
     }
 }
@@ -470,6 +473,7 @@ mod tests {
             EdgeType::UsesLibrary,
             EdgeType::PublishesTo,
             EdgeType::ConsumesFrom,
+            EdgeType::RoutesTo,
         ];
         for edge_type in types {
             let json = serde_json::to_string(&edge_type).unwrap();
