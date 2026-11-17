@@ -33,6 +33,15 @@ tuned on it. The value is the next system. The first Boutique run found 0 nodes
 (workloads without an `app.kubernetes.io/name` label were ignored) and one false
 call from a documentation link in a message string; both are fixed and now guarded.
 
+## Precision traps
+
+Benchmarks mostly measure recall. Precision is guarded by small `trap_*` tests in
+`src/collectors/source.rs`: code that *mentions* a service without calling it must
+produce nothing. They cover trailing and block comments, docstrings, placeholder and
+local hosts, generated and mock files, dead-letter queues and templated names, plus a
+guard that real calls beside those constructs are still found. When a real run shows a
+false edge, add the smallest trap that reproduces it, then fix the scanner.
+
 ## Adding a system
 
 1. Copy the services' source and manifests into `tests/fixtures/benchmarks/<name>/services/<service>/`
