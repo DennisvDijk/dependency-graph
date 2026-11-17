@@ -158,7 +158,33 @@ fn component_set(graph: &GraphSnapshot, target: Option<&str>) -> Vec<String> {
     }
 }
 
-fn render_scored(format: OutputFormat, visits: &[crate::score::ScoredVisit]) -> String {
+/// The `owner` attribute of a node, or an empty string.
+fn owner_of(graph: &GraphSnapshot, id: &str) -> String {
+    graph
+        .nodes
+        .iter()
+        .find(|node| node.id == id)
+        .and_then(|node| node.attrs.get("owner"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// Distinct owners of the impacted components, sorted. Who to tell.
+fn affected_owners(graph: &GraphSnapshot, visits: &[crate::score::ScoredVisit]) -> Vec<String> {
+    let owners: std::collections::BTreeSet<String> = visits
+        .iter()
+        .map(|visit| owner_of(graph, &visit.id))
+        .filter(|owner| !owner.is_empty())
+        .collect();
+    owners.into_iter().collect()
+}
+
+fn render_scored(
+    format: OutputFormat,
+    visits: &[crate::score::ScoredVisit],
+    graph: &GraphSnapshot,
+) -> String {
     match format {
         OutputFormat::Json => serde_json::to_string_pretty(&json!({
             "visits": visits.iter().map(|visit| json!({
@@ -167,7 +193,9 @@ fn render_scored(format: OutputFormat, visits: &[crate::score::ScoredVisit]) -> 
                 "links": visit.links,
                 "hub": visit.links >= algo::HUB_LINKS,
                 "path_score": visit.path_score,
-            })).collect::<Vec<_>>()
+                "owner": owner_of(graph, &visit.id),
+            })).collect::<Vec<_>>(),
+            "owners": affected_owners(graph, visits),
         }))
         .unwrap_or_else(|_| "{}".into()),
         OutputFormat::Mermaid => {
@@ -178,7 +206,7 @@ fn render_scored(format: OutputFormat, visits: &[crate::score::ScoredVisit]) -> 
             lines.join("\n")
         }
         OutputFormat::Table => {
-            let mut lines = vec!["depth\tpath_score\tid\tlinks\thub".to_owned()];
+            let mut lines = vec!["depth\tpath_score\tid\tlinks\thub\towner".to_owned()];
             for visit in visits {
                 let hub = if visit.links >= algo::HUB_LINKS {
                     "hub"
@@ -186,9 +214,17 @@ fn render_scored(format: OutputFormat, visits: &[crate::score::ScoredVisit]) -> 
                     ""
                 };
                 lines.push(format!(
-                    "{}\t{:.3}\t{}\t{}\t{hub}",
-                    visit.depth, visit.path_score, visit.id, visit.links
+                    "{}\t{:.3}\t{}\t{}\t{hub}\t{}",
+                    visit.depth,
+                    visit.path_score,
+                    visit.id,
+                    visit.links,
+                    owner_of(graph, &visit.id)
                 ));
+            }
+            let owners = affected_owners(graph, visits);
+            if !owners.is_empty() {
+                lines.push(format!("owners to tell: {}", owners.join(", ")));
             }
             lines.join("\n")
         }
@@ -438,7 +474,7 @@ pub fn impact(request: &ReadRequest) -> Result<(), Error> {
         .and_then(|project| project.config.scoring.hardness().ok())
         .unwrap_or_default();
     let ranked = crate::score::ranked_impact(&graph, name, request.env, hardness)?;
-    println!("{}", render_scored(request.format, &ranked));
+    println!("{}", render_scored(request.format, &ranked, &graph));
     Ok(())
 }
 

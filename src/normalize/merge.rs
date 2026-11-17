@@ -105,6 +105,9 @@ pub fn merge_records(
     let mut heuristics: BTreeMap<String, bool> = BTreeMap::new();
     let mut experiments: BTreeMap<(String, String), bool> = BTreeMap::new();
     let mut owners: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let mut lifecycles: BTreeMap<String, String> = BTreeMap::new();
+    // Team name -> the group it belongs to (a department), from `Group` entities.
+    let mut team_parents: BTreeMap<String, String> = BTreeMap::new();
     // GitLab project path -> components defined in it. A manifest resource
     // without its own workload label belongs to the component of its repo.
     let mut project_components: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -160,8 +163,19 @@ pub fn merge_records(
                 }
                 let owner = text_field(&record.payload, "owner");
                 let system = text_field(&record.payload, "system");
+                let lifecycle = text_field(&record.payload, "lifecycle");
+                if !lifecycle.is_empty() {
+                    lifecycles.entry(name.clone()).or_insert(lifecycle);
+                }
                 if !owner.is_empty() || !system.is_empty() {
                     owners.entry(name).or_insert((owner, system));
+                }
+            }
+            "team" => {
+                let team = text_field(&record.payload, "name");
+                let parent = text_field(&record.payload, "parent");
+                if !team.is_empty() && !parent.is_empty() && team != parent {
+                    team_parents.entry(team).or_insert(parent);
                 }
             }
             "chaos_experiment" => {
@@ -454,6 +468,18 @@ pub fn merge_records(
             if !system.is_empty() {
                 attrs.insert("system".into(), serde_json::Value::String(system.clone()));
             }
+            if let Some(department) = team_parents.get(owner) {
+                attrs.insert(
+                    "department".into(),
+                    serde_json::Value::String(department.clone()),
+                );
+            }
+        }
+        if let Some(lifecycle) = lifecycles.get(name) {
+            attrs.insert(
+                "lifecycle".into(),
+                serde_json::Value::String(lifecycle.clone()),
+            );
         }
         nodes.push(Node {
             id: ids::component_id(name).map_err(Error::Validation)?,
@@ -1984,5 +2010,42 @@ mod tests {
         assert!(!merged.aliases.contains_key("mystery"));
         // `billing-svc` already finds `billing` by its own name.
         assert!(!merged.aliases.contains_key("billing-svc"));
+    }
+
+    #[test]
+    fn owner_department_and_lifecycle_land_on_the_component() {
+        let record = |kind: &str, payload: serde_json::Value| RawRecord {
+            collector: "gitlab_inventory".to_owned(),
+            kind: kind.to_owned(),
+            payload,
+        };
+        let records = vec![
+            record(
+                "component",
+                serde_json::json!({"name": "billing", "owner": "team-payments", "lifecycle": "production"}),
+            ),
+            record(
+                "team",
+                serde_json::json!({"name": "team-payments", "parent": "finance"}),
+            ),
+        ];
+        let generated_at = Timestamp::parse("2026-01-15T00:00:00Z").unwrap();
+        let built = merge_records(
+            &records,
+            &MergeOptions {
+                aliases: &Aliases::default(),
+                environments: &EnvIndex::default(),
+                generated_at: &generated_at,
+                run_id: "t",
+                libraries_enabled: false,
+                edge_expiry_days: 30,
+                retention_days: 90,
+            },
+        )
+        .unwrap();
+        let node = &built.graph.nodes[0];
+        assert_eq!(node.attrs["owner"], "team-payments");
+        assert_eq!(node.attrs["department"], "finance");
+        assert_eq!(node.attrs["lifecycle"], "production");
     }
 }

@@ -108,6 +108,8 @@ same id and diffs between runs are meaningful.
 
 Types are grouped into families in one place (`EdgeType::class()`, `ResourceKind::family()`), so adding a type forces a decision about how it behaves. The families are listed in [`naming.md`](naming.md).
 
+**Ownership.** Each team keeps its own list, so depgraph does not try to unify the lists; it reads the owner each one names. From `catalog-info.yaml` a component gets `owner` (a reference such as `group:default/Team-Payments` is reduced to `team-payments`), `system` and `lifecycle`. A `Group` entity with a `parent` gives the owner's `department`. These are attributes, not nodes, so the closed vocabulary stays closed. `depgraph impact` lists the owner of each affected component and ends with the distinct owners to tell. A component whose owner is missing shows an empty owner, and the scorecard counts it under `(none)`.
+
 *Why keep evidence on the edge:* "declared", "observed" and "guessed" answer different
 questions. Drift is the gap between declared and observed. Impact should say how sure it is.
 
@@ -179,4 +181,4 @@ See [`benchmarks.md`](benchmarks.md). The honest gap: nothing replaces running
 - GitLab release and CI pipelines, and the live AWS/Azure calls, are tested on fixtures and saved CLI output, not on a real runner or account.
 - Service meshes other than Istio telemetry, and Terraform/CloudFormation load balancers, are not read.
 - Computed queue names are not read. Application code that names a dead-letter queue is not treated as publishing to it.
-- Ownership, API contracts (OpenAPI, AsyncAPI, protobuf) and environments as nodes are not modelled yet.
+- Ownership is an attribute of a component (`owner`, `department`, `lifecycle`), not a node. API contracts (OpenAPI, AsyncAPI, protobuf) and environments as nodes are not modelled yet.
