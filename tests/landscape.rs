@@ -116,6 +116,7 @@ fn every_node_is_expected() {
         "deployment:orders-py@acc",
         "deployment:orders-py@prod",
         "resource:database:orders-db",
+        "resource:queue:notify-jobs",
         "resource:topic:order-events",
         "resource:database:redis-cache",
         "resource:external-api:api-openai-com",
@@ -182,6 +183,8 @@ fn every_edge_is_expected() {
         // billing-ex consumes the topic. Literal names only.
         "publishes_to component:orders-py -> resource:topic:order-events - candidate unknown static",
         "consumes_from component:billing-ex -> resource:topic:order-events - candidate unknown static",
+        "consumes_from component:notifications -> resource:queue:notify-jobs - candidate unknown static",
+        "consumes_from resource:queue:notify-jobs -> resource:topic:order-events - candidate unknown static",
         "candidate_calls component:orders-py -> component:billing-ex - candidate unknown static",
         "candidate_calls component:orders-py -> component:notifications - candidate soft static",
         // GitLab deployments; `staging` maps to acc.

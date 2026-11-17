@@ -21,6 +21,22 @@ pub struct Visit {
     pub id: String,
     /// Distance from the start. The start itself is not included.
     pub depth: usize,
+    /// How many other nodes this one is linked to by dependency edges, in
+    /// either direction. It follows the `--env` filter, so a node can be a hub
+    /// in all environments and not in one.
+    pub links: usize,
+}
+
+/// From this many links a node is a hub: a shared database, a platform
+/// repository. Impact through a hub is real but says little about one change.
+pub const HUB_LINKS: usize = 20;
+
+impl Visit {
+    /// Whether the node is connected to so much that impact through it is broad.
+    #[must_use]
+    pub fn is_hub(&self) -> bool {
+        self.links >= HUB_LINKS
+    }
 }
 
 /// A deploy order, or the cycles that blocked one.
@@ -308,12 +324,25 @@ fn walk(
             visits.push(Visit {
                 id: indexed.graph[neighbor].clone(),
                 depth: next,
+                links: indexed.links(neighbor),
             });
             queue.push_back((neighbor, next));
         }
     }
     visits.sort_by(|left, right| left.depth.cmp(&right.depth).then(left.id.cmp(&right.id)));
     Ok(visits)
+}
+
+impl Indexed {
+    /// Distinct other nodes this node is linked to, in either direction.
+    /// Parallel edges and self-loops count once and not at all.
+    fn links(&self, node: NodeIndex) -> usize {
+        self.undirected
+            .neighbors(node)
+            .filter(|other| *other != node)
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
 }
 
 struct Indexed {
@@ -641,7 +670,8 @@ mod tests {
             direct,
             vec![Visit {
                 id: "component:b".into(),
-                depth: 1
+                depth: 1,
+                links: 2
             }]
         );
         let deep = dependencies(&graph, "a", Some(Env::Prod), None).unwrap();
@@ -771,5 +801,20 @@ mod tests {
         let before = Timestamp::parse("2025-01-01T00:00:00Z").unwrap();
         assert!(edges_at(&left, &before).is_empty());
         assert_eq!(library_impact_disabled(), "libraries disabled");
+    }
+
+    #[test]
+    fn links_count_distinct_neighbours_and_flag_hubs() {
+        let visit = |links| Visit {
+            id: "resource:database:shared".into(),
+            depth: 1,
+            links,
+        };
+        assert!(!visit(HUB_LINKS - 1).is_hub());
+        assert!(visit(HUB_LINKS).is_hub());
+        let graph = fixture();
+        let indexed = index(&graph, Some(Env::Prod), dependency_edge);
+        let b = indexed.ids["component:b"];
+        assert_eq!(indexed.links(b), 2);
     }
 }

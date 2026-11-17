@@ -96,6 +96,7 @@ pub fn merge_records(
     let mut live_workloads: BTreeMap<String, Value> = BTreeMap::new();
     let mut candidates: Vec<CandidateCall> = Vec::new();
     let mut messages: Vec<Message> = Vec::new();
+    let mut links: Vec<ResourceLink> = Vec::new();
     // Service or function name -> names of the container images it runs.
     let mut image_hints: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut soft_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -330,6 +331,14 @@ pub fn merge_records(
                     name: required_str(&record.payload, "name")?.to_owned(),
                 });
             }
+            "resource_link" => {
+                links.push(ResourceLink {
+                    from_kind: required_str(&record.payload, "from_kind")?.to_owned(),
+                    from: required_str(&record.payload, "from")?.to_owned(),
+                    to_kind: required_str(&record.payload, "to_kind")?.to_owned(),
+                    to: required_str(&record.payload, "to")?.to_owned(),
+                });
+            }
             "project_facts" => {
                 let project_path = text_field(&record.payload, "project_path");
                 let entry = stacks.entry(project_path).or_default();
@@ -378,6 +387,7 @@ pub fn merge_records(
         observed: &observed,
         candidates: &candidates,
         messages: &messages,
+        links: &links,
         components: &components,
         resources: &mut resources,
         inferred: &mut inferred,
@@ -1139,6 +1149,14 @@ struct Message {
     name: String,
 }
 
+/// A queue that receives from a topic, found in the infrastructure templates.
+struct ResourceLink {
+    from_kind: String,
+    from: String,
+    to_kind: String,
+    to: String,
+}
+
 struct CandidateCall {
     source: String,
     destination: String,
@@ -1235,6 +1253,7 @@ struct RuntimeBuild<'a> {
     observed: &'a BTreeMap<ObservedKey, ObservedAgg>,
     candidates: &'a [CandidateCall],
     messages: &'a [Message],
+    links: &'a [ResourceLink],
     components: &'a BTreeMap<String, BTreeSet<String>>,
     resources: &'a mut BTreeMap<(String, String), String>,
     inferred: &'a mut BTreeSet<String>,
@@ -1249,6 +1268,7 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
         observed,
         candidates,
         messages,
+        links,
         components,
         resources,
         inferred,
@@ -1504,6 +1524,31 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
         edge.id = ids::edge_id(edge_type, &edge.from_id, &edge.to_id, None);
         if let Some(source) = edge.sources.first_mut() {
             source.evidence_ref = Some("source".to_owned());
+        }
+        edges.push(edge);
+    }
+    for link in links.iter() {
+        let mut ids_of = Vec::new();
+        for (kind, name) in [(&link.from_kind, &link.from), (&link.to_kind, &link.to)] {
+            let name = loose_match(
+                name,
+                |candidate| resources.contains_key(&(kind.clone(), candidate.to_owned())),
+                aliases,
+                environments,
+            )
+            .unwrap_or_else(|| name.clone());
+            let id = format!("resource:{kind}:{name}");
+            if !resources.contains_key(&(kind.clone(), name.clone())) {
+                resources.insert((kind.clone(), name), "iac".to_owned());
+                inferred.insert(id.clone());
+            }
+            ids_of.push(id);
+        }
+        let mut edge = candidate_edge(&ids_of[0], &ids_of[1], None, generated_at);
+        edge.edge_type = EdgeType::ConsumesFrom;
+        edge.id = ids::edge_id(edge.edge_type, &edge.from_id, &edge.to_id, None);
+        if let Some(source) = edge.sources.first_mut() {
+            source.evidence_ref = Some("iac".to_owned());
         }
         edges.push(edge);
     }

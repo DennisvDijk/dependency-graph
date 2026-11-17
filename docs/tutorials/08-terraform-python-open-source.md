@@ -95,6 +95,20 @@ Queues and topics are nodes (`resource:queue:…`, `resource:topic:…`). **A ch
 
 What it does not do: guess a name built at run time (`f"http://{host}/x"`, `"orders-" + env`), read tests, vendored code or files over 400 KB, or tell publish from consume when the code around a queue name gives no sign. At most 100 files are read per repository, and files that look like integration code (clients, consumers, producers, workers, config) come first. Everything found this way is a **candidate**, never an observation. See [ADR-014](../decisions/ADR-014-broncode-en-berichten.md).
 
+### Queues and topics in Terraform and CloudFormation
+
+The template itself also says who is connected, so a link does not depend on code being readable:
+
+| In the template | What you get |
+|---|---|
+| `aws_sqs_queue`, `aws_sns_topic` (`AWS::SQS::Queue`, `AWS::SNS::Topic`) | queue and topic nodes |
+| `aws_lambda_event_source_mapping` (`AWS::Lambda::EventSourceMapping`) | the function `consumes_from` the queue |
+| `aws_sns_topic_subscription` with `protocol = "sqs"` | the queue receives from the topic, so impact flows topic → queue → its reader |
+| the same with `protocol = "lambda"` | the function `consumes_from` the topic |
+| a function or ECS task whose settings reference a topic, or a queue somebody reads | `publishes_to` it |
+
+Only references are followed (`aws_sns_topic.events.arn`, `!Ref Events`), not names assembled at run time. A queue referenced in settings counts as a destination only when something reads it. Everything is a candidate.
+
 The repository name is the service name (`team/orders-py` → `orders-py`); add a line to `config/aliases.yaml` when they differ.
 
 ## Firewall rules
@@ -243,6 +257,7 @@ The build prints one hint, for the `qa` namespace, which the sample leaves unmap
 
 - **Python, npm or other package dependencies** (who uses library X at version Y). Libraries are switched off on purpose (ADR-001 question 8, ADR-009), so `depgraph library-impact` answers `libraries disabled`. If you need this, it is a new phase: read `requirements.txt` / `pyproject.toml` / SBOMs and turn libraries back on.
 - **Individual Terraform resources as nodes.** One node per repo, by design; only security groups, images, database settings and local modules feed the graph.
+- **Gateways, load balancers and meshes as hops**, and **API or event contracts** (OpenAPI, AsyncAPI, protobuf).
 - **Reading source by meaning.** Only literal names are read; a name built from variables, or a call hidden behind your own wrapper, is not followed.
 - **Registry and Git Terraform modules**, `for_each` / `count`, map-driven inputs and values from another module's outputs.
 - **Firewall formats other than `kind: FirewallRule` YAML and AWS security groups** (AWS Network Firewall domain lists, WAF, NACLs). Send a sample.
