@@ -17,6 +17,7 @@ mod flow_logs;
 mod gather;
 mod gitlab_deployments;
 mod gitlab_inventory;
+mod hcl;
 mod k8s_workloads;
 mod kubernetes_live;
 mod runtime_edges;

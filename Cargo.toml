@@ -33,6 +33,7 @@ petgraph = "0.8"
 jsonwebtoken = "9"
 axum = "0.8"
 clap_complete = "4"
+hcl-edit = "0.10.0"
 
 [dev-dependencies]
 assert_cmd = "2"
