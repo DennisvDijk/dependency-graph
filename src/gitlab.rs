@@ -181,10 +181,10 @@ pub fn resolve_token(base_url: &str) -> Result<String, Error> {
         }
     }
     let host = gitlab_host(base_url)?;
-    let output = Command::new("glab")
-        .args(["config", "get", "token", "--host", &host])
-        .output()
-        .map_err(|_| {
+    let output = crate::proc::output(
+        Command::new("glab").args(["config", "get", "token", "--host", &host]),
+    )
+    .map_err(|_| {
             Error::GitLab(
                 "GitLab token not found. Set GITLAB_TOKEN or run `glab auth login`. depgraph does not store the token."
                     .to_owned(),

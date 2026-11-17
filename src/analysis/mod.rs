@@ -171,7 +171,10 @@ fn owner_of(graph: &GraphSnapshot, id: &str) -> String {
 }
 
 /// Distinct owners of the impacted components, sorted. Who to tell.
-fn affected_owners(graph: &GraphSnapshot, visits: &[crate::score::ScoredVisit]) -> Vec<String> {
+pub(crate) fn affected_owners(
+    graph: &GraphSnapshot,
+    visits: &[crate::score::ScoredVisit],
+) -> Vec<String> {
     let owners: std::collections::BTreeSet<String> = visits
         .iter()
         .map(|visit| owner_of(graph, &visit.id))

@@ -1,0 +1,7 @@
+{
+  "name": "depgraph",
+  "description": "Service dependency graph: what depends on this and what breaks if I change it. Skill, slash command and MCP tools.",
+  "version": "0.1.0",
+  "homepage": "https://github.com/DennisvDijk/dependency-graph",
+  "repository": "https://github.com/DennisvDijk/dependency-graph"
+}

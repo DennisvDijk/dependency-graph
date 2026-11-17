@@ -30,9 +30,7 @@ fn safe_context(value: &str) -> Option<&str> {
     }
 }
 fn kubectl(args: &[&str]) -> Result<String, Error> {
-    let output = Command::new("kubectl")
-        .args(args)
-        .output()
+    let output = crate::proc::output(Command::new("kubectl").args(args))
         .map_err(|_| Error::Config("cannot run kubectl; install it and select a context".into()))?;
     if !output.status.success() {
         return Err(Error::Config(format!(

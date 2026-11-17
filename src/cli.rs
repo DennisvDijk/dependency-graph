@@ -102,6 +102,10 @@ pub enum Command {
     McpConfig(McpConfigArgs),
     /// Print a shell completion script.
     Completions(CompletionArgs),
+    /// Install the agent skill for Claude Code, OpenCode, Pi and others.
+    Skill(SkillArgs),
+    /// Exit 0 when the MCP server answers. For container health checks.
+    Healthcheck(HealthcheckArgs),
     /// List archived snapshot runs.
     Runs(RunsArgs),
     /// Delete archived runs older than retention_days.
@@ -249,6 +253,10 @@ pub struct ServeMcpArgs {
     /// Disable auth. The bind address must be loopback.
     #[arg(long)]
     pub insecure_local: bool,
+    /// Talk MCP over standard input and output instead of HTTP. For agents
+    /// that start the server themselves (Claude Code, OpenCode, Pi, Cursor).
+    #[arg(long, conflicts_with_all = ["bind", "insecure_local"])]
+    pub stdio: bool,
     /// Listen address. Defaults to `mcp.bind`.
     #[arg(long)]
     pub bind: Option<String>,
@@ -361,6 +369,81 @@ pub struct EvalArgs {
 pub struct McpConfigArgs {
     /// `cursor`, `claude`, `vscode`, or `opencode`.
     pub client: String,
+}
+
+/// `depgraph healthcheck`.
+#[derive(Debug, clap::Args)]
+pub struct HealthcheckArgs {
+    /// Address to probe.
+    #[arg(long, default_value = "http://127.0.0.1:8080/healthz")]
+    pub url: String,
+}
+
+fn run_healthcheck(args: HealthcheckArgs) -> Result<(), Error> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let status = runtime.block_on(async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .map_err(|err| err.to_string())?;
+        client
+            .get(&args.url)
+            .send()
+            .await
+            .map(|response| response.status())
+            .map_err(|_| "no answer".to_owned())
+    });
+    match status {
+        Ok(status) if status.is_success() => Ok(()),
+        Ok(status) => Err(Error::Config(format!("health check returned {status}"))),
+        Err(err) => Err(Error::Config(format!("health check failed: {err}"))),
+    }
+}
+
+/// `depgraph skill`.
+#[derive(Debug, clap::Args)]
+pub struct SkillArgs {
+    #[command(subcommand)]
+    pub action: SkillAction,
+}
+
+/// What to do with the skill.
+#[derive(Debug, Subcommand)]
+pub enum SkillAction {
+    /// Copy the skill to where your coding agents read skills.
+    Install(SkillInstallArgs),
+    /// Remove a skill that `skill install` wrote.
+    Uninstall(SkillInstallArgs),
+    /// Show where each agent reads skills and whether the skill is there.
+    List,
+    /// Print the skill's main file.
+    Print,
+}
+
+/// Where to put (or remove) the skill.
+#[derive(Debug, clap::Args)]
+pub struct SkillInstallArgs {
+    /// Agents to target. Default: the ones found on this machine, else the
+    /// shared `.agents/skills` folder.
+    #[arg(long, value_enum, value_delimiter = ',')]
+    pub agent: Vec<crate::skill::Agent>,
+    /// Every known agent folder.
+    #[arg(long, conflicts_with = "agent")]
+    pub all: bool,
+    /// Install into this project (`.claude/skills`, ...) instead of your home.
+    #[arg(long, conflicts_with = "dir")]
+    pub project: bool,
+    /// Skills folder to use instead of the agents' own.
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
+    /// Replace a folder of the same name that depgraph did not write.
+    #[arg(long)]
+    pub force: bool,
+    /// Say what would happen; write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// `depgraph completions`.
@@ -730,6 +813,8 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::Report(args) => run_report(args),
         Command::McpConfig(args) => run_mcp_config(args),
         Command::Completions(args) => run_completions(args),
+        Command::Skill(args) => run_skill(args),
+        Command::Healthcheck(args) => run_healthcheck(args),
         Command::Runs(args) => run_runs(args),
         Command::Retain(args) => run_retain(args),
         Command::Timeline(args) => run_timeline(args),
@@ -1591,6 +1676,9 @@ fn run_serve_mcp(args: ServeMcpArgs) -> Result<(), Error> {
         .snapshot
         .unwrap_or_else(|| PathBuf::from("data/snapshot.json"));
     let (policy, jwks) = crate::mcp::policy_from_config(&project.config)?;
+    if args.stdio {
+        return crate::mcp::serve_stdio(policy, &snapshot, project.aliases);
+    }
     if args.insecure_local {
         eprintln!("next: depgraph mcp-config cursor");
     }
@@ -1806,6 +1894,110 @@ fn run_mcp_config(args: McpConfigArgs) -> Result<(), Error> {
         eprintln!("next: depgraph serve-mcp --insecure-local --snapshot data/snapshot.json");
     }
     Ok(())
+}
+
+fn skill_targets(args: &SkillInstallArgs) -> Result<Vec<(String, PathBuf)>, Error> {
+    use crate::skill::Agent;
+    if let Some(dir) = &args.dir {
+        return Ok(vec![("custom".to_owned(), dir.clone())]);
+    }
+    let home = crate::skill::home_dir()?;
+    let project = if args.project {
+        Some(std::env::current_dir()?)
+    } else {
+        None
+    };
+    let agents: Vec<Agent> = if args.all {
+        Agent::ALL.to_vec()
+    } else if args.agent.is_empty() {
+        if project.is_some() {
+            vec![Agent::Agents]
+        } else {
+            crate::skill::detect(&home)
+        }
+    } else {
+        args.agent.clone()
+    };
+    Ok(agents
+        .into_iter()
+        .map(|agent| {
+            (
+                agent.label().to_owned(),
+                agent.skills_dir(&home, project.as_deref()),
+            )
+        })
+        .collect())
+}
+
+fn run_skill(args: SkillArgs) -> Result<(), Error> {
+    use crate::skill::{self, Outcome};
+    match args.action {
+        SkillAction::Print => {
+            print!("{}", skill::skill_md());
+            Ok(())
+        }
+        SkillAction::List => {
+            let home = skill::home_dir()?;
+            let project = std::env::current_dir()?;
+            for (scope, root) in [("user", None), ("project", Some(project.as_path()))] {
+                for agent in skill::Agent::ALL {
+                    let dir = agent.skills_dir(&home, root).join(skill::NAME);
+                    let state = if dir.join("SKILL.md").is_file() {
+                        "installed"
+                    } else {
+                        "-"
+                    };
+                    println!(
+                        "{scope:<8}{:<10}{state:<11}{}",
+                        agent.label(),
+                        dir.display()
+                    );
+                }
+            }
+            Ok(())
+        }
+        SkillAction::Install(args) => {
+            let mut refused = false;
+            for (label, dir) in skill_targets(&args)? {
+                let done = skill::install(&dir, args.force, args.dry_run)?;
+                let verb = match (&done.outcome, args.dry_run) {
+                    (Outcome::Installed, false) => "installed",
+                    (Outcome::Updated, false) => "updated",
+                    (Outcome::Installed, true) => "would install",
+                    (Outcome::Updated, true) => "would update",
+                    (Outcome::Current, _) => "already current",
+                    (Outcome::Refused, _) => {
+                        refused = true;
+                        "skipped (a folder not written by depgraph is there; --force replaces it)"
+                    }
+                };
+                println!("{label:<9}{verb}: {}", done.path.display());
+            }
+            if refused {
+                return Err(Error::Usage("some targets were skipped\n".to_owned()));
+            }
+            if !args.dry_run {
+                println!("next: restart your agent, then ask it what depends on a service.");
+            }
+            Ok(())
+        }
+        SkillAction::Uninstall(args) => {
+            for (label, dir) in skill_targets(&args)? {
+                let removed = if args.dry_run {
+                    dir.join(skill::NAME).exists()
+                } else {
+                    skill::uninstall(&dir, args.force)?
+                };
+                let verb = match (removed, args.dry_run) {
+                    (true, false) => "removed",
+                    (true, true) => "would remove",
+                    (false, _) => "not installed",
+                };
+                println!("{label:<9}{verb}: {}", dir.join(skill::NAME).display());
+            }
+            Ok(())
+        }
+    }
 }
 
 fn run_completions(args: CompletionArgs) -> Result<(), Error> {

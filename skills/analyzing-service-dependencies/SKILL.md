@@ -1,6 +1,10 @@
 ---
 name: analyzing-service-dependencies
 description: Answers "what depends on this and what breaks if I change it?" with the depgraph CLI. Finds consumers, dependencies, blast radius, owners to notify, deploy order, cycles and drift for services, queues, databases and gateways, and builds or refreshes the graph when none exists. Use when the user asks about dependencies, impact of a change, who to tell before a release, deploy order, or mentions depgraph, a service graph or snapshot.json.
+compatibility: Needs the depgraph binary on PATH and a snapshot (data/snapshot.json). Works offline once the snapshot exists.
+metadata:
+  version: "1.0"
+  source: https://github.com/DennisvDijk/dependency-graph
 ---
 
 # Analyzing service dependencies with depgraph
@@ -44,9 +48,9 @@ Names are kebab-case component names (`payments-api`). If the name is not found,
 1. **Say who to tell.** `impact` ends with `owners to tell:`. Report those owners. An empty owner means the catalog file names none; say so rather than guessing.
 2. **Say how sure each tie is.** Ties marked `candidate` come from reading source code and are suggestions, not facts. `declared_only` means a file says so but no traffic was seen. `observed_only` means traffic but no declaration. `both` is strongest. Never present a `candidate` as certain.
 3. **Flag hubs.** A `hub` is linked to many things; a change there reaches far.
-4. **Say what the graph cannot see.** If the answer is empty or small, check coverage first (see [reference/limits.md](reference/limits.md)) before saying "nothing depends on it".
+4. **Say what the graph cannot see.** If the answer is empty or small, check coverage first (see [references/limits.md](references/limits.md)) before saying "nothing depends on it".
 
-Details of statuses, scores and what each edge type means: [reference/reading-results.md](reference/reading-results.md).
+Details of statuses, scores and what each edge type means: [references/reading-results.md](references/reading-results.md).
 
 ## Building the graph
 
@@ -62,7 +66,7 @@ Run in this order. Stop and report if a step fails; do not continue on a broken 
 
 `discover` without `--repos-only` may call Kubernetes, Prometheus, AWS or Azure. Those are opt-in flags (`--kubernetes`, `--prometheus`, `--aws`, `--azure`) and read-only. Add one only when the user asked for it or already uses it. Never ask for, paste or store tokens in chat; the user sets credentials in their environment.
 
-Collect and build separately when the user wants control: [reference/commands.md](reference/commands.md).
+Collect and build separately when the user wants control: [references/commands.md](references/commands.md).
 
 ## When the result looks wrong
 
@@ -76,4 +80,4 @@ Collect and build separately when the user wants control: [reference/commands.md
 - Do not run `publish`, `mr-check` or `retain` unless asked; they write to GitLab or delete archived runs.
 - Share `depgraph report` output, not raw `data/raw/` files, which may contain internal hostnames.
 
-More: [reference/commands.md](reference/commands.md), [reference/reading-results.md](reference/reading-results.md), [reference/limits.md](reference/limits.md).
+More: [references/commands.md](references/commands.md), [references/reading-results.md](references/reading-results.md), [references/limits.md](references/limits.md).

@@ -1,2 +1,18 @@
+# Keep the build context small and free of local state or secrets.
 target
 .git
+.github
+.gitlab
+data
+public
+benchmark-report.txt
+*.log
+.env
+.env.*
+*.pem
+*.key
+kubeconfig*
+**/.DS_Store
+tests
+docs
+packaging

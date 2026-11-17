@@ -79,3 +79,7 @@ depgraph caches the JWKS and fetches it again when it sees an unknown `kid`, so 
 `component_context` takes a component name or alias and returns the GitLab project path, web URL, default branch, catalog path, manifest paths, owner, and the direct dependencies and consumers. Agents should call it before opening the repository.
 
 `library_impact` returns `libraries disabled`.
+
+## Without a server: stdio
+
+Agents that start their own tools can run `depgraph serve-mcp --stdio`. No port, no token: the agent's process is the trust boundary. Details and per-agent config in [agents.md](agents.md).

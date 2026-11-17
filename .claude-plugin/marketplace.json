@@ -1,0 +1,11 @@
+{
+  "name": "depgraph",
+  "owner": { "name": "DennisvDijk" },
+  "plugins": [
+    {
+      "name": "depgraph",
+      "source": "./",
+      "description": "Service dependency graph for coding agents: skill, /depgraph:impact command and MCP tools. Needs the depgraph binary on PATH."
+    }
+  ]
+}
