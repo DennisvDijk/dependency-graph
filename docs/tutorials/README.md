@@ -1,6 +1,6 @@
 # depgraph tutorials
 
-depgraph answers one question well: **what depends on what, at runtime, in dev, acc and prod?** It reads your GitLab repos, whether services in any language, Terraform stacks, or deploy repos for open-source apps (what you *declare*), and Istio metrics (what *actually calls what*), puts both in one graph, and lets you, your CI and your AI agent ask questions about it.
+depgraph answers one question well: **what depends on what, at runtime, in dev, acc and prod?** It reads your GitLab repos, whether services in any language, Terraform stacks, or deploy repos for open-source apps (what you *declare*), and Istio metrics (what *actually calls what*), shows the gateways and load balancers in between, puts all of it in one graph, and lets you, your CI and your AI agent ask questions about it.
 
 Pick the path that matches what you want to do:
 

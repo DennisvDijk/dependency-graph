@@ -9,4 +9,5 @@ A small but realistic landscape for the graph-correctness test (`tests/landscape
 - `billing-ex`: an Elixir service run as a StatefulSet, with a firewall rule that names its endpoints (a host, a cluster service, a CIDR) and a docker-compose file.
 - `edge-proxy-rs`: a Rust DaemonSet without a catalog file; its `target/` build output must not count.
 - `aws-platform`: AWS security groups in Terraform across two files. Groups tied by ECS attachment (`payments-sg` -> billing-ex), by tag, and by name (`orders-py-prod-sg`, `prod-keycloak`); an RDS group (-> `resource:database:orders-db`); a CIDR-only rule; and `legacy-batch-sg`, which matches no service and must stay out of the graph.
+- `orders-py/deploy/ingress.yaml`: an Ingress `public-edge` for host `shop.acme-store.io`, routing to `orders-py` and to `no-such-service` (reported, not invented). `billing-ex` calls that host in code, so it gets a candidate edge to the gateway.
 - `prometheus/`: recorded Istio metrics. Includes an OpenAI egress call and a call from an unmapped `qa` namespace.
