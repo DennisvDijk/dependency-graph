@@ -70,7 +70,7 @@ Afwijkingen van de taal en de repo-locatie staan in [ADR-002](ADR-002-rust-en-gi
 
 - Status: standaardaanname
 - Besluit: geen in fase 1-2.
-- Gevolg: het model kent `publishes_to` en `consumes_from` al, maar er is geen collector voor een broker. Resource-kinds `topic` en `queue` blijven geldig voor handmatig vastgelegde resources.
+- Gevolg: het model kent `publishes_to` en `consumes_from` al, maar er is geen collector voor een broker. Resource-kinds `topic` en `queue` blijven geldig voor handmatig vastgelegde resources. Bijgewerkt: zie ADR-014 voor queues en topics uit broncode.
 
 ### 11. Hoe database- en external-API-afhankelijkheden worden vastgelegd
 

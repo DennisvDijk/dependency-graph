@@ -95,6 +95,7 @@ pub fn merge_records(
     let mut live_clusters: BTreeMap<String, Value> = BTreeMap::new();
     let mut live_workloads: BTreeMap<String, Value> = BTreeMap::new();
     let mut candidates: Vec<CandidateCall> = Vec::new();
+    let mut messages: Vec<Message> = Vec::new();
     // Service or function name -> names of the container images it runs.
     let mut image_hints: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut soft_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -321,6 +322,14 @@ pub fn merge_records(
                         .unwrap_or(false),
                 });
             }
+            "messaging" => {
+                messages.push(Message {
+                    source: required_str(&record.payload, "source")?.to_owned(),
+                    publishes: required_str(&record.payload, "direction")? == "publish",
+                    kind: required_str(&record.payload, "kind")?.to_owned(),
+                    name: required_str(&record.payload, "name")?.to_owned(),
+                });
+            }
             "project_facts" => {
                 let project_path = text_field(&record.payload, "project_path");
                 let entry = stacks.entry(project_path).or_default();
@@ -368,6 +377,7 @@ pub fn merge_records(
     let mut runtime_edges = runtime_edges(&mut RuntimeBuild {
         observed: &observed,
         candidates: &candidates,
+        messages: &messages,
         components: &components,
         resources: &mut resources,
         inferred: &mut inferred,
@@ -1121,6 +1131,14 @@ struct ObservedAgg {
     last_seen: String,
 }
 
+/// A queue or topic a repository's code publishes to or consumes from.
+struct Message {
+    source: String,
+    publishes: bool,
+    kind: String,
+    name: String,
+}
+
 struct CandidateCall {
     source: String,
     destination: String,
@@ -1216,6 +1234,7 @@ fn json_u64(payload: &serde_json::Value, field: &str) -> u64 {
 struct RuntimeBuild<'a> {
     observed: &'a BTreeMap<ObservedKey, ObservedAgg>,
     candidates: &'a [CandidateCall],
+    messages: &'a [Message],
     components: &'a BTreeMap<String, BTreeSet<String>>,
     resources: &'a mut BTreeMap<(String, String), String>,
     inferred: &'a mut BTreeSet<String>,
@@ -1229,6 +1248,7 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
     let RuntimeBuild {
         observed,
         candidates,
+        messages,
         components,
         resources,
         inferred,
@@ -1442,6 +1462,50 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
             env,
             generated_at,
         ));
+    }
+    for message in messages.iter() {
+        let source = canonical_name(&message.source, aliases);
+        let source = loose_match(
+            &message.source,
+            |name| components.contains_key(name),
+            aliases,
+            environments,
+        )
+        .unwrap_or(source);
+        if !components.contains_key(&source) {
+            unresolved.push(unresolved_row(
+                "messaging",
+                &message.source,
+                "name is not a known component",
+                0,
+            ));
+            continue;
+        }
+        let kind = message.kind.as_str();
+        let name = loose_match(
+            &message.name,
+            |name| resources.contains_key(&(kind.to_owned(), name.to_owned())),
+            aliases,
+            environments,
+        )
+        .unwrap_or_else(|| message.name.clone());
+        let id = format!("resource:{kind}:{name}");
+        if !resources.contains_key(&(kind.to_owned(), name.clone())) {
+            resources.insert((kind.to_owned(), name), "source_code".to_owned());
+            inferred.insert(id.clone());
+        }
+        let edge_type = if message.publishes {
+            EdgeType::PublishesTo
+        } else {
+            EdgeType::ConsumesFrom
+        };
+        let mut edge = candidate_edge(&format!("component:{source}"), &id, None, generated_at);
+        edge.edge_type = edge_type;
+        edge.id = ids::edge_id(edge_type, &edge.from_id, &edge.to_id, None);
+        if let Some(source) = edge.sources.first_mut() {
+            source.evidence_ref = Some("source".to_owned());
+        }
+        edges.push(edge);
     }
     fold_same_id(edges)
 }
@@ -1669,7 +1733,9 @@ fn assign_status(edges: &mut [Edge]) {
                     EdgeStatus::ObservedOnly
                 }
             }
-            EdgeType::CandidateCalls => EdgeStatus::Candidate,
+            EdgeType::CandidateCalls | EdgeType::PublishesTo | EdgeType::ConsumesFrom => {
+                EdgeStatus::Candidate
+            }
             _ => EdgeStatus::NotApplicable,
         };
     }

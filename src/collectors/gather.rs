@@ -151,6 +151,16 @@ pub async fn records_from_gitlab(
                 .map(|item| item.path.clone())
                 .collect();
             records.extend(project_facts(&project.path_with_namespace, &paths));
+            let mut sources: Vec<(String, String)> = Vec::new();
+            for path in super::source::select_paths(&paths) {
+                if let Some(text) = client.file_text(project.id, &path, &branch).await? {
+                    sources.push((path, text));
+                }
+            }
+            records.extend(super::source::source_records(
+                &project.path_with_namespace,
+                &sources,
+            ));
             let mut terraform: Vec<(String, String)> = Vec::new();
             for item in manifest_items(tree) {
                 if let Some(text) = client.file_text(project.id, &item.path, &branch).await? {
@@ -270,6 +280,13 @@ fn records_from_tree(project_path: &str, root: &Path) -> Result<Vec<RawRecord>, 
     let mut paths = Vec::new();
     collect_paths(root, root, &mut paths)?;
     records.extend(project_facts(project_path, &paths));
+    let mut sources: Vec<(String, String)> = Vec::new();
+    for path in super::source::select_paths(&paths) {
+        if let Ok(text) = fs::read_to_string(root.join(&path)) {
+            sources.push((path, text));
+        }
+    }
+    records.extend(super::source::source_records(project_path, &sources));
     let mut terraform: Vec<(String, String)> = Vec::new();
     for (path, text) in files {
         if path.ends_with(".tf") {

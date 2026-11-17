@@ -116,6 +116,7 @@ fn every_node_is_expected() {
         "deployment:orders-py@acc",
         "deployment:orders-py@prod",
         "resource:database:orders-db",
+        "resource:topic:order-events",
         "resource:database:redis-cache",
         "resource:external-api:api-openai-com",
         "resource:external-api:api-stripe-com",
@@ -177,6 +178,11 @@ fn every_edge_is_expected() {
         "candidate_calls component:edge-proxy-rs -> component:orders-py - candidate unknown static",
         "candidate_calls component:billing-ex -> component:keycloak - candidate unknown static",
         "candidate_calls component:orders-py -> resource:database:orders-db - candidate unknown static",
+        // Application source: orders-py publishes to a topic and calls billing-ex;
+        // billing-ex consumes the topic. Literal names only.
+        "publishes_to component:orders-py -> resource:topic:order-events - candidate unknown static",
+        "consumes_from component:billing-ex -> resource:topic:order-events - candidate unknown static",
+        "candidate_calls component:orders-py -> component:billing-ex - candidate unknown static",
         "candidate_calls component:orders-py -> component:notifications - candidate soft static",
         // GitLab deployments; `staging` maps to acc.
         "deployed_as component:orders-py -> deployment:orders-py@prod prod n/a unknown static",

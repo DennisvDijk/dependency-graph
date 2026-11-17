@@ -79,6 +79,24 @@ Batch jobs and workers: use `spec.type: job`. They rarely receive traffic, so ex
 
 `propose-catalog` works on Python repos too: it reads the manifests, not the Python code.
 
+## Source code
+
+depgraph also reads application source, with nothing to configure. It looks for names written out in the code, in Python, Elixir, Rust, JavaScript, TypeScript, Go, Java, Kotlin and C#:
+
+| In the code | What you get |
+|---|---|
+| `requests.get("http://billing-ex:4000/charge")`, a Kubernetes service host (`billing-ex.prod.svc.cluster.local`) | candidate call to `billing-ex` |
+| `https://api.stripe.com/…` | candidate call to an external API node (`api-stripe-com`) |
+| `postgres://user:secret@orders-db.abc.rds.amazonaws.com/orders` | candidate call to database `orders-db`. Only the host is kept; the password never leaves the file |
+| `sns.publish(TopicArn="arn:aws:sns:…:order-events")`, `producer.send("payments.captured", …)`, `queue_url="https://sqs…/orders-created"` | `publishes_to` the topic or queue |
+| `BroadwaySQS.Producer, queue_url: "…"`, `KafkaConsumer("fraud-signals")`, `receive_message(QueueUrl=…)` | `consumes_from` the topic or queue |
+
+Queues and topics are nodes (`resource:queue:…`, `resource:topic:…`). **A change to a publisher reaches the topic and everyone who consumes it; a change to a consumer does not reach the publisher.** `depgraph impact orders-py` therefore lists the topic and its consumers even if nobody calls anybody directly.
+
+What it does not do: guess a name built at run time (`f"http://{host}/x"`, `"orders-" + env`), read tests, vendored code or files over 400 KB, or tell publish from consume when the code around a queue name gives no sign. At most 100 files are read per repository, and files that look like integration code (clients, consumers, producers, workers, config) come first. Everything found this way is a **candidate**, never an observation. See [ADR-014](../decisions/ADR-014-broncode-en-berichten.md).
+
+The repository name is the service name (`team/orders-py` → `orders-py`); add a line to `config/aliases.yaml` when they differ.
+
 ## Firewall rules
 
 A YAML file with `kind: FirewallRule` becomes `resource:firewall-rule:<name>`. When it says what it connects, depgraph also draws the connection:
@@ -225,6 +243,7 @@ The build prints one hint, for the `qa` namespace, which the sample leaves unmap
 
 - **Python, npm or other package dependencies** (who uses library X at version Y). Libraries are switched off on purpose (ADR-001 question 8, ADR-009), so `depgraph library-impact` answers `libraries disabled`. If you need this, it is a new phase: read `requirements.txt` / `pyproject.toml` / SBOMs and turn libraries back on.
 - **Individual Terraform resources as nodes.** One node per repo, by design; only security groups, images, database settings and local modules feed the graph.
+- **Reading source by meaning.** Only literal names are read; a name built from variables, or a call hidden behind your own wrapper, is not followed.
 - **Registry and Git Terraform modules**, `for_each` / `count`, map-driven inputs and values from another module's outputs.
 - **Firewall formats other than `kind: FirewallRule` YAML and AWS security groups** (AWS Network Firewall domain lists, WAF, NACLs). Send a sample.
 - **AWS CDK or Pulumi code.** Run `cdk synth` and commit the template, or describe the groups in Terraform/CloudFormation.
