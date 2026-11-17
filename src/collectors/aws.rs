@@ -103,11 +103,41 @@ fn variable_defaults(text: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// Plain-string `locals`, with references to earlier locals filled in.
+/// A local that still needs a function or another unknown is left out.
+fn locals_of(text: &str) -> BTreeMap<String, String> {
+    let header = Regex::new(r"(?m)^\s*locals\s*\{").expect("regex");
+    let entry = Regex::new(r#"(?m)^\s*([A-Za-z0-9_]+)\s*=\s*"([^"]*)""#).expect("regex");
+    let mut raw: BTreeMap<String, String> = BTreeMap::new();
+    for found in header.find_iter(text) {
+        if let Some(body) = braced(text, found.end() - 1) {
+            for caps in entry.captures_iter(&top_level(body)) {
+                raw.insert(caps[1].to_owned(), caps[2].to_owned());
+            }
+        }
+    }
+    let mut known: BTreeMap<String, String> = BTreeMap::new();
+    for _ in 0..4 {
+        for (name, value) in &raw {
+            let value = substitute_refs(value, "local", &known);
+            if !value.contains("${") {
+                known.insert(name.clone(), value);
+            }
+        }
+    }
+    known
+}
+
 fn substitute_vars(text: &str, values: &BTreeMap<String, String>) -> String {
+    substitute_refs(text, "var", values)
+}
+
+/// Replace `${prefix.name}` and a bare `prefix.name` with the value.
+fn substitute_refs(text: &str, prefix: &str, values: &BTreeMap<String, String>) -> String {
     let mut out = text.to_owned();
     for (name, value) in values {
-        out = out.replace(&format!("${{var.{name}}}"), value);
-        let bare = Regex::new(&format!(r"\bvar\.{}\b", regex::escape(name))).expect("regex");
+        out = out.replace(&format!("${{{prefix}.{name}}}"), value);
+        let bare = Regex::new(&format!(r"\b{prefix}\.{}\b", regex::escape(name))).expect("regex");
         out = bare.replace_all(&out, format!("\"{value}\"")).into_owned();
     }
     out
@@ -162,6 +192,7 @@ fn module_instance(
     let mut values = variable_defaults(text);
     values.extend(call.inputs.clone());
     let mut text = substitute_vars(text, &values);
+    text = substitute_refs(&text, "local", &locals_of(&text));
     let header =
         Regex::new(r#"(?m)^\s*(?:resource|data)\s+"([^"]+)"\s+"([^"]+)"\s*\{"#).expect("regex");
     let labels: Vec<(String, String)> = header
@@ -199,6 +230,9 @@ fn expand_modules(files: &[(String, String)]) -> String {
         let entry = dirs.entry(dir_of(path)).or_default();
         entry.push_str(text);
         entry.push('\n');
+    }
+    for text in dirs.values_mut() {
+        *text = substitute_refs(text, "local", &locals_of(text));
     }
     let mut instances = String::new();
     let mut instantiated: BTreeSet<String> = BTreeSet::new();
@@ -791,12 +825,33 @@ fn braced(text: &str, open: usize) -> Option<&str> {
     None
 }
 
-/// The body with every nested `{...}` removed.
+/// The body with every nested `{...}` block removed. Braces inside quoted
+/// strings (`"${var.name}"`) are text, not blocks.
 fn top_level(body: &str) -> String {
     let mut out = String::new();
     let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
     for c in body.chars() {
+        if in_string {
+            if depth == 0 {
+                out.push(c);
+            }
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
         match c {
+            '"' => {
+                in_string = true;
+                if depth == 0 {
+                    out.push(c);
+                }
+            }
             '{' => depth += 1,
             '}' => depth = depth.saturating_sub(1),
             _ if depth == 0 => out.push(c),
@@ -1696,5 +1751,49 @@ module "remote" {
             "module \"x\" {\n  source = \"./gone\"\n}\nresource \"aws_db_instance\" \"d\" {\n  identifier = \"d-db\"\n}\n".to_owned(),
         )];
         assert!(terraform_records_from_files("g/p", &files).is_empty());
+    }
+
+    #[test]
+    fn plain_string_locals_name_services_and_modules() {
+        let root = r#"
+locals {
+  app  = "orders-api"
+  full = "${local.app}-svc"
+  dyn  = "ex-${basename(path.cwd)}"
+}
+module "svc" {
+  source = "./modules/service"
+  name   = local.full
+}
+module "other" {
+  source = "./modules/service"
+  name   = local.dyn
+}
+"#;
+        let module = r#"
+resource "aws_db_instance" "db" {
+  identifier = "${var.name}-db"
+}
+resource "aws_ecs_service" "svc" {
+  name = var.name
+}
+resource "aws_security_group" "sg" {
+  name = "${var.name}-sg"
+}
+resource "aws_vpc_security_group_ingress_rule" "r" {
+  security_group_id            = aws_security_group.sg.id
+  referenced_security_group_id = aws_security_group.sg.id
+}
+"#;
+        let files = vec![
+            ("main.tf".to_owned(), root.to_owned()),
+            ("modules/service/main.tf".to_owned(), module.to_owned()),
+        ];
+        let names: Vec<String> = terraform_records_from_files("g/infra", &files)
+            .iter()
+            .filter(|record| record.kind == "resource")
+            .map(|record| record.payload["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(names.contains(&"orders-api-svc-sg".to_owned()), "{names:?}");
     }
 }
