@@ -24,7 +24,7 @@ Het edge-id is `edge:` plus de lowercase hex SHA-256 van deze UTF-8-tekst, zonde
 <env>
 ```
 
-`<env>` is leeg als de edge geen omgeving heeft. `<type>` is de wire-waarde: `declared_depends_on`, `observed_calls`, `candidate_calls`, `deployed_as`, `uses_library`, `publishes_to`, `consumes_from`.
+`<env>` is leeg als de edge geen omgeving heeft. `<type>` is de wire-waarde: `declared_depends_on`, `observed_calls`, `network_traffic`, `candidate_calls`, `deployed_as`, `runs_in_cluster`, `has_workload`, `uses_library`, `publishes_to`, `consumes_from`, `routes_to`.
 
 Bekend voorbeeld, omgeving leeg:
 
@@ -41,7 +41,9 @@ Id: `edge:6aaec4d166acdcc592284a22feecf0cab4312bafc2f78939ce9f6d6a323479b1`.
 
 `observed_calls` zonder omgeving is ongeldig. Elke edge heeft minstens één source, met `first_seen` niet later dan `last_seen`. `status` is `both`, `observed_only`, `declared_only`, `candidate` of `n/a` (default `n/a`). `criticality` is `hard`, `soft` of `unknown` (default `unknown`). `active` default `true`.
 
-Source-kind: `catalog`, `otel`, `istio`, `hubble`, `sbom_hint`, `static`.
+Source-kind: `catalog`, `otel`, `istio`, `hubble`, `sbom_hint`, `static`, `cloud`, `kubernetes`.
+
+Zie [architecture.md](architecture.md) voor de lagen en [ADR-015](decisions/ADR-015-ontologie-en-blueprints.md) voor waarom het model gesloten blijft.
 
 ## Canonical output
 

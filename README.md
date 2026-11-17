@@ -170,7 +170,7 @@ depgraph mcp-config cursor          # or claude, vscode, opencode
 | [Ask graph questions](docs/tutorials/03-ask-questions.md) | [AWS and Azure discovery](docs/tutorials/09-cloud-discovery.md) |
 | [Connect an AI assistant](docs/tutorials/04-ai-agent.md) | [Terraform, firewalls and containers](docs/tutorials/08-terraform-python-open-source.md) |
 | [When something doesn't resolve](docs/tutorials/07-troubleshooting.md) | [Share a safe run summary](docs/tutorials/06-real-data.md#share-a-run-summary) |
-| [All tutorials](docs/tutorials/README.md) | [Architecture decisions](docs/decisions/) · [Naming rules](docs/naming.md) |
+| [All tutorials](docs/tutorials/README.md) | [Architecture: layers, methods and why](docs/architecture.md) · [Decisions](docs/decisions/) · [Naming rules](docs/naming.md) |
 | [Run it on a schedule: runbook](docs/runbook.md) | [Releases and signatures](docs/releases.md) · [MCP authentication](docs/mcp.md) |
 
 ## Status and trust
