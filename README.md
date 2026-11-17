@@ -33,14 +33,16 @@ depgraph brings those signals together in a graph you can inspect, query and sha
 
 ```mermaid
 flowchart LR
-    A["Repositories<br/>GitLab · manifests · Terraform"] --> D["Collect"]
+    A["Repositories<br/>GitLab · manifests · source code<br/>Terraform (HCL) · CloudFormation"] --> D["Collect"]
     B["Application telemetry<br/>Istio · X-Ray · App Insights"] --> D
     C["Cloud infrastructure<br/>AWS · Azure · Kubernetes · flow logs"] --> D
-    D --> E["Normalize & resolve"]
+    D --> E["Normalize & resolve<br/>services · queues · topics"]
     E --> F[("Versioned graph<br/>snapshot.json")]
     E --> G["Unresolved names<br/>unresolved.json"]
-    F --> H["CLI · site · CI · AI assistants"]
+    F --> J["Graph engine<br/>deps · consumers · impact<br/>hub flag · cycles"]
+    J --> H["CLI · site · CI · AI assistants (MCP)"]
     G --> I["Review suggestions"]
+    H -.-> K["depgraph report<br/>counts only, safe to share"]
 ```
 
 Collectors gather source records. The normalizer resolves them into a snapshot and records names it couldn't place. Queries work from that snapshot, so the graph can be inspected without calling every source again. Historical snapshots support comparisons over time.
@@ -50,9 +52,9 @@ Collectors gather source records. The normalizer resolves them into a snapshot a
 | Source | What depgraph finds |
 |---|---|
 | **Catalog files and manifests** | Components, owners, declared `dependsOn`, Kubernetes manifests, network policies, `docker-compose` `depends_on` |
-| **Source code** | Python, Elixir, Rust, JavaScript, TypeScript, Go, Java, Kotlin and C#: service URLs, database hosts and literal queue and topic names. Queues and topics carry impact from publisher to consumer. Only literal names are read, and secrets in connection strings are dropped |
+| **Source code** | Python, Elixir, Rust, JavaScript, TypeScript, Go, Java, Kotlin and C#: service URLs, database hosts and literal queue and topic names. Queues and topics carry impact from publisher to consumer. Only literal names are read (computed names such as `${var.env}-orders` are not), and secrets in connection strings are dropped |
 | **Firewall rules** | `kind: FirewallRule` YAML, and AWS security groups from Terraform and CloudFormation. A group is linked to the service it is attached to |
-| **Terraform and CloudFormation** | The container image a service runs links it to the component built from that image. Environment settings that name a database add a candidate tie to it. Local Terraform modules and plain-string locals are expanded |
+| **Terraform and CloudFormation** | Terraform is read with a real HCL parser; a file that does not parse is skipped and listed in `unresolved.json`, not guessed at. SQS queues, SNS topics, subscriptions and Lambda event-source mappings become queue and topic nodes with edges. The container image a service runs links it to the component built from that image. Environment settings that name a database add a candidate tie to it. Local Terraform modules and plain-string locals are expanded |
 | **Live cloud (opt-in)** | AWS and Azure resources, X-Ray and Application Insights calls, existing flow logs |
 | **Live Kubernetes (opt-in)** | A cluster node plus its workloads, read-only; secrets are never read |
 | **Application telemetry** | Istio call metrics from Prometheus |
@@ -68,7 +70,11 @@ Cloud resource names are matched to services you already have by loose matching 
 | **Candidate** | Configuration or static evidence suggests a possible tie; it is not proof of a call. |
 | **Network traffic** | Flow logs saw packets. Packet direction does not prove which application initiated a call, so these edges do not drive impact or drift. |
 
-A missing edge is not proof that a connection doesn't exist.
+A missing edge is not proof that a connection doesn't exist. Everything found by reading files is a candidate, never an observation.
+
+### Hubs
+
+Query results show a `links` count (distinct neighbours) and a `hub` flag for nodes with 20 or more. A hub, such as a shared database or a common library, makes an impact list long without telling you much, so look at the non-hub paths first. The flag follows the `--env` filter you pass.
 
 See [cloud discovery](docs/tutorials/09-cloud-discovery.md) for the sources and current limits.
 
@@ -164,6 +170,15 @@ depgraph mcp-config cursor          # or claude, vscode, opencode
 | [Connect an AI assistant](docs/tutorials/04-ai-agent.md) | [Terraform, firewalls and containers](docs/tutorials/08-terraform-python-open-source.md) |
 | [When something doesn't resolve](docs/tutorials/07-troubleshooting.md) | [Share a safe run summary](docs/tutorials/06-real-data.md#share-a-run-summary) |
 | [All tutorials](docs/tutorials/README.md) | [Architecture decisions](docs/decisions/) · [Naming rules](docs/naming.md) |
+
+## Status and trust
+
+depgraph is ready for a **supervised pilot**, not yet a trusted source of truth. It is tested on fixtures; the first runs on a real estate will show what real repositories break, and edges should be hand-checked before anyone relies on them.
+
+- **Secrets:** a test plants fake secrets in Terraform, Python, Compose and Kubernetes files and fails if any reaches an output file or message. It covers those file types, not every collector.
+- **MCP server:** only asymmetric token signatures (RSA, ECDSA, EdDSA) are accepted, key-set fetches have a cooldown, and `--insecure-local` accepts only loopback Host and Origin headers. See [MCP authentication](docs/mcp.md).
+- **Supply chain:** `cargo deny` runs on every change. Releases are not signed yet.
+- **CI:** GitHub Actions gates this repository. `.gitlab-ci.yml` runs the same checks (fmt, clippy, test, deny) plus the scheduled collector jobs, but has not run on a real GitLab runner yet.
 
 ## Development
 

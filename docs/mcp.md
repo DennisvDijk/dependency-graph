@@ -31,7 +31,9 @@ docker build -t depgraph .
 docker run --rm -p 8080:8080 -v "$PWD:/app" -w /app depgraph serve-mcp --insecure-local --snapshot /app/data/snapshot.json
 ```
 
-`--insecure-local` refuses a bind address that is not loopback.
+`--insecure-local` refuses a bind address that is not loopback. It also answers only requests whose `Host` and `Origin` headers name loopback, so a web page cannot reach it through DNS rebinding.
+
+Tokens must be signed with an asymmetric algorithm (RS*, PS*, ES* or EdDSA). Tokens that use a shared secret (HS*) are rejected. The server asks the issuer for its key set at most once every 30 seconds, so a key rotation can take that long to be picked up.
 
 ## Entra ID (optional)
 
