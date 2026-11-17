@@ -35,7 +35,7 @@ depgraph brings those signals together in a graph you can inspect, query and sha
 flowchart LR
     A["Repositories<br/>GitLab · manifests · Terraform"] --> D["Collect"]
     B["Application telemetry<br/>Istio · X-Ray · App Insights"] --> D
-    C["Cloud infrastructure<br/>AWS · Azure · flow logs"] --> D
+    C["Cloud infrastructure<br/>AWS · Azure · Kubernetes · flow logs"] --> D
     D --> E["Normalize & resolve"]
     E --> F[("Versioned graph<br/>snapshot.json")]
     E --> G["Unresolved names<br/>unresolved.json"]
@@ -44,6 +44,20 @@ flowchart LR
 ```
 
 Collectors gather source records. The normalizer resolves them into a snapshot and records names it couldn't place. Queries work from that snapshot, so the graph can be inspected without calling every source again. Historical snapshots support comparisons over time.
+
+### What it reads, with nothing to configure per service
+
+| Source | What depgraph finds |
+|---|---|
+| **Catalog files and manifests** | Components, owners, declared `dependsOn`, Kubernetes manifests, network policies, `docker-compose` `depends_on` |
+| **Any language** | Python, Elixir, Rust and others are found through catalog files, manifests and telemetry, not by reading source code. The languages a repo uses are recorded from file names |
+| **Firewall rules** | `kind: FirewallRule` YAML, and AWS security groups from Terraform and CloudFormation. A group is linked to the service it is attached to |
+| **Terraform and CloudFormation** | The container image a service runs links it to the component built from that image. Environment settings that name a database add a candidate tie to it. Local Terraform modules and plain-string locals are expanded |
+| **Live cloud (opt-in)** | AWS and Azure resources, X-Ray and Application Insights calls, existing flow logs |
+| **Live Kubernetes (opt-in)** | A cluster node plus its workloads, read-only; secrets are never read |
+| **Application telemetry** | Istio call metrics from Prometheus |
+
+Cloud resource names are matched to services you already have by loose matching (`prod-orders-py-sg` finds `orders-py`) and the optional alias file. A name that matches nothing is never invented as a service; it goes to `unresolved.json` for review.
 
 ### Evidence matters
 
@@ -98,7 +112,7 @@ The default cloud scope is the AWS CLI's selected region and the Azure CLI's sel
 
 ### Share what happened, safely
 
-Run `depgraph report` after a run to get a short Markdown summary: node, edge and evidence counts, which collectors worked, and what kinds of names could not be resolved (for example "built from a variable" or "plain name with no matching service"). It contains **counts only**: no repository, host or service names. `--include-names` adds up to 40 unresolved names with secrets removed, and `--output report.md` writes a file. Read it before you share it.
+Working somewhere the maintainers can't see, such as a GitLab behind a firewall? Run `depgraph report` after a run to get a short Markdown summary: node, edge and evidence counts, which collectors worked, and what kinds of names could not be resolved (for example "built from a variable" or "plain name with no matching service"). It contains **counts only**: no repository, host or service names. `--include-names` adds up to 40 unresolved names with secrets removed, and `--output report.md` writes a file. Read it before you share it.
 
 ## Ask the graph
 
@@ -148,6 +162,7 @@ depgraph mcp-config cursor          # or claude, vscode, opencode
 | [Try the demo](docs/tutorials/01-try-it.md) | [Run on real data](docs/tutorials/06-real-data.md) |
 | [Ask graph questions](docs/tutorials/03-ask-questions.md) | [AWS and Azure discovery](docs/tutorials/09-cloud-discovery.md) |
 | [Connect an AI assistant](docs/tutorials/04-ai-agent.md) | [Terraform, firewalls and containers](docs/tutorials/08-terraform-python-open-source.md) |
+| [When something doesn't resolve](docs/tutorials/07-troubleshooting.md) | [Share a safe run summary](docs/tutorials/06-real-data.md#share-a-run-summary) |
 | [All tutorials](docs/tutorials/README.md) | [Architecture decisions](docs/decisions/) · [Naming rules](docs/naming.md) |
 
 ## Development

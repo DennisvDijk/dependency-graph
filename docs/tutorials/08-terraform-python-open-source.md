@@ -18,13 +18,13 @@ The short version:
 
 ## Terraform
 
-depgraph does **not** parse Terraform resources or modules. A repository that contains `.tf` files becomes **one** infra node named after the repo:
+depgraph does not map every Terraform resource. A repository that contains `.tf` files becomes **one** infra node named after the repo:
 
 ```text
 example-group/platform/infra-network  →  resource:infra:infra-network
 ```
 
-That is deliberate (ADR-007): the graph answers "which services depend on the network stack?", not "which security group allows port 443?".
+That is deliberate (ADR-007): the graph answers "which services depend on the network stack?", not "which security group allows port 443?". The parts that tie services together are still read: security groups and their rules, the images services run, the databases they name, and local modules. See [AWS security groups](#aws-security-groups).
 
 To make the node useful, put a `catalog-info.yaml` of kind `Resource` in the Terraform repo:
 
@@ -148,7 +148,9 @@ Edges are **candidates**: the security group allows the traffic, nobody has seen
 
 ## Kubernetes clusters
 
-depgraph assumes one cluster with one namespace set per environment (ADR-001 question 3). Clusters are not nodes; an environment is `dev`, `acc` or `prod`, mapped from namespaces in `config/environments.yaml`. Several clusters per environment work as long as their namespace names do not collide. A cluster as a first-class node (for "what runs on cluster X?") is not built yet.
+An environment is `dev`, `acc` or `prod`, mapped from namespaces in `config/environments.yaml`. Several clusters per environment work as long as their namespace names do not collide.
+
+To see what is running right now, add the live read: `depgraph discover --kubernetes`. It reads the current `kubectl` context with read-only calls and adds a **cluster node** plus a **workload node** for each Deployment, StatefulSet and similar (`runs_in_cluster`, `has_workload` edges). Secrets are never read. A workload links to a repository component only when an existing label matches one; otherwise it stays visible and unlinked. These edges show what exists, not what calls what, so they do not count towards impact analysis.
 
 ## Open-source apps you run
 
@@ -222,8 +224,8 @@ The build prints one hint, for the `qa` namespace, which the sample leaves unmap
 ## What is not covered yet
 
 - **Python, npm or other package dependencies** (who uses library X at version Y). Libraries are switched off on purpose (ADR-001 question 8, ADR-009), so `depgraph library-impact` answers `libraries disabled`. If you need this, it is a new phase: read `requirements.txt` / `pyproject.toml` / SBOMs and turn libraries back on.
-- **Resources inside a Terraform stack.** One node per repo, by design.
-- **Clusters as nodes.** See [Kubernetes clusters](#kubernetes-clusters).
+- **Individual Terraform resources as nodes.** One node per repo, by design; only security groups, images, database settings and local modules feed the graph.
+- **Registry and Git Terraform modules**, `for_each` / `count`, map-driven inputs and values from another module's outputs.
 - **Firewall formats other than `kind: FirewallRule` YAML and AWS security groups** (AWS Network Firewall domain lists, WAF, NACLs). Send a sample.
 - **AWS CDK or Pulumi code.** Run `cdk synth` and commit the template, or describe the groups in Terraform/CloudFormation.
 - **Rendered Helm output.** Use a catalog file, as above.
