@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use chrono::{DateTime, Utc};
-
 use crate::error::Error;
 use crate::gitlab::{GitLabClient, ProjectFilter};
 use crate::normalize::merge::version_rank;
@@ -109,7 +107,7 @@ pub struct GitlabScope<'a> {
     /// Filters for the group or full-scan list.
     pub filter: &'a ProjectFilter,
     /// Clock for `min_last_activity`.
-    pub now: DateTime<Utc>,
+    pub now: jiff::Timestamp,
 }
 
 /// Read GitLab. `live` is consulted only when `live_read` is true.

@@ -57,7 +57,7 @@ pub fn current_context() -> Result<String, Error> {
 ///
 /// # Errors
 /// Returns an error on missing access, malformed Kubernetes responses or absent cluster identity.
-pub fn read_current(now: chrono::DateTime<chrono::Utc>) -> Result<Vec<RawRecord>, Error> {
+pub fn read_current(now: jiff::Timestamp) -> Result<Vec<RawRecord>, Error> {
     let context = current_context()?;
     read_context(&context, now)
 }
@@ -65,10 +65,7 @@ pub fn read_current(now: chrono::DateTime<chrono::Utc>) -> Result<Vec<RawRecord>
 ///
 /// # Errors
 /// Returns an error on missing access, malformed responses or absent cluster identity.
-pub fn read_context(
-    context: &str,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Result<Vec<RawRecord>, Error> {
+pub fn read_context(context: &str, now: jiff::Timestamp) -> Result<Vec<RawRecord>, Error> {
     let context = safe_context(context)
         .ok_or_else(|| Error::Config("invalid Kubernetes context name".into()))?;
     let namespace = kubectl(&[
@@ -91,7 +88,7 @@ pub fn read_context(
         "json",
         "--request-timeout=30s",
     ])?;
-    parse(context, &namespace, &workloads, &now.to_rfc3339())
+    parse(context, &namespace, &workloads, &now.to_string())
 }
 /// Read a saved cluster fixture, for repeatable discovery demos and tests.
 ///

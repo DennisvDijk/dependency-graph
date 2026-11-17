@@ -75,7 +75,7 @@ pub struct ProjectFilter {
     /// Drop projects marked archived.
     pub exclude_archived: bool,
     /// Drop projects whose last activity is older than this, relative to `now`.
-    pub min_last_activity: Option<chrono::Duration>,
+    pub min_last_activity: Option<jiff::SignedDuration>,
     /// Keep only this visibility. Empty keeps all.
     pub visibility: Option<String>,
 }
@@ -314,7 +314,7 @@ impl GitLabClient {
         groups: &[String],
         explicit_paths: &[String],
         filter: &ProjectFilter,
-        now: chrono::DateTime<chrono::Utc>,
+        now: jiff::Timestamp,
     ) -> Result<(Vec<Project>, Vec<String>), Error> {
         let discovered = if groups.is_empty() && explicit_paths.is_empty() {
             self.list_visible_projects(filter.exclude_archived).await?
@@ -698,7 +698,7 @@ pub fn union_explicit(
 pub fn select_projects(
     projects: &[Project],
     filter: &ProjectFilter,
-    now: chrono::DateTime<chrono::Utc>,
+    now: jiff::Timestamp,
 ) -> Vec<Project> {
     projects
         .iter()
@@ -707,11 +707,7 @@ pub fn select_projects(
         .collect()
 }
 
-fn project_matches(
-    project: &Project,
-    filter: &ProjectFilter,
-    now: chrono::DateTime<chrono::Utc>,
-) -> bool {
+fn project_matches(project: &Project, filter: &ProjectFilter, now: jiff::Timestamp) -> bool {
     if filter.exclude_archived && project.archived {
         return false;
     }
@@ -751,11 +747,11 @@ fn project_matches(
         let Some(stamp) = project
             .last_activity_at
             .as_deref()
-            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .and_then(|value| value.parse::<jiff::Timestamp>().ok())
         else {
             return false;
         };
-        if stamp.with_timezone(&chrono::Utc) < now - window {
+        if stamp < now - window {
             return false;
         }
     }
@@ -767,7 +763,7 @@ fn project_matches(
 /// # Errors
 ///
 /// Returns an error when the text is not a positive integer plus `d`, `h`, or `w`.
-pub fn parse_activity_window(value: &str) -> Result<chrono::Duration, Error> {
+pub fn parse_activity_window(value: &str) -> Result<jiff::SignedDuration, Error> {
     let value = value.trim();
     let Some((count, unit)) = value.split_at_checked(value.len().saturating_sub(1)) else {
         return Err(Error::Config(format!(
@@ -785,9 +781,9 @@ pub fn parse_activity_window(value: &str) -> Result<chrono::Duration, Error> {
         ));
     }
     let window = match unit {
-        "d" => chrono::Duration::days(count),
-        "h" => chrono::Duration::hours(count),
-        "w" => chrono::Duration::days(count.saturating_mul(7)),
+        "d" => jiff::SignedDuration::from_hours(count.saturating_mul(24)),
+        "h" => jiff::SignedDuration::from_hours(count),
+        "w" => jiff::SignedDuration::from_hours(count.saturating_mul(24 * 7)),
         _ => {
             return Err(Error::Config(format!(
                 "min_last_activity `{value}` must end in d, h, or w"
@@ -915,9 +911,7 @@ mod tests {
             old,
             public,
         ];
-        let now = chrono::DateTime::parse_from_rfc3339("2026-11-16T00:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let now = "2026-11-16T00:00:00Z".parse::<jiff::Timestamp>().unwrap();
         let filter = ProjectFilter {
             include_paths: vec!["org/infra/**".to_owned()],
             exclude_paths: vec!["**/sidecar".to_owned()],

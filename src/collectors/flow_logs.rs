@@ -17,11 +17,9 @@ fn timestamp(value: &Value) -> Option<i64> {
         .as_i64()
         .or_else(|| value.as_f64().map(|v| v as i64))
         .or_else(|| {
-            value.as_str().and_then(|v| {
-                chrono::DateTime::parse_from_rfc3339(v)
-                    .ok()
-                    .map(|t| t.timestamp())
-            })
+            value
+                .as_str()
+                .and_then(|v| v.parse::<jiff::Timestamp>().ok().map(|t| t.as_second()))
         })
 }
 
@@ -157,7 +155,7 @@ pub(super) fn aws_flows(account: &AwsAccount, env: Option<&str>) -> Vec<RawRecor
             .or_insert(end);
     }
     latest.into_iter().filter_map(|((src, dst), time)| {
-        let stamp = chrono::DateTime::from_timestamp(time, 0)?.to_rfc3339();
+        let stamp = jiff::Timestamp::from_second(time).ok()?.to_string();
         Some(RawRecord { collector: "aws_flow_logs".into(), kind: "network_flow".into(), payload: json!({
             "source": super::cloud::kebab_name(&src), "destination": super::cloud::kebab_name(&dst),
             "env": env.unwrap_or(""), "last_seen": stamp,
@@ -194,7 +192,7 @@ pub(super) fn azure_flows(rows: &Value, env: Option<&str>) -> Vec<RawRecord> {
         Some((format!("azvm-{readable}-{}", &digest[..20]), display_name))
     }
     let mut nodes = BTreeMap::<String, String>::new();
-    let mut flows = BTreeMap::<(String, String), chrono::DateTime<chrono::Utc>>::new();
+    let mut flows = BTreeMap::<(String, String), jiff::Timestamp>::new();
     for row in rows.as_array().into_iter().flatten() {
         if row.get("FlowStatus").and_then(Value::as_str) != Some("A") {
             continue;
@@ -209,8 +207,7 @@ pub(super) fn azure_flows(rows: &Value, env: Option<&str>) -> Vec<RawRecord> {
         let Some(time) = row
             .get("FlowEndTime")
             .and_then(Value::as_str)
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|v| v.with_timezone(&chrono::Utc))
+            .and_then(|s| s.parse::<jiff::Timestamp>().ok())
         else {
             continue;
         };
@@ -240,7 +237,7 @@ pub(super) fn azure_flows(rows: &Value, env: Option<&str>) -> Vec<RawRecord> {
         .collect();
     records.extend(flows.into_iter().map(|((source,destination), at)| RawRecord {
         collector: "azure_flow_logs".into(), kind: "network_flow".into(), payload: json!({
-            "source":source,"destination":destination,"source_kind":"infra","env":env.unwrap_or(""),"last_seen":at.to_rfc3339()
+            "source":source,"destination":destination,"source_kind":"infra","env":env.unwrap_or(""),"last_seen":at.to_string()
         })
     }));
     records

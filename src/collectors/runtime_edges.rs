@@ -7,7 +7,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -455,16 +454,8 @@ fn unix_to_rfc3339(value: &Value) -> Option<String> {
     let secs = value
         .as_i64()
         .or_else(|| value.as_f64().map(|number| number as i64))?;
-    let time = DateTime::<Utc>::from_timestamp(secs, 0)?;
-    Some(format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        time.year(),
-        time.month(),
-        time.day(),
-        time.hour(),
-        time.minute(),
-        time.second()
-    ))
+    let time = jiff::Timestamp::from_second(secs).ok()?;
+    Some(time.strftime("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
 #[cfg(test)]

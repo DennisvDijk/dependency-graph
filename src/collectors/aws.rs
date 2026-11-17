@@ -1343,7 +1343,7 @@ pub struct AwsLive {
 /// Returns an error when the CLI is missing or security groups cannot be read.
 pub fn records_from_aws(
     live: &AwsLive,
-    now: chrono::DateTime<chrono::Utc>,
+    now: jiff::Timestamp,
 ) -> Result<(Vec<RawRecord>, Vec<String>), crate::error::Error> {
     use super::cloud::{run_json, strings};
     let mut records = Vec::new();
@@ -1462,8 +1462,10 @@ pub fn records_from_aws(
         account.db_clusters = soft(&["rds", "describe-db-clusters"]);
         account.cache_clusters = soft(&["elasticache", "describe-cache-clusters"]);
         if live.xray {
-            let end = now.timestamp().to_string();
-            let start = (now - chrono::Duration::hours(6)).timestamp().to_string();
+            let end = now.as_second().to_string();
+            let start = (now - jiff::SignedDuration::from_hours(6))
+                .as_second()
+                .to_string();
             account.service_graph = soft(&[
                 "xray",
                 "get-service-graph",
@@ -1532,8 +1534,10 @@ pub fn records_from_aws(
             {
                 flow_complete = false;
             }
-            let start = ((now - chrono::Duration::hours(6)).timestamp_millis()).to_string();
-            let end = now.timestamp_millis().to_string();
+            let start = (now - jiff::SignedDuration::from_hours(6))
+                .as_millisecond()
+                .to_string();
+            let end = now.as_millisecond().to_string();
             let mut events = Vec::new();
             for group in &groups {
                 let result = soft(&[

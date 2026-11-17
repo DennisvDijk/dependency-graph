@@ -5,11 +5,6 @@ all-features = true
 [advisories]
 unmaintained = "workspace"
 yanked = "warn"
-# chrono was declared unmaintained on 2026-11 (no known vulnerability, no safe
-# upgrade). Revisit: move the timestamp code to `time` or `jiff`.
-ignore = [
-    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; no vulnerability, migration planned" },
-]
 
 [licenses]
 confidence-threshold = 0.8

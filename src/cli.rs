@@ -946,7 +946,7 @@ fn run_discover(args: DiscoverArgs) -> Result<(), Error> {
     // A unique raw directory ensures opt-out doesn't accidentally reuse an older cloud scan.
     let run_dir = PathBuf::from("data/discovery").join(format!(
         "{}-{}",
-        chrono::Utc::now().timestamp_millis(),
+        jiff::Timestamp::now().as_millisecond(),
         std::process::id()
     ));
     run_collect(CollectArgs {
@@ -1065,9 +1065,9 @@ fn run_collect(args: CollectArgs) -> Result<(), Error> {
         collectors::kubernetes_fixture(dir)?
     } else if args.kubernetes {
         if let Some(context) = &args.selected_kubernetes_context {
-            collectors::kubernetes_context(context, chrono::Utc::now())?
+            collectors::kubernetes_context(context, jiff::Timestamp::now())?
         } else {
-            collectors::kubernetes_current(chrono::Utc::now())?
+            collectors::kubernetes_current(jiff::Timestamp::now())?
         }
     } else {
         Vec::new()
@@ -1107,7 +1107,7 @@ fn run_collect(args: CollectArgs) -> Result<(), Error> {
                 groups: &groups,
                 projects: &projects,
                 filter: &filter,
-                now: chrono::Utc::now(),
+                now: jiff::Timestamp::now(),
             },
             &catalog_file,
             set,
@@ -1187,7 +1187,7 @@ fn cloud_records(args: &CollectArgs) -> Result<Vec<crate::raw::RawRecord>, Error
             flow_log_group: aws.flow_log_group.clone(),
             flow_logs: aws.flow_logs || args.aws_flow_logs,
         };
-        let (found, warnings) = collectors::records_from_aws(&live, chrono::Utc::now())?;
+        let (found, warnings) = collectors::records_from_aws(&live, jiff::Timestamp::now())?;
         for warning in &warnings {
             eprintln!("warning: {warning}");
         }
@@ -1532,7 +1532,7 @@ fn run_inventory(args: InventoryArgs) -> Result<(), Error> {
             catalog_file: &catalog_file,
             per_page,
             max_concurrency,
-            now: chrono::Utc::now(),
+            now: jiff::Timestamp::now(),
         },
     ))?;
     for warning in &warnings {
@@ -1683,7 +1683,7 @@ fn run_init(args: InitArgs) -> Result<(), Error> {
 fn run_doctor(args: DoctorArgs) -> Result<(), Error> {
     let now = match args.now {
         Some(value) => crate::models::Timestamp::parse(value).map_err(Error::Validation)?,
-        None => crate::models::Timestamp::parse(chrono::Utc::now().to_rfc3339())
+        None => crate::models::Timestamp::parse(jiff::Timestamp::now().to_string())
             .map_err(Error::Validation)?,
     };
     let token_env_set = std::env::var("GITLAB_TOKEN")
@@ -1744,7 +1744,7 @@ fn run_retain(args: RetainArgs) -> Result<(), Error> {
     let data = args.data.unwrap_or_else(|| PathBuf::from("data"));
     let now = match args.now {
         Some(value) => crate::models::Timestamp::parse(value).map_err(Error::Validation)?,
-        None => crate::models::Timestamp::parse(chrono::Utc::now().to_rfc3339())
+        None => crate::models::Timestamp::parse(jiff::Timestamp::now().to_string())
             .map_err(Error::Validation)?,
     };
     let days = config::load_project(Path::new("."))

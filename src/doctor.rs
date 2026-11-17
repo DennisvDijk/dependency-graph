@@ -142,7 +142,7 @@ fn snapshot_check(root: &Path, now: &Timestamp) -> Check {
             detail: "snapshot generated_at is not a timestamp".to_owned(),
         };
     };
-    let age = (now_dt - generated_dt).num_days();
+    let age = (now_dt - generated_dt).as_hours() / 24;
     if age > 7 {
         Check {
             name: "snapshot",
