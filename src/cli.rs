@@ -94,6 +94,8 @@ pub enum Command {
     Init(InitArgs),
     /// Check config, glab, and snapshot freshness.
     Doctor(DoctorArgs),
+    /// Fail when the snapshot is older than a limit. For scheduled pipelines.
+    Freshness(FreshnessArgs),
     /// Print an MCP client config snippet.
     McpConfig(McpConfigArgs),
     /// Print a shell completion script.
@@ -319,6 +321,20 @@ pub struct DoctorArgs {
     /// Also GET GitLab `/api/v4/version`. Read-only.
     #[arg(long)]
     pub online: bool,
+}
+
+/// `depgraph freshness`.
+#[derive(Debug, clap::Args)]
+pub struct FreshnessArgs {
+    /// Snapshot to check.
+    #[arg(long, default_value = "data/snapshot.json")]
+    pub snapshot: PathBuf,
+    /// Oldest acceptable snapshot, in hours.
+    #[arg(long, default_value_t = 36)]
+    pub max_age_hours: i64,
+    /// Reference time. Defaults to the clock.
+    #[arg(long)]
+    pub now: Option<String>,
 }
 
 /// `depgraph mcp-config`.
@@ -690,6 +706,7 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::MrCheck(args) => run_mr_check(args),
         Command::Init(args) => run_init(args),
         Command::Doctor(args) => run_doctor(args),
+        Command::Freshness(args) => run_freshness(&args),
         Command::Report(args) => run_report(args),
         Command::McpConfig(args) => run_mcp_config(args),
         Command::Completions(args) => run_completions(args),
@@ -1703,6 +1720,27 @@ fn run_doctor(args: DoctorArgs) -> Result<(), Error> {
             "doctor found a problem. follow the next: lines above".into(),
         ))
     }
+}
+
+fn run_freshness(args: &FreshnessArgs) -> Result<(), Error> {
+    let now = match &args.now {
+        Some(value) => value
+            .parse::<jiff::Timestamp>()
+            .map_err(|e| Error::Validation(e.to_string()))?,
+        None => jiff::Timestamp::now(),
+    };
+    let age = crate::doctor::snapshot_age_hours(&args.snapshot, now)?;
+    if age > args.max_age_hours {
+        return Err(Error::Config(format!(
+            "snapshot is {age} hours old, limit is {}. next: check the last scheduled pipeline (docs/runbook.md)",
+            args.max_age_hours
+        )));
+    }
+    println!(
+        "snapshot is {age} hours old, limit is {}",
+        args.max_age_hours
+    );
+    Ok(())
 }
 
 fn run_mcp_config(args: McpConfigArgs) -> Result<(), Error> {

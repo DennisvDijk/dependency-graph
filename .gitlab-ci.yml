@@ -130,6 +130,22 @@ pages:
     paths:
       - public
 
+# Fails the pipeline, and so notifies the schedule owner, when the snapshot is
+# older than FRESHNESS_MAX_HOURS (default 36). It reads the last published
+# snapshot, so it still catches a collect or build job that keeps failing.
+freshness:
+  <<: *rust_job
+  stage: publish
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: always
+  needs:
+    - job: build
+      optional: true
+      artifacts: true
+  script:
+    - ./target/release/depgraph freshness --snapshot data/snapshot.json --max-age-hours "${FRESHNESS_MAX_HOURS:-36}"
+
 drift-issue:
   <<: *rust_job
   stage: publish

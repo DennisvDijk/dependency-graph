@@ -184,3 +184,44 @@ pub fn render(checks: &[Check]) -> String {
 pub fn all_ok(checks: &[Check]) -> bool {
     checks.iter().all(|check| check.ok)
 }
+
+/// Age of a snapshot in whole hours at `now`. Errors when the file is missing,
+/// unreadable, or has no valid `generated_at`.
+pub fn snapshot_age_hours(path: &Path, now: jiff::Timestamp) -> Result<i64, crate::error::Error> {
+    use crate::error::Error;
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        Error::Config(format!(
+            "cannot read {}: {e}. next: depgraph build",
+            path.display()
+        ))
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| Error::Validation(format!("{} is not JSON: {e}", path.display())))?;
+    let stamp = value
+        .get("generated_at")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Error::Validation("snapshot has no generated_at".into()))?;
+    let generated = stamp
+        .parse::<jiff::Timestamp>()
+        .map_err(|e| Error::Validation(format!("generated_at is not a timestamp: {e}")))?;
+    Ok(((now - generated).as_hours()).max(0))
+}
+
+#[cfg(test)]
+mod freshness_tests {
+    use super::*;
+
+    #[test]
+    fn age_is_counted_in_hours_and_bad_files_fail() {
+        let dir = std::env::temp_dir().join(format!("depgraph-fresh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("snapshot.json");
+        std::fs::write(&file, r#"{"generated_at":"2026-11-17T00:00:00Z"}"#).unwrap();
+        let now: jiff::Timestamp = "2026-11-18T06:30:00Z".parse().unwrap();
+        assert_eq!(snapshot_age_hours(&file, now).unwrap(), 30);
+        std::fs::write(&file, "{}").unwrap();
+        assert!(snapshot_age_hours(&file, now).is_err());
+        assert!(snapshot_age_hours(&dir.join("missing.json"), now).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
