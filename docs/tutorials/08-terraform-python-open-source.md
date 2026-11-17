@@ -133,6 +133,8 @@ resource "aws_security_group_rule" "billing_to_keycloak" {
 
 When a service's own name matches no component, depgraph reads the container image it runs (ECS task definitions and Lambda container images, in Terraform or CloudFormation) and uses the image's repository name instead: `…/orders-py:1.4` links the service to `orders-py`. The service name is always tried first, an image is used only when it names a known component, and nothing is guessed from interpolated image names.
 
+A service or function that names a database in its settings also gets a candidate edge to it. That covers a reference to the database resource (`aws_db_instance.orders.address`, `!GetAtt Db.Endpoint.Address`) and a literal RDS or ElastiCache host name (`orders-db.abc.eu-west-1.rds.amazonaws.com`). It reads task definitions and Lambda settings; secret values are never needed, and environment variable names are ignored.
+
 Edges are **candidates**: the security group allows the traffic, nobody has seen it yet. Group ids typed as literals (`sg-0abc…`) and groups from other repos via `data` sources without a name cannot be followed.
 
 ## Docker and docker-compose
