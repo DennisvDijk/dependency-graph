@@ -73,7 +73,51 @@ pub enum ResourceKind {
     Other,
 }
 
+/// The family a resource kind belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResourceFamily {
+    /// Holds data.
+    DataStore,
+    /// Carries messages.
+    Messaging,
+    /// Routes or filters traffic.
+    Network,
+    /// Lives outside the estate.
+    External,
+    /// Platform pieces and anything else.
+    Platform,
+}
+
 impl ResourceKind {
+    /// Every kind. Tests use it to keep docs in step.
+    pub const ALL: [Self; 11] = [
+        Self::Database,
+        Self::Topic,
+        Self::Queue,
+        Self::Gateway,
+        Self::ExternalApi,
+        Self::ModelEndpoint,
+        Self::IdentityProvider,
+        Self::NetworkPolicy,
+        Self::FirewallRule,
+        Self::Infra,
+        Self::Other,
+    ];
+
+    /// The family of this kind. Adding a kind forces a decision here.
+    #[must_use]
+    pub const fn family(self) -> ResourceFamily {
+        match self {
+            Self::Database => ResourceFamily::DataStore,
+            Self::Topic | Self::Queue => ResourceFamily::Messaging,
+            Self::Gateway | Self::NetworkPolicy | Self::FirewallRule => ResourceFamily::Network,
+            Self::ExternalApi | Self::ModelEndpoint | Self::IdentityProvider => {
+                ResourceFamily::External
+            }
+            Self::Infra | Self::Other => ResourceFamily::Platform,
+        }
+    }
+
     /// Wire value used inside the id.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

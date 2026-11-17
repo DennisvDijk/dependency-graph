@@ -106,6 +106,8 @@ Each edge carries `sources` (who said so, when), a `status` (`both`, `observed_o
 `active` flag. Ids are a hash of `(type, from, to, env)`, so the same tie always has the
 same id and diffs between runs are meaningful.
 
+Types are grouped into families in one place (`EdgeType::class()`, `ResourceKind::family()`), so adding a type forces a decision about how it behaves. The families are listed in [`naming.md`](naming.md).
+
 *Why keep evidence on the edge:* "declared", "observed" and "guessed" answer different
 questions. Drift is the gap between declared and observed. Impact should say how sure it is.
 

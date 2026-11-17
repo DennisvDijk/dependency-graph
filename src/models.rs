@@ -140,7 +140,82 @@ pub enum EdgeType {
     RoutesTo,
 }
 
+/// The family an edge type belongs to. One definition, used wherever the code
+/// must decide how a kind of edge behaves (impact, scoring, display).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EdgeClass {
+    /// One thing needs another to work: declared, observed, suspected or routed.
+    Dependency,
+    /// Messages flow through a queue or topic.
+    Messaging,
+    /// A component runs as a deployment.
+    Deployment,
+    /// Where something runs. Says nothing about what depends on what.
+    Placement,
+    /// A package is used.
+    Library,
+    /// Packets were seen. Direction is not call direction.
+    Traffic,
+}
+
 impl EdgeType {
+    /// Every edge type, in wire order. Tests use it to keep docs and schema in step.
+    pub const ALL: [Self; 11] = [
+        Self::DeclaredDependsOn,
+        Self::ObservedCalls,
+        Self::NetworkTraffic,
+        Self::CandidateCalls,
+        Self::DeployedAs,
+        Self::RunsInCluster,
+        Self::HasWorkload,
+        Self::UsesLibrary,
+        Self::PublishesTo,
+        Self::ConsumesFrom,
+        Self::RoutesTo,
+    ];
+
+    /// The family of this edge type. Adding a type forces a decision here.
+    #[must_use]
+    pub const fn class(self) -> EdgeClass {
+        match self {
+            Self::DeclaredDependsOn
+            | Self::ObservedCalls
+            | Self::CandidateCalls
+            | Self::RoutesTo => EdgeClass::Dependency,
+            Self::PublishesTo | Self::ConsumesFrom => EdgeClass::Messaging,
+            Self::DeployedAs => EdgeClass::Deployment,
+            Self::RunsInCluster | Self::HasWorkload => EdgeClass::Placement,
+            Self::UsesLibrary => EdgeClass::Library,
+            Self::NetworkTraffic => EdgeClass::Traffic,
+        }
+    }
+
+    /// Whether impact analysis follows this edge. Traffic and placement do not
+    /// say what depends on what.
+    #[must_use]
+    pub const fn affects_impact(self) -> bool {
+        !matches!(self.class(), EdgeClass::Traffic | EdgeClass::Placement)
+    }
+
+    /// Whether the edge is stored pointing away from the thing that depends on
+    /// the other end. A publisher is not affected by the topic it writes to, so
+    /// `publishes_to` is flipped when the graph is walked. `routes_to` is not
+    /// flipped: a backend change must reach the gateway in front of it.
+    #[must_use]
+    pub const fn points_to_dependent(self) -> bool {
+        matches!(self, Self::PublishesTo)
+    }
+
+    /// Whether the edge links two services or resources in a way a person would
+    /// list as "A depends on B". Used when scoring accuracy.
+    #[must_use]
+    pub const fn is_service_tie(self) -> bool {
+        matches!(
+            self.class(),
+            EdgeClass::Dependency | EdgeClass::Messaging | EdgeClass::Traffic
+        )
+    }
+
     /// Stable wire value. This string is part of the edge-id hash.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -493,5 +568,75 @@ mod tests {
         let offset = Timestamp::parse("2026-01-01T01:00:00+01:00").unwrap();
         assert_eq!(zulu.to_datetime().unwrap(), offset.to_datetime().unwrap());
         assert!(Timestamp::parse("yesterday").is_err());
+    }
+}
+
+#[cfg(test)]
+mod taxonomy_tests {
+    use super::*;
+    use crate::ids::{ResourceFamily, ResourceKind};
+
+    #[test]
+    fn all_lists_are_complete_and_unique() {
+        let wire: std::collections::BTreeSet<_> =
+            EdgeType::ALL.iter().map(|t| t.as_str()).collect();
+        assert_eq!(wire.len(), EdgeType::ALL.len());
+        let kinds: std::collections::BTreeSet<_> =
+            ResourceKind::ALL.iter().map(|k| k.as_str()).collect();
+        assert_eq!(kinds.len(), ResourceKind::ALL.len());
+    }
+
+    #[test]
+    fn edge_classes_keep_the_behaviour_the_code_relied_on() {
+        use EdgeType::*;
+        for kind in [NetworkTraffic, RunsInCluster, HasWorkload] {
+            assert!(!kind.affects_impact(), "{kind:?}");
+        }
+        for kind in [
+            DeclaredDependsOn,
+            ObservedCalls,
+            CandidateCalls,
+            RoutesTo,
+            PublishesTo,
+            ConsumesFrom,
+            DeployedAs,
+            UsesLibrary,
+        ] {
+            assert!(kind.affects_impact(), "{kind:?}");
+        }
+        assert!(PublishesTo.points_to_dependent());
+        assert!(!RoutesTo.points_to_dependent());
+        assert!(NetworkTraffic.is_service_tie());
+        assert!(!DeployedAs.is_service_tie());
+        assert_eq!(RoutesTo.class(), EdgeClass::Dependency);
+    }
+
+    #[test]
+    fn resource_families_group_kinds() {
+        assert_eq!(ResourceKind::Queue.family(), ResourceFamily::Messaging);
+        assert_eq!(ResourceKind::Gateway.family(), ResourceFamily::Network);
+        assert_eq!(ResourceKind::Database.family(), ResourceFamily::DataStore);
+    }
+
+    /// The naming doc must name every edge type and resource kind, so a new
+    /// one cannot ship without its documentation.
+    #[test]
+    fn naming_doc_lists_every_edge_type_and_resource_kind() {
+        let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/naming.md"))
+            .expect("naming.md");
+        for kind in EdgeType::ALL {
+            assert!(
+                doc.contains(kind.as_str()),
+                "naming.md misses edge type {}",
+                kind.as_str()
+            );
+        }
+        for kind in ResourceKind::ALL {
+            assert!(
+                doc.contains(kind.as_str()),
+                "naming.md misses resource kind {}",
+                kind.as_str()
+            );
+        }
     }
 }

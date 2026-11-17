@@ -8,7 +8,7 @@ Canonieke omgevingen zijn `dev`, `acc` en `prod`. Een bronnaam (`staging`, `prod
 | --- | --- | --- |
 | component | `component:<naam>` | lowercase kebab-case |
 | deployment | `deployment:<naam>@<env>` | dezelfde naam als het component; `env` is `dev`, `acc` of `prod` |
-| resource | `resource:<kind>:<naam>` | kind is `database`, `topic`, `queue`, `external-api`, `model-endpoint`, `identity-provider` of `other` |
+| resource | `resource:<kind>:<naam>` | kind is `database`, `topic`, `queue`, `gateway`, `external-api`, `model-endpoint`, `identity-provider`, `network-policy`, `firewall-rule`, `infra` of `other` |
 | library | `library:<purl-zonder-versie>` | `pkg:<type>/<naam>`, zonder `@versie`, `?qualifiers` of `#subpath` |
 
 Een deployment `deployment:payments-api@prod` verwijst naar het bestaande node `component:payments-api`. Het type van het node moet bij het id-voorvoegsel horen.
@@ -44,6 +44,27 @@ Id: `edge:6aaec4d166acdcc592284a22feecf0cab4312bafc2f78939ce9f6d6a323479b1`.
 Source-kind: `catalog`, `otel`, `istio`, `hubble`, `sbom_hint`, `static`, `cloud`, `kubernetes`.
 
 Zie [architecture.md](architecture.md) voor de lagen en [ADR-015](decisions/ADR-015-ontologie-en-blueprints.md) voor waarom het model gesloten blijft.
+
+## Families (taxonomie)
+
+De code groepeert types op één plek (`EdgeType::class()` in `src/models.rs` en `ResourceKind::family()` in `src/ids.rs`). Een nieuw type moet daar een groep krijgen, anders compileert het niet. Een test controleert dat dit bestand elk edge-type en elke resource-kind noemt.
+
+| Edge-klasse | Types | Impact | Opmerking |
+| --- | --- | --- | --- |
+| dependency | `declared_depends_on`, `observed_calls`, `candidate_calls`, `routes_to` | ja | `routes_to` wordt niet omgekeerd: een wijziging bij de backend bereikt de gateway ervoor |
+| messaging | `publishes_to`, `consumes_from` | ja | `publishes_to` wordt bij de analyse omgedraaid: een uitgever merkt niets van zijn topic |
+| deployment | `deployed_as` | ja | |
+| placement | `runs_in_cluster`, `has_workload` | nee | zegt waar iets draait, niet wat waarvan afhangt |
+| library | `uses_library` | ja | |
+| traffic | `network_traffic` | nee | pakketrichting is geen aanroeprichting |
+
+| Resource-familie | Kinds |
+| --- | --- |
+| data store | `database` |
+| messaging | `topic`, `queue` |
+| network | `gateway`, `network-policy`, `firewall-rule` |
+| external | `external-api`, `model-endpoint`, `identity-provider` |
+| platform | `infra`, `other` |
 
 ## Canonical output
 

@@ -89,16 +89,7 @@ fn short(id: &str) -> &str {
 }
 
 fn is_dependency(kind: EdgeType) -> bool {
-    matches!(
-        kind,
-        EdgeType::DeclaredDependsOn
-            | EdgeType::ObservedCalls
-            | EdgeType::NetworkTraffic
-            | EdgeType::CandidateCalls
-            | EdgeType::PublishesTo
-            | EdgeType::ConsumesFrom
-            | EdgeType::RoutesTo
-    )
+    kind.is_service_tie()
 }
 
 fn parse_edge(text: &str) -> Result<(String, String), Error> {
