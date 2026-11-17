@@ -35,16 +35,25 @@ struct Model {
     owners: BTreeMap<String, Owner>,
     /// Allowed traffic, from group key to group key.
     rules: BTreeSet<(String, String)>,
+    /// Task definition key -> container images, as written.
+    task_images: BTreeMap<String, Vec<String>>,
+    /// Service name -> the task definition it runs.
+    service_tasks: Vec<(String, String)>,
+    /// Service or function name -> its container images, as written.
+    images: BTreeMap<String, Vec<String>>,
+    /// Terraform ECR label -> repository name.
+    ecr_names: BTreeMap<String, String>,
 }
 
 /// Records from all Terraform files of one project, read together so that
 /// references across files resolve.
 #[must_use]
 pub fn terraform_records(project_path: &str, text: &str) -> Vec<RawRecord> {
-    if !text.contains("aws_security_group") {
+    if !text.contains("aws_security_group") && !text.contains("aws_ecs_service") {
         return Vec::new();
     }
     let mut model = Model::default();
+    let task_ref = Regex::new(r"aws_ecs_task_definition\.([A-Za-z0-9_-]+)").expect("regex");
     let header =
         Regex::new(r#"(?m)^\s*(resource|data)\s+"([^"]+)"\s+"([^"]+)"\s*\{"#).expect("valid regex");
     for caps in header.captures_iter(text) {
@@ -116,8 +125,29 @@ pub fn terraform_records(project_path: &str, text: &str) -> Vec<RawRecord> {
                     }
                 }
             }
+            ("resource", "aws_ecr_repository") => {
+                let name = tf_string(&top, "name").unwrap_or_else(|| label.to_owned());
+                model.ecr_names.insert(label.to_owned(), name);
+            }
+            ("resource", "aws_ecs_task_definition") => {
+                let images = tf_images(body);
+                model.task_images.insert(label.to_owned(), images.clone());
+                if let Some(family) = tf_string(&top, "family") {
+                    model.task_images.insert(family, images);
+                }
+            }
             ("resource", "aws_ecs_service") => {
                 let name = tf_string(&top, "name");
+                if let Some(name) = &name {
+                    let reference = tf_value(&top, "task_definition");
+                    let task = task_ref
+                        .captures(&reference)
+                        .map(|caps| caps[1].to_owned())
+                        .or_else(|| tf_string(&top, "task_definition"));
+                    if let Some(task) = task {
+                        model.service_tasks.push((name.clone(), task));
+                    }
+                }
                 let refs: Vec<String> = nested(body, "network_configuration")
                     .iter()
                     .flat_map(|block| sg_refs(&tf_value(block, "security_groups")))
@@ -126,6 +156,9 @@ pub fn terraform_records(project_path: &str, text: &str) -> Vec<RawRecord> {
             }
             ("resource", "aws_lambda_function") => {
                 let name = tf_string(&top, "function_name");
+                if let (Some(name), Some(uri)) = (&name, tf_string(&top, "image_uri")) {
+                    model.images.entry(name.clone()).or_default().push(uri);
+                }
                 let refs: Vec<String> = nested(body, "vpc_config")
                     .iter()
                     .flat_map(|block| sg_refs(&tf_value(block, "security_group_ids")))
@@ -220,7 +253,20 @@ pub fn cloudformation_records(project_path: &str, text: &str) -> Vec<RawRecord> 
                     model.rules.insert((group, to));
                 }
             }
+            "AWS::ECS::TaskDefinition" => {
+                let images: Vec<String> = field("ContainerDefinitions")
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|container| cfn_text(container.get("Image")?))
+                    .collect();
+                model.task_images.insert(id.clone(), images);
+            }
             "AWS::ECS::Service" => {
+                if let Some(task) = cfn_ref(field("TaskDefinition")) {
+                    let name = field("ServiceName").as_str().unwrap_or(id).to_owned();
+                    model.service_tasks.push((name, task));
+                }
                 let refs = cfn_refs(
                     field("NetworkConfiguration")
                         .get("AwsvpcConfiguration")
@@ -230,6 +276,10 @@ pub fn cloudformation_records(project_path: &str, text: &str) -> Vec<RawRecord> 
                 attach(&mut model, refs, Some(Owner::Service(name)));
             }
             "AWS::Lambda::Function" => {
+                if let Some(uri) = field("Code").get("ImageUri").and_then(cfn_text) {
+                    let name = field("FunctionName").as_str().unwrap_or(id).to_owned();
+                    model.images.entry(name).or_default().push(uri);
+                }
                 let refs = cfn_refs(
                     field("VpcConfig")
                         .get("SecurityGroupIds")
@@ -255,6 +305,86 @@ pub fn cloudformation_records(project_path: &str, text: &str) -> Vec<RawRecord> 
         }
     }
     emit(project_path, &model)
+}
+
+/// Container images named in a task definition body (HCL or JSON).
+fn tf_images(body: &str) -> Vec<String> {
+    let image = Regex::new(r#"(?m)"?\bimage"?\s*[:=]\s*"([^"]+)""#).expect("regex");
+    image
+        .captures_iter(body)
+        .map(|caps| caps[1].to_owned())
+        .collect()
+}
+
+/// A CloudFormation string, or the template of `Fn::Sub`.
+fn cfn_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Object(map) => match map.get("Fn::Sub")? {
+            Value::String(text) => Some(text.clone()),
+            Value::Array(parts) => parts.first()?.as_str().map(str::to_owned),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The repository name of an image reference: the last path segment without
+/// its tag or digest. Interpolated names are skipped, not guessed.
+fn image_repo(raw: &str, ecr: &BTreeMap<String, String>) -> Option<String> {
+    let label = Regex::new(r"aws_ecr_repository\.([A-Za-z0-9_-]+)").expect("regex");
+    if let Some(caps) = label.captures(raw) {
+        let name = ecr
+            .get(&caps[1])
+            .cloned()
+            .unwrap_or_else(|| caps[1].to_owned());
+        let name = name.rsplit('/').next().unwrap_or(&name);
+        return Some(kebab(name)).filter(|name| !name.is_empty());
+    }
+    let last = raw.rsplit('/').next()?;
+    let name = last.split([':', '@']).next()?;
+    if name.contains("${") {
+        return None;
+    }
+    Some(kebab(name)).filter(|name| !name.is_empty())
+}
+
+fn image_records(model: &Model) -> Vec<RawRecord> {
+    let mut by_workload: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut add = |workload: &str, raws: &[String]| {
+        let workload = kebab(workload);
+        if workload.is_empty() {
+            return;
+        }
+        let entry = by_workload.entry(workload).or_default();
+        for raw in raws {
+            if let Some(name) = image_repo(raw, &model.ecr_names)
+                && !entry.contains(&name)
+            {
+                entry.push(name);
+            }
+        }
+    };
+    for (service, task) in &model.service_tasks {
+        let task = task.rsplit('/').next().unwrap_or(task);
+        let task = task.split(':').next().unwrap_or(task);
+        if let Some(raws) = model.task_images.get(task) {
+            add(service, raws);
+        }
+    }
+    for (name, raws) in &model.images {
+        add(name, raws);
+    }
+    by_workload
+        .into_iter()
+        .filter(|(_, images)| !images.is_empty())
+        .map(|(workload, images)| {
+            record(
+                "workload_image",
+                json!({"workload": workload, "images": images}),
+            )
+        })
+        .collect()
 }
 
 fn attach(model: &mut Model, refs: Vec<String>, owner: Option<Owner>) {
@@ -312,6 +442,7 @@ fn emit(project_path: &str, model: &Model) -> Vec<RawRecord> {
             json!({"source": source, "destination": destination, "destination_kind": kind, "loose": true}),
         ));
     }
+    records.extend(image_records(model));
     records
 }
 
@@ -1112,5 +1243,69 @@ resource "aws_db_instance" "orders" {
         let text = "Resources:\n  ApiSg:\n    Type: AWS::EC2::SecurityGroup\n    Properties:\n      GroupDescription: !Sub '${Env} api'\n      SecurityGroupIngress:\n        - SourceSecurityGroupId: !GetAtt WorkerSg.GroupId\n          FromPort: 443\n  WorkerSg:\n    Type: AWS::EC2::SecurityGroup\n    Properties:\n      GroupName: worker-sg\n  Worker:\n    Type: AWS::ECS::Service\n    Properties:\n      ServiceName: report-worker\n      NetworkConfiguration:\n        AwsvpcConfiguration:\n          SecurityGroups:\n            - !Ref WorkerSg\n";
         let records = cloudformation_records("group/app", text);
         assert_eq!(pairs(&records), ["report-worker -> apisg service"]);
+    }
+
+    fn images(records: &[RawRecord]) -> Vec<String> {
+        records
+            .iter()
+            .filter(|record| record.kind == "workload_image")
+            .map(|record| {
+                format!(
+                    "{} runs {}",
+                    record.payload["workload"].as_str().unwrap(),
+                    record.payload["images"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|image| image.as_str().unwrap())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn terraform_services_report_the_images_they_run() {
+        let text = r#"
+resource "aws_ecr_repository" "orders" {
+  name = "team/orders-py"
+}
+resource "aws_ecs_task_definition" "api" {
+  family = "api-task"
+  container_definitions = jsonencode([
+    { name = "agent", image = "public.ecr.aws/datadog/agent:7" },
+    { name = "app", image = "${aws_ecr_repository.orders.repository_url}:${var.tag}" }
+  ])
+}
+resource "aws_ecs_service" "api" {
+  name            = "legacy-api"
+  task_definition = aws_ecs_task_definition.api.arn
+}
+resource "aws_lambda_function" "hook" {
+  function_name = "hook-fn"
+  image_uri     = "123.dkr.ecr.eu-west-1.amazonaws.com/notifications:1.2"
+}
+resource "aws_ecs_service" "dynamic" {
+  name            = "dyn"
+  task_definition = aws_ecs_task_definition.api.arn
+}
+"#;
+        let records = terraform_records("group/infra", text);
+        assert_eq!(
+            images(&records),
+            [
+                "dyn runs agent,orders-py",
+                "hook-fn runs notifications",
+                "legacy-api runs agent,orders-py"
+            ]
+        );
+    }
+
+    #[test]
+    fn cloudformation_services_report_the_images_they_run() {
+        let text = "Resources:\n  Task:\n    Type: AWS::ECS::TaskDefinition\n    Properties:\n      ContainerDefinitions:\n        - Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/orders-py:latest'\n        - Image: ${Registry}/${Name}:1\n  Svc:\n    Type: AWS::ECS::Service\n    Properties:\n      ServiceName: legacy-api\n      TaskDefinition: !Ref Task\n";
+        let records = cloudformation_records("group/app", text);
+        assert_eq!(images(&records), ["legacy-api runs orders-py"]);
     }
 }

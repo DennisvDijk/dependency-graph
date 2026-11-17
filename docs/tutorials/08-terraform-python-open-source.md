@@ -131,6 +131,8 @@ resource "aws_security_group_rule" "billing_to_keycloak" {
 
 **Which rules count**: inline `ingress` / `egress` blocks with `security_groups`, `aws_security_group_rule`, `aws_vpc_security_group_ingress_rule` / `egress_rule`, and in CloudFormation `SecurityGroupIngress` / `SecurityGroupEgress` (inline or standalone) with `SourceSecurityGroupId` / `DestinationSecurityGroupId`. `!Ref` and `!GetAtt` work. CIDR and prefix-list rules add nothing, because an IP range is not a service.
 
+When a service's own name matches no component, depgraph reads the container image it runs (ECS task definitions and Lambda container images, in Terraform or CloudFormation) and uses the image's repository name instead: `…/orders-py:1.4` links the service to `orders-py`. The service name is always tried first, an image is used only when it names a known component, and nothing is guessed from interpolated image names.
+
 Edges are **candidates**: the security group allows the traffic, nobody has seen it yet. Group ids typed as literals (`sg-0abc…`) and groups from other repos via `data` sources without a name cannot be followed.
 
 ## Docker and docker-compose
