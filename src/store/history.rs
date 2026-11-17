@@ -98,7 +98,7 @@ pub fn retain(runs: &Path, now: &Timestamp, retention_days: u32) -> Result<Vec<S
             .generated_at
             .to_datetime()
             .map_err(Error::Validation)?;
-        let age = (now - generated).num_days();
+        let age = (now - generated).as_hours() / 24;
         if age > i64::from(retention_days) {
             fs::remove_dir_all(runs.join(&key))?;
             removed.push(key);

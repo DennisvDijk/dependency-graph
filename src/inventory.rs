@@ -8,8 +8,6 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use chrono::{DateTime, Utc};
-
 use crate::error::Error;
 use crate::gitlab::{GitLabClient, Job, Project, ProjectFilter, resolve_token};
 use crate::repo_scan::{self, JobHint, RepoFlags};
@@ -44,7 +42,7 @@ pub struct InventoryQuery<'a> {
     /// Parallel project inspections.
     pub max_concurrency: usize,
     /// Clock injected for `min_last_activity`.
-    pub now: DateTime<Utc>,
+    pub now: jiff::Timestamp,
 }
 
 /// Collect inventory.

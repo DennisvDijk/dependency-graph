@@ -1813,7 +1813,7 @@ fn expire_edges(
         let Some(last) = last else {
             return true;
         };
-        let age = (generated - last).num_days().max(0);
+        let age = ((generated - last).as_hours() / 24).max(0);
         age < i64::from(retention_days)
     });
     for edge in edges {
@@ -1823,7 +1823,7 @@ fn expire_edges(
             .filter_map(|source| source.last_seen.to_datetime().ok())
             .max();
         if let Some(last) = last {
-            let age = (generated - last).num_days().max(0);
+            let age = ((generated - last).as_hours() / 24).max(0);
             if age >= i64::from(edge_expiry_days) {
                 edge.active = false;
             }

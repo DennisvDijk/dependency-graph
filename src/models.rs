@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -39,9 +38,9 @@ impl Timestamp {
     /// # Errors
     ///
     /// Returns an error when the stored text is not RFC 3339.
-    pub fn to_datetime(&self) -> Result<DateTime<Utc>, String> {
-        DateTime::parse_from_rfc3339(&self.0)
-            .map(|value| value.with_timezone(&Utc))
+    pub fn to_datetime(&self) -> Result<jiff::Timestamp, String> {
+        self.0
+            .parse::<jiff::Timestamp>()
             .map_err(|err| err.to_string())
     }
 }
