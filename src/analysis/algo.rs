@@ -21,7 +21,9 @@ pub struct Visit {
     pub id: String,
     /// Distance from the start. The start itself is not included.
     pub depth: usize,
-    /// How many dependency edges touch this node, in either direction.
+    /// How many other nodes this one is linked to by dependency edges, in
+    /// either direction. It follows the `--env` filter, so a node can be a hub
+    /// in all environments and not in one.
     pub links: usize,
 }
 
@@ -322,20 +324,25 @@ fn walk(
             visits.push(Visit {
                 id: indexed.graph[neighbor].clone(),
                 depth: next,
-                links: indexed
-                    .graph
-                    .neighbors_directed(neighbor, Direction::Incoming)
-                    .count()
-                    + indexed
-                        .graph
-                        .neighbors_directed(neighbor, Direction::Outgoing)
-                        .count(),
+                links: indexed.links(neighbor),
             });
             queue.push_back((neighbor, next));
         }
     }
     visits.sort_by(|left, right| left.depth.cmp(&right.depth).then(left.id.cmp(&right.id)));
     Ok(visits)
+}
+
+impl Indexed {
+    /// Distinct other nodes this node is linked to, in either direction.
+    /// Parallel edges and self-loops count once and not at all.
+    fn links(&self, node: NodeIndex) -> usize {
+        self.undirected
+            .neighbors(node)
+            .filter(|other| *other != node)
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
 }
 
 struct Indexed {
@@ -795,14 +802,9 @@ mod tests {
         assert!(edges_at(&left, &before).is_empty());
         assert_eq!(library_impact_disabled(), "libraries disabled");
     }
-}
-
-#[cfg(test)]
-mod hub_tests {
-    use super::*;
 
     #[test]
-    fn a_node_with_many_links_is_flagged_as_a_hub() {
+    fn links_count_distinct_neighbours_and_flag_hubs() {
         let visit = |links| Visit {
             id: "resource:database:shared".into(),
             depth: 1,
@@ -810,5 +812,9 @@ mod hub_tests {
         };
         assert!(!visit(HUB_LINKS - 1).is_hub());
         assert!(visit(HUB_LINKS).is_hub());
+        let graph = fixture();
+        let indexed = index(&graph, Some(Env::Prod), dependency_edge);
+        let b = indexed.ids["component:b"];
+        assert_eq!(indexed.links(b), 2);
     }
 }

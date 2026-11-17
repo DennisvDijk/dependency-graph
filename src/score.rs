@@ -72,6 +72,7 @@ pub fn ranked_impact(
         .map(|visit| ScoredVisit {
             id: visit.id.clone(),
             depth: visit.depth,
+            links: visit.links,
             path_score: scores.get(&visit.id).copied().unwrap_or(0.0),
         })
         .collect();
@@ -93,6 +94,8 @@ pub struct ScoredVisit {
     pub id: String,
     /// Distance from the target.
     pub depth: usize,
+    /// Other nodes this one is linked to. See [`algo::Visit::links`].
+    pub links: usize,
     /// Product of weight times hardness. Not a probability.
     pub path_score: f64,
 }
