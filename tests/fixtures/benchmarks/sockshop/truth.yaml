@@ -1,0 +1,19 @@
+# Hand-derived from the pinned sources (see README.md). Components use their
+# short name; resources use their full id.
+edges:
+  - front-end -> catalogue
+  - front-end -> carts
+  - front-end -> orders
+  - front-end -> user
+  - orders -> payment
+  - orders -> shipping
+  - orders -> orders-db
+  - carts -> carts-db
+  - user -> user-db
+  - catalogue -> catalogue-db
+  - shipping -> rabbitmq
+  - queue-master -> rabbitmq
+  # The queue, from `convertAndSend("shipping-task", …)` in shipping and the
+  # consumer config in queue-master.
+  - shipping -> resource:queue:shipping-task
+  - queue-master -> resource:queue:shipping-task

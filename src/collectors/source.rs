@@ -22,8 +22,19 @@ pub const MAX_SOURCE_FILES: usize = 100;
 /// Larger files are generated or data, not application code.
 const MAX_FILE_BYTES: usize = 400_000;
 
-const EXTENSIONS: [&str; 11] = [
-    ".py", ".ex", ".exs", ".rs", ".js", ".mjs", ".ts", ".go", ".java", ".kt", ".cs",
+const EXTENSIONS: [&str; 12] = [
+    ".py",
+    ".ex",
+    ".exs",
+    ".rs",
+    ".js",
+    ".mjs",
+    ".ts",
+    ".go",
+    ".java",
+    ".kt",
+    ".cs",
+    ".properties",
 ];
 const SKIPPED_DIRS: [&str; 23] = [
     "node_modules",
@@ -128,6 +139,24 @@ static DATABASE: LazyLock<Regex> = LazyLock::new(|| {
         r#"(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?)://(?:[^@\s"'/]*@)?([a-z0-9][a-z0-9.\-]*[a-z0-9])"#,
     )
     .expect("database pattern")
+});
+/// `mongodb://${db:carts-db}:27017`: the default after the colon is the host.
+static DATABASE_DEFAULT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?)://(?:[^@\s"'/]*@)?\$\{[a-z0-9_.]+:([a-z0-9][a-z0-9.\-]*[a-z0-9])\}"#,
+    )
+    .expect("database default pattern")
+});
+/// A Go SQL data source name: `user:pass@tcp(catalogue-db:3306)/socks`.
+static DSN_TCP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)@tcp\(([a-z0-9][a-z0-9.\-]*[a-z0-9])(?::\d+)?\)"#).expect("dsn pattern")
+});
+/// A whole line `spring.rabbitmq.host=rabbitmq` or `redis.host: cache`.
+static HOST_SETTING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)^\s*[a-z0-9_.\-]+\.host\s*[=:]\s*["']?([a-z0-9][a-z0-9.\-]*[a-z0-9])["']?\s*$"#,
+    )
+    .expect("host setting pattern")
 });
 static PARAMETER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -283,6 +312,17 @@ fn in_block(line: &str, open: &mut Option<&'static str>) -> bool {
     false
 }
 
+/// True for `%s`, `%v` or `%d` followed by the end of the host.
+fn format_suffix_follows(rest: &str) -> bool {
+    let mut chars = rest.chars();
+    chars.next();
+    matches!(chars.next(), Some('s' | 'v' | 'd'))
+        && matches!(
+            chars.next(),
+            None | Some('/' | ':' | '"' | '\'' | '`' | ')' | ',')
+        )
+}
+
 fn classify_host(host: &str) -> Host {
     let host = host.to_ascii_lowercase();
     if PLACEHOLDER_HOSTS.contains(&host.as_str()) {
@@ -388,7 +428,22 @@ fn scan(text: &str, findings: &mut BTreeSet<Finding>) {
             continue;
         }
         let line = strip_trailing_comment(raw);
-        for capture in DATABASE.captures_iter(line) {
+        for capture in HOST_SETTING.captures_iter(line) {
+            match classify_host(&capture[1]) {
+                Host::Service(name) => {
+                    findings.insert(Finding::Service(name));
+                }
+                Host::Database(name) => {
+                    findings.insert(Finding::Database(name));
+                }
+                Host::External(_) | Host::Skip => {}
+            }
+        }
+        for capture in DATABASE
+            .captures_iter(line)
+            .chain(DATABASE_DEFAULT.captures_iter(line))
+            .chain(DSN_TCP.captures_iter(line))
+        {
             let host = capture[1].to_ascii_lowercase();
             let first = host.split('.').next().unwrap_or(&host);
             if GENERIC_DATABASES.contains(&first) {
@@ -401,7 +456,12 @@ fn scan(text: &str, findings: &mut BTreeSet<Finding>) {
         for capture in URL.captures_iter(line) {
             let whole = capture.get(0).expect("whole match");
             let next = line[whole.end()..].chars().next();
-            if matches!(next, Some('-' | '_' | '{' | '$' | '%' | '#')) {
+            if matches!(next, Some('-' | '_' | '{' | '$' | '#')) {
+                continue;
+            }
+            // `http://catalogue%s/tags`: the host is whole, a format fills in
+            // only a domain suffix. `http://%s` never gets here (no host).
+            if next == Some('%') && !format_suffix_follows(&line[whole.end()..]) {
                 continue;
             }
             match classify_host(&capture[1]) {
@@ -749,5 +809,38 @@ client.send_message().queue_url("https://sqs.eu-west-1.amazonaws.com/1/edge-even
     #[test]
     fn a_service_calling_itself_is_not_a_dependency() {
         assert!(found("a.py", r#"get("http://orders-py:80/x")"#).is_empty());
+    }
+
+    #[test]
+    fn a_host_followed_by_a_format_domain_is_still_a_host() {
+        let text = r#"
+catalogueUrl: util.format("http://catalogue%s", domain),
+cartsUrl: util.format("http://carts%s/carts", domain),
+"#;
+        let mut got = found("src/endpoints.js", text);
+        got.sort();
+        assert_eq!(got, ["call carts service", "call catalogue service"]);
+        // Still not guessed when the format sits inside the name.
+        assert!(found("src/a.js", r#"get("http://shop%s.example.com/x")"#).is_empty());
+    }
+
+    #[test]
+    fn database_defaults_dsns_and_host_settings_name_their_host() {
+        let text = r#"
+spring.data.mongodb.uri=mongodb://${db:carts-db}:27017/data
+spring.rabbitmq.host=rabbitmq
+dsn = "catalogue_user:default_password@tcp(catalogue-db:3306)/socksdb"
+spring.redis.host=localhost
+"#;
+        let mut got = found("src/main/resources/application.properties", text);
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                "call carts-db database",
+                "call catalogue-db database",
+                "call rabbitmq service"
+            ]
+        );
     }
 }

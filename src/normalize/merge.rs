@@ -1449,8 +1449,15 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
                 environments,
             )
             .unwrap_or_else(|| candidate.destination.clone());
-            let id = format!("resource:{kind}:{name}");
-            if !resources.contains_key(&(kind.to_owned(), name.clone())) {
+            let known_resource = resources.contains_key(&(kind.to_owned(), name.clone()));
+            // A database that runs as its own workload (`catalogue-db`) is a
+            // component here. Point at it instead of inventing a second node.
+            let id = if !known_resource && components.contains_key(&candidate.destination) {
+                format!("component:{}", candidate.destination)
+            } else {
+                format!("resource:{kind}:{name}")
+            };
+            if !known_resource && id.starts_with("resource:") {
                 resources.insert((kind.to_owned(), name), "k8s_workloads".to_owned());
                 inferred.insert(id.clone());
             }
