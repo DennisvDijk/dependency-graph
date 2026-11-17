@@ -95,6 +95,8 @@ pub fn merge_records(
     let mut live_clusters: BTreeMap<String, Value> = BTreeMap::new();
     let mut live_workloads: BTreeMap<String, Value> = BTreeMap::new();
     let mut candidates: Vec<CandidateCall> = Vec::new();
+    // Service or function name -> names of the container images it runs.
+    let mut image_hints: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut soft_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut heuristics: BTreeMap<String, bool> = BTreeMap::new();
     let mut experiments: BTreeMap<(String, String), bool> = BTreeMap::new();
@@ -273,6 +275,13 @@ pub fn merge_records(
                     .or_insert_with(|| record.payload.clone());
             }
             "network_flow_checkpoint" => {}
+            "workload_image" => {
+                let workload = required_str(&record.payload, "workload")?.to_owned();
+                image_hints
+                    .entry(workload)
+                    .or_default()
+                    .extend(string_list(&record.payload, "images"));
+            }
             "network_node" => {
                 let name = required_str(&record.payload, "name")?;
                 if !ids::is_kebab_case(name) {
@@ -325,6 +334,11 @@ pub fn merge_records(
             other => unresolved.push(unresolved_row("record", other, "ignored record kind", 0)),
         }
     }
+
+    // A service whose own name matches no component may run an image named
+    // after one. The service name is tried first; the image only fills the gap.
+    let image_aliases = with_image_aliases(aliases, environments, &components, &image_hints);
+    let aliases = &image_aliases;
 
     // Security groups and other cloud resources name their service loosely
     // (`orders-py-prod-sg`). Match to a known component or drop the resource.
@@ -921,6 +935,32 @@ fn loose_match(
         }
     }
     None
+}
+
+fn with_image_aliases(
+    aliases: &Aliases,
+    environments: &EnvIndex,
+    components: &BTreeMap<String, BTreeSet<String>>,
+    hints: &BTreeMap<String, Vec<String>>,
+) -> Aliases {
+    let mut merged = aliases.clone();
+    for (workload, images) in hints {
+        if merged.aliases.contains_key(workload)
+            || loose_match(
+                workload,
+                |name| components.contains_key(name),
+                aliases,
+                environments,
+            )
+            .is_some()
+        {
+            continue;
+        }
+        if let Some(image) = images.iter().find(|image| components.contains_key(*image)) {
+            merged.aliases.insert(workload.clone(), image.clone());
+        }
+    }
+    merged
 }
 
 fn canonical_name(name: &str, aliases: &Aliases) -> String {
@@ -1726,5 +1766,36 @@ mod tests {
         assert!(version_rank("v1.4.0").0 > version_rank("latest").0);
         assert_eq!(version_rank("v1.4.0").1, "1.4.0");
         assert_eq!(version_rank("sha256:abcd").0, 4);
+    }
+
+    #[test]
+    fn an_image_names_a_service_only_when_its_own_name_matches_nothing() {
+        let components: BTreeMap<String, BTreeSet<String>> = ["orders-py", "billing"]
+            .iter()
+            .map(|name| ((*name).to_owned(), BTreeSet::new()))
+            .collect();
+        let hints: BTreeMap<String, Vec<String>> = [
+            ("legacy-api", vec!["agent", "orders-py"]),
+            ("billing-svc", vec!["orders-py"]),
+            ("mystery", vec!["nginx"]),
+        ]
+        .into_iter()
+        .map(|(name, images)| {
+            (
+                name.to_owned(),
+                images.into_iter().map(str::to_owned).collect(),
+            )
+        })
+        .collect();
+        let merged = with_image_aliases(
+            &Aliases::default(),
+            &EnvIndex::default(),
+            &components,
+            &hints,
+        );
+        assert_eq!(merged.aliases.get("legacy-api").unwrap(), "orders-py");
+        assert!(!merged.aliases.contains_key("mystery"));
+        // `billing-svc` already finds `billing` by its own name.
+        assert!(!merged.aliases.contains_key("billing-svc"));
     }
 }
