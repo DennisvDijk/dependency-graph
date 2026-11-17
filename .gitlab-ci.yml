@@ -85,6 +85,23 @@ test:
       install -m 0755 "/tmp/${name}/cargo-deny" /usr/local/bin/cargo-deny
     - cargo deny check
 
+# The benchmark also runs inside `test` above. This job runs it alone so the
+# precision and recall numbers are easy to find: open the job log or download
+# benchmark-report.txt. It fails when a score drops below the ratchet in
+# tests/benchmark.rs.
+benchmark:
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - when: on_success
+  script:
+    - cargo test --test benchmark -- --nocapture 2>&1 | tee benchmark-report.txt
+  artifacts:
+    when: always
+    paths:
+      - benchmark-report.txt
+
 collect:
   <<: *rust_job
   stage: collect

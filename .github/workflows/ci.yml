@@ -28,6 +28,11 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --all-targets --all-features
+      - name: Benchmark scores
+        run: |
+          set -o pipefail
+          cargo test --test benchmark -- --nocapture 2>&1 | tee benchmark-report.txt
+          { echo '### Benchmark'; echo '```'; grep -E 'truth|precision|recall|missed|extra|->' benchmark-report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Install cargo-deny
         run: |
           version=0.20.2
