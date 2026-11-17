@@ -121,6 +121,12 @@ async fn mcp(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    if state.insecure && !local_request(&headers) {
+        // A web page can point its own host name at 127.0.0.1 (DNS rebinding)
+        // and then talk to this port. Only requests that name the loopback
+        // host, and carry no foreign Origin, may pass without a token.
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "forbidden"}))).into_response();
+    }
     if !state.insecure {
         let token = bearer(&headers);
         let Some(token) = token else {
@@ -173,6 +179,25 @@ async fn mcp(
         }
     };
     Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
+}
+
+/// Whether `Host` and `Origin` both name the loopback interface.
+pub fn local_request(headers: &HeaderMap) -> bool {
+    let loopback = |value: &str| {
+        let host = value
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
+        let host = host.split('/').next().unwrap_or(host);
+        auth::is_loopback(host)
+    };
+    let host_ok = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(loopback);
+    let origin_ok = headers
+        .get(header::ORIGIN)
+        .is_none_or(|value| value.to_str().ok().is_some_and(loopback));
+    host_ok && origin_ok
 }
 
 fn bearer(headers: &HeaderMap) -> Option<String> {
@@ -361,5 +386,36 @@ fn empty_graph() -> GraphSnapshot {
         sources: Default::default(),
         nodes: Vec::new(),
         edges: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers(host: &str, origin: Option<&str>) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        map.insert(header::HOST, host.parse().unwrap());
+        if let Some(origin) = origin {
+            map.insert(header::ORIGIN, origin.parse().unwrap());
+        }
+        map
+    }
+
+    #[test]
+    fn local_mode_accepts_only_loopback_host_and_origin() {
+        assert!(local_request(&headers("127.0.0.1:8080", None)));
+        assert!(local_request(&headers(
+            "localhost:8080",
+            Some("http://localhost:3000")
+        )));
+        assert!(local_request(&headers("[::1]:8080", None)));
+        // DNS rebinding: the page's own name resolves to 127.0.0.1.
+        assert!(!local_request(&headers("evil.example.com:8080", None)));
+        assert!(!local_request(&headers(
+            "127.0.0.1:8080",
+            Some("https://evil.example.com")
+        )));
+        assert!(!local_request(&HeaderMap::new()));
     }
 }
