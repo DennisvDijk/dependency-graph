@@ -49,6 +49,16 @@ struct Model {
     task_env: BTreeMap<String, String>,
     /// Lambda function name -> the text of its settings.
     fn_env: BTreeMap<String, String>,
+    /// Queue key (`aws_sqs_queue.label` or a template id) -> queue name.
+    queues: BTreeMap<String, String>,
+    /// Topic key (`aws_sns_topic.label` or a template id) -> topic name.
+    topics: BTreeMap<String, String>,
+    /// Function key -> function name.
+    fn_keys: BTreeMap<String, String>,
+    /// A function that reads a queue: (function key or name, queue key).
+    reads: Vec<(String, String)>,
+    /// A topic delivered to a queue or a function: (topic key, protocol, endpoint key or name).
+    subscriptions: Vec<(String, String, String)>,
 }
 
 /// Records from the Terraform files of one project (path, text), with local
@@ -265,6 +275,8 @@ pub fn terraform_records(project_path: &str, text: &str) -> Vec<RawRecord> {
         "aws_security_group",
         "aws_ecs_service",
         "aws_lambda_function",
+        "aws_sqs_queue",
+        "aws_sns_topic",
     ]
     .iter()
     .any(|needle| text.contains(needle))
@@ -375,9 +387,43 @@ pub fn terraform_records(project_path: &str, text: &str) -> Vec<RawRecord> {
                     .collect();
                 attach(&mut model, refs, name.map(Owner::Service));
             }
+            ("resource", "aws_sqs_queue") => {
+                let name = tf_string(&top, "name").unwrap_or_else(|| label.to_owned());
+                model.queues.insert(format!("aws_sqs_queue.{label}"), name);
+            }
+            ("resource", "aws_sns_topic") => {
+                let name = tf_string(&top, "name").unwrap_or_else(|| label.to_owned());
+                model.topics.insert(format!("aws_sns_topic.{label}"), name);
+            }
+            ("resource", "aws_lambda_event_source_mapping") => {
+                if let (Some(queue), Some(function)) = (
+                    tf_ref(&tf_value(&top, "event_source_arn"), "aws_sqs_queue"),
+                    tf_function(&tf_value(&top, "function_name")),
+                ) {
+                    model.reads.push((function, queue));
+                }
+            }
+            ("resource", "aws_sns_topic_subscription") => {
+                let protocol = tf_string(&top, "protocol").unwrap_or_default();
+                let endpoint = tf_value(&top, "endpoint");
+                let target = if protocol == "lambda" {
+                    tf_function(&endpoint)
+                } else {
+                    tf_ref(&endpoint, "aws_sqs_queue")
+                };
+                if let (Some(topic), Some(target)) = (
+                    tf_ref(&tf_value(&top, "topic_arn"), "aws_sns_topic"),
+                    target,
+                ) {
+                    model.subscriptions.push((topic, protocol, target));
+                }
+            }
             ("resource", "aws_lambda_function") => {
                 let name = tf_string(&top, "function_name");
                 if let Some(name) = &name {
+                    model
+                        .fn_keys
+                        .insert(format!("aws_lambda_function.{label}"), name.clone());
                     model.fn_env.insert(name.clone(), body.to_owned());
                     if let Some(uri) = tf_string(&top, "image_uri") {
                         model.images.entry(name.clone()).or_default().push(uri);
@@ -512,7 +558,36 @@ pub fn cloudformation_records(project_path: &str, text: &str) -> Vec<RawRecord> 
                 let name = field("ServiceName").as_str().unwrap_or(id).to_owned();
                 attach(&mut model, refs, Some(Owner::Service(name)));
             }
+            "AWS::SQS::Queue" => {
+                let name = field("QueueName").as_str().unwrap_or(id).to_owned();
+                model.queues.insert(id.clone(), name);
+            }
+            "AWS::SNS::Topic" => {
+                let name = field("TopicName").as_str().unwrap_or(id).to_owned();
+                model.topics.insert(id.clone(), name);
+            }
+            "AWS::Lambda::EventSourceMapping" => {
+                if let (Some(queue), Some(function)) = (
+                    cfn_ref(field("EventSourceArn")),
+                    cfn_ref(field("FunctionName"))
+                        .or_else(|| field("FunctionName").as_str().map(str::to_owned)),
+                ) {
+                    model.reads.push((function, queue));
+                }
+            }
+            "AWS::SNS::Subscription" => {
+                let protocol = field("Protocol").as_str().unwrap_or("").to_owned();
+                if let (Some(topic), Some(target)) =
+                    (cfn_ref(field("TopicArn")), cfn_ref(field("Endpoint")))
+                {
+                    model.subscriptions.push((topic, protocol, target));
+                }
+            }
             "AWS::Lambda::Function" => {
+                model.fn_keys.insert(
+                    id.clone(),
+                    field("FunctionName").as_str().unwrap_or(id).to_owned(),
+                );
                 if let Some(uri) = field("Code").get("ImageUri").and_then(cfn_text) {
                     let name = field("FunctionName").as_str().unwrap_or(id).to_owned();
                     model.images.entry(name).or_default().push(uri);
@@ -699,7 +774,110 @@ fn emit(project_path: &str, model: &Model) -> Vec<RawRecord> {
         }
     }
     records.extend(image_records(model));
+    records.extend(messaging_records(model));
     records
+}
+
+/// `type.label` for the first reference to a resource of this type.
+fn tf_ref(value: &str, rtype: &str) -> Option<String> {
+    let pattern = Regex::new(&format!(r"{rtype}\.([A-Za-z0-9_-]+)")).expect("regex");
+    pattern
+        .captures(value)
+        .map(|caps| format!("{rtype}.{}", &caps[1]))
+}
+
+/// A function given by reference (`aws_lambda_function.x.arn`) or by name.
+fn tf_function(value: &str) -> Option<String> {
+    tf_ref(value, "aws_lambda_function").or_else(|| {
+        let name = value.trim().strip_prefix('"')?.split('"').next()?;
+        (!name.is_empty() && !name.contains("${")).then(|| name.to_owned())
+    })
+}
+
+/// Queues and topics from the template: who reads a queue, which queue a
+/// topic feeds, and which services and functions name a queue or topic in
+/// their settings.
+fn messaging_records(model: &Model) -> Vec<RawRecord> {
+    let strip = |name: &str| kebab(name.strip_suffix(".fifo").unwrap_or(name));
+    let function = |key: &str| kebab(model.fn_keys.get(key).map_or(key, String::as_str));
+    let message = |source: &str, direction: &str, kind: &str, name: &str| {
+        record(
+            "messaging",
+            json!({"source": source, "direction": direction, "kind": kind, "name": name, "loose": true}),
+        )
+    };
+    let mut records = Vec::new();
+    let mut readers: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    for (function_key, queue_key) in &model.reads {
+        let Some(queue) = model.queues.get(queue_key) else {
+            continue;
+        };
+        let reader = function(function_key);
+        records.push(message(&reader, "consume", "queue", &strip(queue)));
+        readers.entry(queue_key).or_default().insert(reader);
+    }
+    for (topic_key, protocol, target) in &model.subscriptions {
+        let Some(topic) = model.topics.get(topic_key) else {
+            continue;
+        };
+        if protocol == "lambda" {
+            records.push(message(
+                &function(target),
+                "consume",
+                "topic",
+                &strip(topic),
+            ));
+        } else if let Some(queue) = model.queues.get(target) {
+            records.push(record(
+                "resource_link",
+                json!({
+                    "from_kind": "queue", "from": strip(queue),
+                    "to_kind": "topic", "to": strip(topic),
+                }),
+            ));
+            readers.entry(target).or_default();
+        }
+    }
+    let reference = Regex::new(
+        r#"(aws_sns_topic|aws_sqs_queue)\.([A-Za-z0-9_-]+)|"(?:Ref"\s*:\s*"|Fn::GetAtt"\s*:\s*\[")([A-Za-z0-9]+)""#,
+    )
+    .expect("regex");
+    for (owner, text) in settings(model) {
+        let source = kebab(&owner);
+        for caps in reference.captures_iter(text) {
+            let key = match (caps.get(1), caps.get(2), caps.get(3)) {
+                (Some(kind), Some(label), _) => format!("{}.{}", kind.as_str(), label.as_str()),
+                (_, _, Some(id)) => id.as_str().to_owned(),
+                _ => continue,
+            };
+            if let Some(topic) = model.topics.get(&key) {
+                records.push(message(&source, "publish", "topic", &strip(topic)));
+            } else if let (Some(queue), Some(read_by)) =
+                (model.queues.get(&key), readers.get(key.as_str()))
+            {
+                // A queue only counts as a destination when someone reads it,
+                // and a function does not publish to the queue it reads.
+                if !read_by.contains(&source) {
+                    records.push(message(&source, "publish", "queue", &strip(queue)));
+                }
+            }
+        }
+    }
+    records
+}
+
+/// The settings text of every service task and function, by owner.
+fn settings(model: &Model) -> Vec<(String, &String)> {
+    let mut settings: Vec<(String, &String)> = Vec::new();
+    for (service, task) in &model.service_tasks {
+        if let Some(text) = model.task_env.get(task_key(task)) {
+            settings.push((service.clone(), text));
+        }
+    }
+    for (name, text) in &model.fn_env {
+        settings.push((name.clone(), text));
+    }
+    settings
 }
 
 /// Services and functions whose settings name a database: a reference to the
@@ -713,17 +891,8 @@ fn database_calls(model: &Model) -> BTreeSet<(String, String)> {
         Regex::new(r#""(?:Ref"\s*:\s*"|Fn::GetAtt"\s*:\s*\[")([A-Za-z0-9]+)""#).expect("regex");
     let host = Regex::new(r"([a-z0-9][a-z0-9-]*)\.(?:[a-z0-9-]+\.)+(?:rds|cache)\.amazonaws\.com")
         .expect("regex");
-    let mut settings: Vec<(String, &String)> = Vec::new();
-    for (service, task) in &model.service_tasks {
-        if let Some(text) = model.task_env.get(task_key(task)) {
-            settings.push((service.clone(), text));
-        }
-    }
-    for (name, text) in &model.fn_env {
-        settings.push((name.clone(), text));
-    }
     let mut calls = BTreeSet::new();
-    for (owner, text) in settings {
+    for (owner, text) in settings(model) {
         let source = kebab(&owner);
         let mut found: Vec<String> = Vec::new();
         for caps in resource.captures_iter(text) {
@@ -1636,6 +1805,84 @@ resource "aws_ecs_service" "dynamic" {
         let text = "Resources:\n  Task:\n    Type: AWS::ECS::TaskDefinition\n    Properties:\n      ContainerDefinitions:\n        - Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/orders-py:latest'\n        - Image: ${Registry}/${Name}:1\n  Svc:\n    Type: AWS::ECS::Service\n    Properties:\n      ServiceName: legacy-api\n      TaskDefinition: !Ref Task\n";
         let records = cloudformation_records("group/app", text);
         assert_eq!(images(&records), ["legacy-api runs orders-py"]);
+    }
+
+    fn messages(records: &[RawRecord]) -> Vec<String> {
+        let mut found: Vec<String> = records
+            .iter()
+            .filter_map(|record| match record.kind.as_str() {
+                "messaging" => Some(format!(
+                    "{} {} {} {}",
+                    record.payload["source"].as_str()?,
+                    record.payload["direction"].as_str()?,
+                    record.payload["kind"].as_str()?,
+                    record.payload["name"].as_str()?
+                )),
+                "resource_link" => Some(format!(
+                    "{} {} receives {} {}",
+                    record.payload["from_kind"].as_str()?,
+                    record.payload["from"].as_str()?,
+                    record.payload["to_kind"].as_str()?,
+                    record.payload["to"].as_str()?
+                )),
+                _ => None,
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn terraform_queues_and_topics_connect_functions() {
+        let text = r#"
+resource "aws_sns_topic" "events" {
+  name = "order-events"
+}
+resource "aws_sqs_queue" "billing" {
+  name = "billing-jobs.fifo"
+}
+resource "aws_sns_topic_subscription" "to_billing" {
+  topic_arn = aws_sns_topic.events.arn
+  protocol  = "sqs"
+  endpoint  = aws_sqs_queue.billing.arn
+}
+resource "aws_lambda_function" "billing" {
+  function_name = "billing-fn"
+}
+resource "aws_lambda_event_source_mapping" "billing" {
+  event_source_arn = aws_sqs_queue.billing.arn
+  function_name    = aws_lambda_function.billing.arn
+}
+resource "aws_lambda_function" "checkout" {
+  function_name = "checkout-fn"
+  environment {
+    variables = { TOPIC = aws_sns_topic.events.arn, QUEUE = aws_sqs_queue.billing.url }
+  }
+}
+"#;
+        let records = terraform_records("group/infra", text);
+        assert_eq!(
+            messages(&records),
+            [
+                "billing-fn consume queue billing-jobs",
+                "checkout-fn publish queue billing-jobs",
+                "checkout-fn publish topic order-events",
+                "queue billing-jobs receives topic order-events",
+            ]
+        );
+    }
+
+    #[test]
+    fn cloudformation_queues_and_topics_connect_functions() {
+        let text = "Resources:\n  Events:\n    Type: AWS::SNS::Topic\n    Properties:\n      TopicName: order-events\n  Jobs:\n    Type: AWS::SQS::Queue\n    Properties:\n      QueueName: billing-jobs\n  Sub:\n    Type: AWS::SNS::Subscription\n    Properties:\n      TopicArn: !Ref Events\n      Protocol: sqs\n      Endpoint: !GetAtt Jobs.Arn\n  Worker:\n    Type: AWS::Lambda::Function\n    Properties:\n      FunctionName: billing-fn\n  Map:\n    Type: AWS::Lambda::EventSourceMapping\n    Properties:\n      EventSourceArn: !GetAtt Jobs.Arn\n      FunctionName: !Ref Worker\n";
+        let records = cloudformation_records("group/app", text);
+        assert_eq!(
+            messages(&records),
+            [
+                "billing-fn consume queue billing-jobs",
+                "queue billing-jobs receives topic order-events",
+            ]
+        );
     }
 
     #[test]
