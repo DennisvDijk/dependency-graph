@@ -1,0 +1,20 @@
+# Hand-verified from the env vars in the upstream kubernetes-manifests
+# (*_SERVICE_ADDR, REDIS_ADDR, FRONTEND_ADDR). Not copied from depgraph output.
+# shoppingassistantservice is out of scope: it is not in this trimmed copy.
+edges:
+  - frontend -> productcatalogservice
+  - frontend -> currencyservice
+  - frontend -> cartservice
+  - frontend -> recommendationservice
+  - frontend -> shippingservice
+  - frontend -> checkoutservice
+  - frontend -> adservice
+  - checkoutservice -> productcatalogservice
+  - checkoutservice -> shippingservice
+  - checkoutservice -> paymentservice
+  - checkoutservice -> emailservice
+  - checkoutservice -> currencyservice
+  - checkoutservice -> cartservice
+  - recommendationservice -> productcatalogservice
+  - cartservice -> redis-cart
+  - loadgenerator -> frontend

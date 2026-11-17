@@ -141,7 +141,7 @@ static MARKER: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Hosts that appear in code without being a dependency.
-const IGNORED_HOST_SUFFIXES: [&str; 22] = [
+const IGNORED_HOST_SUFFIXES: [&str; 27] = [
     "localhost",
     "example.com",
     "example.org",
@@ -164,6 +164,12 @@ const IGNORED_HOST_SUFFIXES: [&str; 22] = [
     "elixir-lang.org",
     "golang.org",
     "wikipedia.org",
+    // Documentation links that show up in messages and help text.
+    "go.microsoft.com",
+    "learn.microsoft.com",
+    "docs.microsoft.com",
+    "aka.ms",
+    "grpc.io",
 ];
 /// Names too generic to be one particular database.
 const GENERIC_DATABASES: [&str; 9] = [
@@ -455,6 +461,12 @@ l = requests.get("http://localhost:8080/health")
         assert!(got.contains(&"call orders-db database".to_owned()));
         assert_eq!(got.len(), 3, "{got:?}");
         assert!(!got.iter().any(|line| line.contains("secret")));
+    }
+
+    #[test]
+    fn documentation_links_in_messages_are_not_calls() {
+        let text = r#"write("Learn more at https://go.microsoft.com/fwlink/?linkid=1 and https://grpc.io/docs")"#;
+        assert!(found("a.cs", text).is_empty());
     }
 
     #[test]

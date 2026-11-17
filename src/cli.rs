@@ -96,6 +96,8 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Fail when the snapshot is older than a limit. For scheduled pipelines.
     Freshness(FreshnessArgs),
+    /// Score a snapshot against a hand-verified list of true edges.
+    Eval(EvalArgs),
     /// Print an MCP client config snippet.
     McpConfig(McpConfigArgs),
     /// Print a shell completion script.
@@ -335,6 +337,23 @@ pub struct FreshnessArgs {
     /// Reference time. Defaults to the clock.
     #[arg(long)]
     pub now: Option<String>,
+}
+
+/// `depgraph eval`.
+#[derive(Debug, clap::Args)]
+pub struct EvalArgs {
+    /// Snapshot to score.
+    #[arg(long, default_value = "data/snapshot.json")]
+    pub snapshot: PathBuf,
+    /// YAML file with `edges: ["a -> b", ...]`, written from the system's own manifests.
+    #[arg(long)]
+    pub truth: PathBuf,
+    /// Fail when precision is below this (0 to 1).
+    #[arg(long)]
+    pub min_precision: Option<f64>,
+    /// Fail when recall is below this (0 to 1).
+    #[arg(long)]
+    pub min_recall: Option<f64>,
 }
 
 /// `depgraph mcp-config`.
@@ -707,6 +726,7 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::Init(args) => run_init(args),
         Command::Doctor(args) => run_doctor(args),
         Command::Freshness(args) => run_freshness(&args),
+        Command::Eval(args) => run_eval(&args),
         Command::Report(args) => run_report(args),
         Command::McpConfig(args) => run_mcp_config(args),
         Command::Completions(args) => run_completions(args),
@@ -1740,6 +1760,30 @@ fn run_freshness(args: &FreshnessArgs) -> Result<(), Error> {
         "snapshot is {age} hours old, limit is {}",
         args.max_age_hours
     );
+    Ok(())
+}
+
+fn run_eval(args: &EvalArgs) -> Result<(), Error> {
+    let graph = analysis::read_snapshot(&args.snapshot)?;
+    let truth = crate::eval::load_truth(&args.truth)?;
+    let report = crate::eval::score(&graph, &truth)?;
+    print!("{}", crate::eval::render(&report));
+    if let Some(min) = args.min_precision
+        && report.precision() < min
+    {
+        return Err(Error::Validation(format!(
+            "precision {:.2} is below {min:.2}",
+            report.precision()
+        )));
+    }
+    if let Some(min) = args.min_recall
+        && report.recall() < min
+    {
+        return Err(Error::Validation(format!(
+            "recall {:.2} is below {min:.2}",
+            report.recall()
+        )));
+    }
     Ok(())
 }
 

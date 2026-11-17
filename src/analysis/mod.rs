@@ -131,7 +131,11 @@ fn load_graph(request: &ReadRequest) -> Result<GraphSnapshot, Error> {
     read_snapshot(path)
 }
 
-fn read_snapshot(path: &Path) -> Result<GraphSnapshot, Error> {
+/// Read a snapshot file.
+///
+/// # Errors
+/// Returns an error when the file is unreadable or not a snapshot.
+pub fn read_snapshot(path: &Path) -> Result<GraphSnapshot, Error> {
     let text = fs::read_to_string(path)
         .map_err(|err| Error::Validation(format!("reading {}: {err}", path.display())))?;
     serde_json::from_str(&text)

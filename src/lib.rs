@@ -14,6 +14,7 @@ pub mod collectors;
 pub mod config;
 pub mod doctor;
 pub mod error;
+pub mod eval;
 pub mod gitlab;
 pub mod ids;
 pub mod inventory;
