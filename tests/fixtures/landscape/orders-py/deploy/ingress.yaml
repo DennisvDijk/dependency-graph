@@ -4,7 +4,7 @@ metadata:
   name: public-edge
 spec:
   rules:
-    - host: shop.example.com
+    - host: shop.acme-store.io
       http:
         paths:
           - path: /orders

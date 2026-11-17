@@ -97,6 +97,8 @@ pub fn merge_records(
     let mut candidates: Vec<CandidateCall> = Vec::new();
     let mut messages: Vec<Message> = Vec::new();
     let mut links: Vec<ResourceLink> = Vec::new();
+    // Host name written as kebab-case (`shop-example-com`) -> gateway name.
+    let mut gateway_hosts: BTreeMap<String, String> = BTreeMap::new();
     // Service or function name -> names of the container images it runs.
     let mut image_hints: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut soft_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -349,6 +351,17 @@ pub fn merge_records(
                     to: required_str(&record.payload, "to")?.to_owned(),
                 });
             }
+            "gateway_host" => {
+                let host = required_str(&record.payload, "host")?.to_ascii_lowercase();
+                let name: String = host
+                    .chars()
+                    .map(|c| if matches!(c, '.' | '_') { '-' } else { c })
+                    .collect();
+                if ids::is_kebab_case(&name) {
+                    gateway_hosts
+                        .insert(name, required_str(&record.payload, "gateway")?.to_owned());
+                }
+            }
             "project_facts" => {
                 let project_path = text_field(&record.payload, "project_path");
                 let entry = stacks.entry(project_path).or_default();
@@ -398,6 +411,7 @@ pub fn merge_records(
         candidates: &candidates,
         messages: &messages,
         links: &links,
+        gateway_hosts: &gateway_hosts,
         components: &components,
         resources: &mut resources,
         inferred: &mut inferred,
@@ -1266,6 +1280,7 @@ struct RuntimeBuild<'a> {
     candidates: &'a [CandidateCall],
     messages: &'a [Message],
     links: &'a [ResourceLink],
+    gateway_hosts: &'a BTreeMap<String, String>,
     components: &'a BTreeMap<String, BTreeSet<String>>,
     resources: &'a mut BTreeMap<(String, String), String>,
     inferred: &'a mut BTreeSet<String>,
@@ -1281,6 +1296,7 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
         candidates,
         messages,
         links,
+        gateway_hosts,
         components,
         resources,
         inferred,
@@ -1478,7 +1494,21 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
                 }
             }
         };
-        let to_id = if candidate.external {
+        let gateway = candidate
+            .external
+            .then(|| gateway_hosts.get(&destination))
+            .flatten()
+            .filter(|name| {
+                // Links are turned into nodes later, so look at the links.
+                links
+                    .iter()
+                    .any(|link| link.from_kind == "gateway" && link.from == **name)
+            });
+        let to_id = if let Some(name) = gateway {
+            // The host belongs to a gateway we read: depend on it, not on an
+            // anonymous external API.
+            format!("resource:gateway:{name}")
+        } else if candidate.external {
             let id = format!("resource:external-api:{destination}");
             resources
                 .entry(("external-api".to_owned(), destination.clone()))
