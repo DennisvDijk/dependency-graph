@@ -1,0 +1,23 @@
+projects:
+  - path: demo/shop/adservice
+    dir: adservice
+  - path: demo/shop/cartservice
+    dir: cartservice
+  - path: demo/shop/checkoutservice
+    dir: checkoutservice
+  - path: demo/shop/currencyservice
+    dir: currencyservice
+  - path: demo/shop/emailservice
+    dir: emailservice
+  - path: demo/shop/frontend
+    dir: frontend
+  - path: demo/shop/loadgenerator
+    dir: loadgenerator
+  - path: demo/shop/paymentservice
+    dir: paymentservice
+  - path: demo/shop/productcatalogservice
+    dir: productcatalogservice
+  - path: demo/shop/recommendationservice
+    dir: recommendationservice
+  - path: demo/shop/shippingservice
+    dir: shippingservice

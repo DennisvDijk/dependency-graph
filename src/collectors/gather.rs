@@ -357,12 +357,25 @@ fn records_from_file(project_path: &str, path: &str, text: &str) -> Vec<RawRecor
                 }
             }
             Some("Deployment" | "StatefulSet" | "DaemonSet" | "Job" | "CronJob" | "Rollout") => {
-                if let Some(component) = component {
+                let value: serde_json::Value =
+                    yaml_serde::from_str(doc).unwrap_or(serde_json::Value::Null);
+                // `app.kubernetes.io/name` first; then the plain `app` label and
+                // the workload's own name, which most manifests use instead.
+                if let Some(component) = component.or_else(|| workload_name(&value)) {
                     records.push(record(
                         collector,
                         "component",
                         json!({"name": component, "depends_on": [], "project_path": project_path}),
                     ));
+                    for destination in env_service_hosts(&value) {
+                        if destination != component {
+                            records.push(record(
+                                collector,
+                                "candidate_call",
+                                json!({"source": component, "destination": destination, "loose": true}),
+                            ));
+                        }
+                    }
                 }
             }
             _ => {}
@@ -371,6 +384,57 @@ fn records_from_file(project_path: &str, path: &str, text: &str) -> Vec<RawRecor
     records.extend(candidate_records(text));
     records.extend(gateway_records(text));
     records
+}
+
+/// The name of a workload: the `app` label of its pods or of the object, or
+/// else the object's own name. Only kebab-case names count.
+fn workload_name(value: &serde_json::Value) -> Option<String> {
+    [
+        "/spec/template/metadata/labels/app",
+        "/metadata/labels/app",
+        "/metadata/name",
+    ]
+    .iter()
+    .filter_map(|pointer| value.pointer(pointer).and_then(|v| v.as_str()))
+    .find(|name| crate::ids::is_kebab_case(name))
+    .map(str::to_owned)
+}
+
+/// Services named by environment values of the form `host:port`
+/// (`productcatalogservice:3550`, `redis-cart.shop.svc:6379`). A candidate,
+/// not an observation: the setting says where a client would connect.
+fn env_service_hosts(value: &serde_json::Value) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    let containers = value
+        .pointer("/spec/template/spec/containers")
+        .or_else(|| value.pointer("/spec/jobTemplate/spec/template/spec/containers"))
+        .and_then(|v| v.as_array());
+    for container in containers.into_iter().flatten() {
+        for entry in container
+            .get("env")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let Some(text) = entry.get("value").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some((host, port)) = text.rsplit_once(':') else {
+                continue;
+            };
+            if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let name = host.split('.').next().unwrap_or(host);
+            if name != "localhost"
+                && crate::ids::is_kebab_case(name)
+                && !found.iter().any(|existing| existing == name)
+            {
+                found.push(name.to_owned());
+            }
+        }
+    }
+    found
 }
 
 /// Gateways read from Kubernetes `Ingress` and Gateway API `HTTPRoute` objects.
@@ -962,6 +1026,30 @@ mod manifest_selection_tests {
                 "\"mesh-route\"->\"api\""
             ]
         );
+    }
+
+    #[test]
+    fn workloads_are_named_by_app_label_then_object_name() {
+        let labelled: serde_json::Value = serde_json::json!({
+            "metadata": {"name": "web-deploy"},
+            "spec": {"template": {"metadata": {"labels": {"app": "web"}}}}
+        });
+        assert_eq!(workload_name(&labelled).as_deref(), Some("web"));
+        let plain: serde_json::Value = serde_json::json!({"metadata": {"name": "worker"}});
+        assert_eq!(workload_name(&plain).as_deref(), Some("worker"));
+    }
+
+    #[test]
+    fn host_port_env_values_become_service_names_without_localhost() {
+        let value: serde_json::Value = serde_json::json!({"spec": {"template": {"spec": {
+            "containers": [{"env": [
+                {"name": "CART_ADDR", "value": "cartservice:7070"},
+                {"name": "SAME", "value": "cartservice:7070"},
+                {"name": "LOCAL", "value": "localhost:8080"},
+                {"name": "MODE", "value": "production"}
+            ]}]
+        }}}});
+        assert_eq!(env_service_hosts(&value), vec!["cartservice".to_string()]);
     }
 
     #[test]
