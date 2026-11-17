@@ -1042,6 +1042,13 @@ pub struct AwsAccount {
     pub network_interfaces: Option<Value>,
     /// Default-format VPC log events from CloudWatch Logs.
     pub flow_events: Option<Value>,
+    /// `elbv2 describe-load-balancers`.
+    pub load_balancers: Option<Value>,
+    /// `elbv2 describe-target-groups`.
+    pub target_groups: Option<Value>,
+    /// `{"apis": [{"Name": ..., "Items": <get-integrations Items>}]}`, built
+    /// from `apigatewayv2 get-apis` and `get-integrations` per API.
+    pub api_gateways: Option<Value>,
 }
 
 /// Records from a live AWS account: the same security-group ties as from
@@ -1158,6 +1165,7 @@ pub fn account_records(account: &AwsAccount, env: Option<&str>) -> Vec<RawRecord
         attach(&mut model, refs, name.map(Owner::Database));
     }
     let mut records = emit("aws", &model);
+    records.extend(gateway_links(account));
     if let Some(graph) = &account.service_graph {
         records.extend(xray_records(graph, env));
     }
@@ -1171,6 +1179,98 @@ pub fn account_records(account: &AwsAccount, env: Option<&str>) -> Vec<RawRecord
         records.extend(super::flow_logs::aws_flows(account, env));
     }
     records
+}
+
+/// Gateways read from the account: an application or network load balancer
+/// routes to the ECS services registered in its target groups, and an API
+/// Gateway HTTP API routes to the Lambda functions its integrations call.
+///
+/// The links are explicit in the API output (target group ARNs, integration
+/// URIs); nothing is guessed. Only these three resource types are read; a
+/// type that is not listed here is not a gateway in this graph.
+fn gateway_links(account: &AwsAccount) -> Vec<RawRecord> {
+    let items = |value: Option<&Value>, key: &str| -> Vec<Value> {
+        value
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+    let mut links: BTreeSet<(String, String)> = BTreeSet::new();
+    let lb_names: BTreeMap<String, String> =
+        items(account.load_balancers.as_ref(), "LoadBalancers")
+            .iter()
+            .filter_map(|lb| Some((text(lb, "LoadBalancerArn")?, text(lb, "LoadBalancerName")?)))
+            .collect();
+    let group_lbs: BTreeMap<String, Vec<String>> =
+        items(account.target_groups.as_ref(), "TargetGroups")
+            .iter()
+            .filter_map(|group| {
+                let arns = group
+                    .get("LoadBalancerArns")
+                    .and_then(Value::as_array)?
+                    .iter()
+                    .filter_map(|arn| arn.as_str().map(str::to_owned))
+                    .collect();
+                Some((
+                    text(group, "targetGroupArn").or_else(|| text(group, "TargetGroupArn"))?,
+                    arns,
+                ))
+            })
+            .collect();
+    for doc in &account.ecs_services {
+        for service in items(Some(doc), "services") {
+            let Some(name) = text(&service, "serviceName") else {
+                continue;
+            };
+            for attached in service
+                .get("loadBalancers")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let Some(group) = text(attached, "targetGroupArn") else {
+                    continue;
+                };
+                for lb in group_lbs.get(&group).into_iter().flatten() {
+                    if let Some(lb_name) = lb_names.get(lb) {
+                        links.insert((lb_name.clone(), name.clone()));
+                    }
+                }
+            }
+        }
+    }
+    let function = Regex::new(r":function:([A-Za-z0-9_-]+)").expect("regex");
+    for api in items(account.api_gateways.as_ref(), "apis") {
+        let Some(api_name) = text(&api, "Name") else {
+            continue;
+        };
+        for integration in api
+            .get("Items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let uri = text(integration, "IntegrationUri").unwrap_or_default();
+            if let Some(caps) = function.captures(&uri) {
+                links.insert((api_name.clone(), caps[1].to_owned()));
+            }
+        }
+    }
+    links
+        .into_iter()
+        .filter_map(|(gateway, target)| {
+            let (gateway, target) = (kebab(&gateway), kebab(&target));
+            (!gateway.is_empty() && !target.is_empty()).then(|| {
+                record(
+                    "resource_link",
+                    json!({"edge": "routes_to", "from_kind": "gateway", "from": gateway,
+                           "to_kind": "component", "to": target}),
+                )
+            })
+        })
+        .collect()
 }
 
 /// Calls in an X-Ray service graph. `client` nodes are callers outside
@@ -1279,7 +1379,7 @@ fn xray_target(name: &str, kind: &str) -> Option<super::cloud::Target> {
 }
 
 /// Files read by [`records_from_aws_dir`], named after the CLI call.
-pub const AWS_FIXTURE_FILES: [&str; 10] = [
+pub const AWS_FIXTURE_FILES: [&str; 13] = [
     "security-groups.json",
     "ecs-services.json",
     "lambda-functions.json",
@@ -1290,6 +1390,9 @@ pub const AWS_FIXTURE_FILES: [&str; 10] = [
     "ecs-tasks.json",
     "network-interfaces.json",
     "flow-events.json",
+    "load-balancers.json",
+    "target-groups.json",
+    "api-gateways.json",
 ];
 
 /// Read saved AWS CLI output from a directory (for tests and dry runs).
@@ -1313,6 +1416,9 @@ pub fn records_from_aws_dir(
         ecs_tasks: read_json(dir, "ecs-tasks.json")?.into_iter().collect(),
         network_interfaces: read_json(dir, "network-interfaces.json")?,
         flow_events: read_json(dir, "flow-events.json")?,
+        load_balancers: read_json(dir, "load-balancers.json")?,
+        target_groups: read_json(dir, "target-groups.json")?,
+        api_gateways: read_json(dir, "api-gateways.json")?,
     };
     Ok(account_records(&account, env))
 }
@@ -1461,6 +1567,32 @@ pub fn records_from_aws(
         account.db_instances = soft(&["rds", "describe-db-instances"]);
         account.db_clusters = soft(&["rds", "describe-db-clusters"]);
         account.cache_clusters = soft(&["elasticache", "describe-cache-clusters"]);
+        account.load_balancers = soft(&["elbv2", "describe-load-balancers"]);
+        account.target_groups = soft(&["elbv2", "describe-target-groups"]);
+        if let Some(apis) = soft(&["apigatewayv2", "get-apis"]) {
+            let mut found = Vec::new();
+            for api in apis
+                .get("Items")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let (Some(id), Some(name)) = (
+                    api.get("ApiId").and_then(Value::as_str),
+                    api.get("Name").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                let integrations = soft(&["apigatewayv2", "get-integrations", "--api-id", id]);
+                let items = integrations
+                    .as_ref()
+                    .and_then(|doc| doc.get("Items"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                found.push(json!({"Name": name, "Items": items}));
+            }
+            account.api_gateways = Some(json!({"apis": found}));
+        }
         if live.xray {
             let end = now.as_second().to_string();
             let start = (now - jiff::SignedDuration::from_hours(6))

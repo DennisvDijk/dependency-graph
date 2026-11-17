@@ -1,0 +1,10 @@
+{
+  "TargetGroups": [
+    {
+      "TargetGroupArn": "arn:aws:elasticloadbalancing:eu-west-1:1:targetgroup/orders-tg/aa",
+      "LoadBalancerArns": [
+        "arn:aws:elasticloadbalancing:eu-west-1:1:loadbalancer/app/shop-alb/11"
+      ]
+    }
+  ]
+}

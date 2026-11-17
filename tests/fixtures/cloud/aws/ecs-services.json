@@ -1,7 +1,44 @@
 {
   "services": [
-    {"serviceName": "orders-py-prod", "networkConfiguration": {"awsvpcConfiguration": {"securityGroups": ["sg-0a1"], "subnets": ["subnet-1"]}}},
-    {"serviceName": "notifications-prod", "networkConfiguration": {"awsvpcConfiguration": {"securityGroups": ["sg-0e5"]}}},
-    {"serviceName": "keycloak", "networkConfiguration": {"awsvpcConfiguration": {"securityGroups": ["sg-0f6"]}}}
+    {
+      "serviceName": "orders-py-prod",
+      "networkConfiguration": {
+        "awsvpcConfiguration": {
+          "securityGroups": [
+            "sg-0a1"
+          ],
+          "subnets": [
+            "subnet-1"
+          ]
+        }
+      },
+      "loadBalancers": [
+        {
+          "targetGroupArn": "arn:aws:elasticloadbalancing:eu-west-1:1:targetgroup/orders-tg/aa",
+          "containerName": "app",
+          "containerPort": 80
+        }
+      ]
+    },
+    {
+      "serviceName": "notifications-prod",
+      "networkConfiguration": {
+        "awsvpcConfiguration": {
+          "securityGroups": [
+            "sg-0e5"
+          ]
+        }
+      }
+    },
+    {
+      "serviceName": "keycloak",
+      "networkConfiguration": {
+        "awsvpcConfiguration": {
+          "securityGroups": [
+            "sg-0f6"
+          ]
+        }
+      }
+    }
   ]
 }

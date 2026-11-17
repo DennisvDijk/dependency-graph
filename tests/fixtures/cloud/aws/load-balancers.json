@@ -1,0 +1,9 @@
+{
+  "LoadBalancers": [
+    {
+      "LoadBalancerArn": "arn:aws:elasticloadbalancing:eu-west-1:1:loadbalancer/app/shop-alb/11",
+      "LoadBalancerName": "shop-alb",
+      "Type": "application"
+    }
+  ]
+}
