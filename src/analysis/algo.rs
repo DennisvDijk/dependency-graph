@@ -373,7 +373,7 @@ fn index(graph: &GraphSnapshot, env: Option<Env>, keep: impl Fn(&Edge) -> bool) 
         // A publisher is not affected by the topic it writes to; the topic and
         // its consumers are affected by the publisher. Point the edge the way a
         // dependency points: from the one that depends to the one depended on.
-        if edge.edge_type == EdgeType::PublishesTo {
+        if edge.edge_type.points_to_dependent() {
             directed.add_edge(to, from, ());
         } else {
             directed.add_edge(from, to, ());
@@ -398,10 +398,7 @@ fn env_matches(edge: &Edge, env: Option<Env>) -> bool {
 
 /// Network and placement evidence is not a service dependency.
 pub(crate) fn dependency_edge(edge: &Edge) -> bool {
-    !matches!(
-        edge.edge_type,
-        EdgeType::NetworkTraffic | EdgeType::RunsInCluster | EdgeType::HasWorkload
-    )
+    edge.edge_type.affects_impact()
 }
 
 fn deploy_edge(edge: &Edge) -> bool {
