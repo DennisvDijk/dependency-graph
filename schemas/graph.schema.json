@@ -286,6 +286,11 @@
           "const": "consumes_from",
           "description": "Component consumes from a topic or queue.",
           "type": "string"
+        },
+        {
+          "const": "routes_to",
+          "description": "A gateway, ingress or load balancer forwards traffic to a service.",
+          "type": "string"
         }
       ]
     },

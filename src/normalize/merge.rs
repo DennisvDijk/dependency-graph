@@ -342,6 +342,7 @@ pub fn merge_records(
             }
             "resource_link" => {
                 links.push(ResourceLink {
+                    edge: text_field(&record.payload, "edge"),
                     from_kind: required_str(&record.payload, "from_kind")?.to_owned(),
                     from: required_str(&record.payload, "from")?.to_owned(),
                     to_kind: required_str(&record.payload, "to_kind")?.to_owned(),
@@ -1160,6 +1161,8 @@ struct Message {
 
 /// A queue that receives from a topic, found in the infrastructure templates.
 struct ResourceLink {
+    /// `routes_to` when a gateway forwards to a service; empty for queue-to-topic links.
+    edge: String,
     from_kind: String,
     from: String,
     to_kind: String,
@@ -1536,9 +1539,37 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
         }
         edges.push(edge);
     }
-    for link in links.iter() {
+    'links: for link in links.iter() {
+        // A route points at a service we already know, never at a new one.
+        // Check this first so a dead route leaves no orphan gateway behind.
+        let mut known_components = BTreeMap::new();
+        for (kind, name) in [(&link.from_kind, &link.from), (&link.to_kind, &link.to)] {
+            if kind != "component" {
+                continue;
+            }
+            let known = loose_match(
+                name,
+                |candidate| components.contains_key(candidate),
+                aliases,
+                environments,
+            );
+            let Some(known) = known else {
+                unresolved.push(unresolved_row(
+                    "route",
+                    name,
+                    "route target is not a known component",
+                    0,
+                ));
+                continue 'links;
+            };
+            known_components.insert(name.clone(), known);
+        }
         let mut ids_of = Vec::new();
         for (kind, name) in [(&link.from_kind, &link.from), (&link.to_kind, &link.to)] {
+            if kind == "component" {
+                ids_of.push(format!("component:{}", known_components[name]));
+                continue;
+            }
             let name = loose_match(
                 name,
                 |candidate| resources.contains_key(&(kind.clone(), candidate.to_owned())),
@@ -1554,10 +1585,15 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
             ids_of.push(id);
         }
         let mut edge = candidate_edge(&ids_of[0], &ids_of[1], None, generated_at);
-        edge.edge_type = EdgeType::ConsumesFrom;
+        let routes = link.edge == "routes_to";
+        edge.edge_type = if routes {
+            EdgeType::RoutesTo
+        } else {
+            EdgeType::ConsumesFrom
+        };
         edge.id = ids::edge_id(edge.edge_type, &edge.from_id, &edge.to_id, None);
         if let Some(source) = edge.sources.first_mut() {
-            source.evidence_ref = Some("iac".to_owned());
+            source.evidence_ref = Some(if routes { "gateway" } else { "iac" }.to_owned());
         }
         edges.push(edge);
     }
@@ -1787,6 +1823,7 @@ fn assign_status(edges: &mut [Edge]) {
                     EdgeStatus::ObservedOnly
                 }
             }
+            EdgeType::RoutesTo => EdgeStatus::DeclaredOnly,
             EdgeType::CandidateCalls | EdgeType::PublishesTo | EdgeType::ConsumesFrom => {
                 EdgeStatus::Candidate
             }

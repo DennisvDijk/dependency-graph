@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: public-edge
+spec:
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          - path: /orders
+            pathType: Prefix
+            backend:
+              service:
+                name: orders-py
+                port:
+                  number: 80
+          - path: /pay
+            pathType: Prefix
+            backend:
+              service:
+                name: no-such-service
+                port:
+                  number: 80

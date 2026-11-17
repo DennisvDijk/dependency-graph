@@ -55,6 +55,8 @@ pub enum ResourceKind {
     Topic,
     /// A queue.
     Queue,
+    /// A gateway, ingress, load balancer or mesh entry point that routes to services.
+    Gateway,
     /// An API outside the estate.
     ExternalApi,
     /// A model inference endpoint.
@@ -79,6 +81,7 @@ impl ResourceKind {
             Self::Database => "database",
             Self::Topic => "topic",
             Self::Queue => "queue",
+            Self::Gateway => "gateway",
             Self::ExternalApi => "external-api",
             Self::ModelEndpoint => "model-endpoint",
             Self::IdentityProvider => "identity-provider",
@@ -96,6 +99,7 @@ impl ResourceKind {
             "database" => Self::Database,
             "topic" => Self::Topic,
             "queue" => Self::Queue,
+            "gateway" => Self::Gateway,
             "external-api" => Self::ExternalApi,
             "model-endpoint" => Self::ModelEndpoint,
             "identity-provider" => Self::IdentityProvider,
