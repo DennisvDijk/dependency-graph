@@ -47,6 +47,8 @@ flowchart LR
 
 Collectors gather source records. The normalizer resolves them into a snapshot and records names it couldn't place. Queries work from that snapshot, so the graph can be inspected without calling every source again. Historical snapshots support comparisons over time.
 
+**Going deeper:** [how the graph is built](docs/graph-construction.md) (the abstraction layers, the rules that turn facts into nodes and edges, and the tools used) and [architecture: layers, methods and why](docs/architecture.md). Accuracy is measured against real open-source systems in CI: see [benchmarks](docs/benchmarks.md).
+
 ### What it reads, with nothing to configure per service
 
 | Source | What depgraph finds |
@@ -170,7 +172,7 @@ depgraph mcp-config cursor          # or claude, vscode, opencode
 | [Ask graph questions](docs/tutorials/03-ask-questions.md) | [AWS and Azure discovery](docs/tutorials/09-cloud-discovery.md) |
 | [Connect an AI assistant](docs/tutorials/04-ai-agent.md) | [Terraform, firewalls and containers](docs/tutorials/08-terraform-python-open-source.md) |
 | [When something doesn't resolve](docs/tutorials/07-troubleshooting.md) | [Share a safe run summary](docs/tutorials/06-real-data.md#share-a-run-summary) |
-| [All tutorials](docs/tutorials/README.md) | [Architecture decisions](docs/decisions/) · [Naming rules](docs/naming.md) |
+| [All tutorials](docs/tutorials/README.md) | [Architecture: layers, methods and why](docs/architecture.md) · [How the graph is built](docs/graph-construction.md) · [Decisions](docs/decisions/) · [Naming rules](docs/naming.md) |
 | [Run it on a schedule: runbook](docs/runbook.md) | [Releases and signatures](docs/releases.md) · [MCP authentication](docs/mcp.md) |
 
 ## Status and trust
