@@ -177,7 +177,7 @@ depgraph is ready for a **supervised pilot**, not yet a trusted source of truth.
 
 - **Secrets:** a test plants fake secrets in Terraform, Python, Compose and Kubernetes files and fails if any reaches an output file or message. It covers those file types, not every collector.
 - **MCP server:** only asymmetric token signatures (RSA, ECDSA, EdDSA) are accepted, key-set fetches have a cooldown, and `--insecure-local` accepts only loopback Host and Origin headers. See [MCP authentication](docs/mcp.md).
-- **Supply chain:** `cargo deny` runs on every change. Releases are not signed yet.
+- **Supply chain:** `cargo deny` runs on every change. A tag on GitLab builds the release, signs the files and the container image with cosign, and attaches checksums and a dependency list; see [releases](docs/releases.md). That pipeline has not run on a real GitLab yet.
 - **CI:** GitHub Actions gates this repository. `.gitlab-ci.yml` runs the same checks (fmt, clippy, test, deny) plus the scheduled collector jobs, but has not run on a real GitLab runner yet.
 
 ## Development

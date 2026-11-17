@@ -19,11 +19,17 @@
 # runner. drift-issue stays a local note until there is a previous snapshot
 # to compare; measuring drift on real data is for Dennis.
 
+include:
+  - local: .gitlab/release.yml
+
 stages:
   - test
   - collect
   - build
   - publish
+  - release-build
+  - release-sign
+  - release-publish
 
 workflow:
   rules:
@@ -32,6 +38,7 @@ workflow:
       when: never
     - if: $CI_COMMIT_BRANCH
     - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_TAG
 
 variables:
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
