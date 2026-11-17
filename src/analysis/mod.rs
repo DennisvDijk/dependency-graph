@@ -186,7 +186,17 @@ fn render_scored(format: OutputFormat, visits: &[crate::score::ScoredVisit]) -> 
 
 fn render_visits(format: OutputFormat, visits: &[algo::Visit]) -> String {
     match format {
-        OutputFormat::Json => serde_json::to_string_pretty(&json!({"visits": visits.iter().map(|visit| json!({"id": visit.id, "depth": visit.depth})).collect::<Vec<_>>()})).unwrap_or_else(|_| "{}".into()),
+        OutputFormat::Json => {
+            serde_json::to_string_pretty(&json!({"visits": visits.iter().map(|visit| {
+            let mut entry = json!({"id": visit.id, "depth": visit.depth});
+            if visit.is_hub() {
+                entry["hub"] = json!(true);
+                entry["links"] = json!(visit.links);
+            }
+            entry
+        }).collect::<Vec<_>>()}))
+            .unwrap_or_else(|_| "{}".into())
+        }
         OutputFormat::Mermaid => {
             let mut lines = vec!["flowchart LR".to_owned()];
             for visit in visits {
@@ -197,7 +207,12 @@ fn render_visits(format: OutputFormat, visits: &[algo::Visit]) -> String {
         OutputFormat::Table => {
             let mut lines = vec!["depth\tid".to_owned()];
             for visit in visits {
-                lines.push(format!("{}\t{}", visit.depth, visit.id));
+                let hub = if visit.is_hub() {
+                    format!("\t(hub, {} links)", visit.links)
+                } else {
+                    String::new()
+                };
+                lines.push(format!("{}\t{}{hub}", visit.depth, visit.id));
             }
             lines.join("\n")
         }

@@ -21,6 +21,20 @@ pub struct Visit {
     pub id: String,
     /// Distance from the start. The start itself is not included.
     pub depth: usize,
+    /// How many dependency edges touch this node, in either direction.
+    pub links: usize,
+}
+
+/// From this many links a node is a hub: a shared database, a platform
+/// repository. Impact through a hub is real but says little about one change.
+pub const HUB_LINKS: usize = 20;
+
+impl Visit {
+    /// Whether the node is connected to so much that impact through it is broad.
+    #[must_use]
+    pub fn is_hub(&self) -> bool {
+        self.links >= HUB_LINKS
+    }
 }
 
 /// A deploy order, or the cycles that blocked one.
@@ -308,6 +322,14 @@ fn walk(
             visits.push(Visit {
                 id: indexed.graph[neighbor].clone(),
                 depth: next,
+                links: indexed
+                    .graph
+                    .neighbors_directed(neighbor, Direction::Incoming)
+                    .count()
+                    + indexed
+                        .graph
+                        .neighbors_directed(neighbor, Direction::Outgoing)
+                        .count(),
             });
             queue.push_back((neighbor, next));
         }
@@ -641,7 +663,8 @@ mod tests {
             direct,
             vec![Visit {
                 id: "component:b".into(),
-                depth: 1
+                depth: 1,
+                links: 2
             }]
         );
         let deep = dependencies(&graph, "a", Some(Env::Prod), None).unwrap();
@@ -771,5 +794,21 @@ mod tests {
         let before = Timestamp::parse("2025-01-01T00:00:00Z").unwrap();
         assert!(edges_at(&left, &before).is_empty());
         assert_eq!(library_impact_disabled(), "libraries disabled");
+    }
+}
+
+#[cfg(test)]
+mod hub_tests {
+    use super::*;
+
+    #[test]
+    fn a_node_with_many_links_is_flagged_as_a_hub() {
+        let visit = |links| Visit {
+            id: "resource:database:shared".into(),
+            depth: 1,
+            links,
+        };
+        assert!(!visit(HUB_LINKS - 1).is_hub());
+        assert!(visit(HUB_LINKS).is_hub());
     }
 }
