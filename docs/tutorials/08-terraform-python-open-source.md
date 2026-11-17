@@ -135,6 +135,8 @@ When a service's own name matches no component, depgraph reads the container ima
 
 A service or function that names a database in its settings also gets a candidate edge to it. That covers a reference to the database resource (`aws_db_instance.orders.address`, `!GetAtt Db.Endpoint.Address`) and a literal RDS or ElastiCache host name (`orders-db.abc.eu-west-1.rds.amazonaws.com`). It reads task definitions and Lambda settings; secret values are never needed, and environment variable names are ignored.
 
+Local Terraform modules (`source = "./modules/service"` or `"../…"`) are expanded once per `module` call, with the call's plain-string inputs and the module's variable defaults filled in, so `name = "orders-api"` gives each instance its own names. Plain-string `locals` are filled in too; a local built from a function (`basename(path.cwd)`) is not. Registry and Git modules, `for_each`/`count`, map-driven inputs and values that come from another module's outputs are not followed.
+
 Edges are **candidates**: the security group allows the traffic, nobody has seen it yet. Group ids typed as literals (`sg-0abc…`) and groups from other repos via `data` sources without a name cannot be followed.
 
 ## Docker and docker-compose

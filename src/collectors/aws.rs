@@ -51,6 +51,212 @@ struct Model {
     fn_env: BTreeMap<String, String>,
 }
 
+/// Records from the Terraform files of one project (path, text), with local
+/// modules expanded: each `module` call with a `./` or `../` source becomes
+/// its own copy of the module's files, with literal inputs and variable
+/// defaults filled in. Registry and Git modules cannot be read and stay as
+/// they are; so do inputs that are not plain strings.
+#[must_use]
+pub fn terraform_records_from_files(
+    project_path: &str,
+    files: &[(String, String)],
+) -> Vec<RawRecord> {
+    terraform_records(project_path, &expand_modules(files))
+}
+
+const MODULE_DEPTH: usize = 4;
+
+fn dir_of(path: &str) -> String {
+    path.rsplit_once('/')
+        .map_or_else(String::new, |(dir, _)| dir.to_owned())
+}
+
+/// Resolve `source` (starting with `./` or `../`) against `dir`.
+fn join_dir(dir: &str, source: &str) -> Option<String> {
+    let mut parts: Vec<&str> = dir.split('/').filter(|part| !part.is_empty()).collect();
+    for part in source.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+struct ModuleCall {
+    label: String,
+    target: String,
+    inputs: BTreeMap<String, String>,
+}
+
+fn variable_defaults(text: &str) -> BTreeMap<String, String> {
+    let header = Regex::new(r#"(?m)^\s*variable\s+"([^"]+)"\s*\{"#).expect("regex");
+    header
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let body = braced(text, caps.get(0)?.end() - 1)?;
+            Some((caps[1].to_owned(), tf_string(&top_level(body), "default")?))
+        })
+        .collect()
+}
+
+/// Plain-string `locals`, with references to earlier locals filled in.
+/// A local that still needs a function or another unknown is left out.
+fn locals_of(text: &str) -> BTreeMap<String, String> {
+    let header = Regex::new(r"(?m)^\s*locals\s*\{").expect("regex");
+    let entry = Regex::new(r#"(?m)^\s*([A-Za-z0-9_]+)\s*=\s*"([^"]*)""#).expect("regex");
+    let mut raw: BTreeMap<String, String> = BTreeMap::new();
+    for found in header.find_iter(text) {
+        if let Some(body) = braced(text, found.end() - 1) {
+            for caps in entry.captures_iter(&top_level(body)) {
+                raw.insert(caps[1].to_owned(), caps[2].to_owned());
+            }
+        }
+    }
+    let mut known: BTreeMap<String, String> = BTreeMap::new();
+    for _ in 0..4 {
+        for (name, value) in &raw {
+            let value = substitute_refs(value, "local", &known);
+            if !value.contains("${") {
+                known.insert(name.clone(), value);
+            }
+        }
+    }
+    known
+}
+
+fn substitute_vars(text: &str, values: &BTreeMap<String, String>) -> String {
+    substitute_refs(text, "var", values)
+}
+
+/// Replace `${prefix.name}` and a bare `prefix.name` with the value.
+fn substitute_refs(text: &str, prefix: &str, values: &BTreeMap<String, String>) -> String {
+    let mut out = text.to_owned();
+    for (name, value) in values {
+        out = out.replace(&format!("${{{prefix}.{name}}}"), value);
+        let bare = Regex::new(&format!(r"\b{prefix}\.{}\b", regex::escape(name))).expect("regex");
+        out = bare.replace_all(&out, format!("\"{value}\"")).into_owned();
+    }
+    out
+}
+
+fn module_calls(dir: &str, text: &str, defaults: &BTreeMap<String, String>) -> Vec<ModuleCall> {
+    let header = Regex::new(r#"(?m)^\s*module\s+"([^"]+)"\s*\{"#).expect("regex");
+    let input = Regex::new(r#"(?m)^\s*([A-Za-z0-9_]+)\s*=\s*"([^"]*)""#).expect("regex");
+    header
+        .captures_iter(text)
+        .filter_map(|caps| {
+            let body = braced(text, caps.get(0)?.end() - 1)?;
+            let top = top_level(body);
+            let source = tf_string(&top, "source")?;
+            if !source.starts_with("./") && !source.starts_with("../") {
+                return None;
+            }
+            let inputs = input
+                .captures_iter(&top)
+                .filter(|pair| &pair[1] != "source" && &pair[1] != "version")
+                .map(|pair| {
+                    (
+                        pair[1].to_owned(),
+                        substitute_vars(&pair[2], defaults).replace('"', ""),
+                    )
+                })
+                .collect();
+            Some(ModuleCall {
+                label: caps[1].to_owned(),
+                target: join_dir(dir, &source)?,
+                inputs,
+            })
+        })
+        .collect()
+}
+
+/// One copy of a module: inputs and defaults filled in, resource labels made
+/// unique with `tag`, and the modules it calls expanded the same way.
+fn module_instance(
+    dirs: &BTreeMap<String, String>,
+    call: &ModuleCall,
+    tag: &str,
+    depth: usize,
+    out: &mut String,
+) {
+    let Some(text) = dirs.get(&call.target) else {
+        return;
+    };
+    if depth >= MODULE_DEPTH {
+        return;
+    }
+    let mut values = variable_defaults(text);
+    values.extend(call.inputs.clone());
+    let mut text = substitute_vars(text, &values);
+    text = substitute_refs(&text, "local", &locals_of(&text));
+    let header =
+        Regex::new(r#"(?m)^\s*(?:resource|data)\s+"([^"]+)"\s+"([^"]+)"\s*\{"#).expect("regex");
+    let labels: Vec<(String, String)> = header
+        .captures_iter(&text)
+        .map(|caps| (caps[1].to_owned(), caps[2].to_owned()))
+        .collect();
+    for (rtype, label) in labels {
+        let escaped = (regex::escape(&rtype), regex::escape(&label));
+        let declaration =
+            Regex::new(&format!(r#"("{}"\s+)"{}""#, escaped.0, escaped.1)).expect("regex");
+        text = declaration
+            .replace_all(&text, format!(r#"${{1}}"{label}__{tag}""#))
+            .into_owned();
+        let reference = Regex::new(&format!(
+            r"\b{}\.{}([^A-Za-z0-9_-]|$)",
+            escaped.0, escaped.1
+        ))
+        .expect("regex");
+        text = reference
+            .replace_all(&text, format!("{rtype}.{label}__{tag}${{1}}"))
+            .into_owned();
+    }
+    out.push_str(&text);
+    out.push('\n');
+    let own = variable_defaults(&text);
+    for nested in module_calls(&call.target, &text, &own) {
+        let nested_tag = format!("{tag}_{}", nested.label);
+        module_instance(dirs, &nested, &nested_tag, depth + 1, out);
+    }
+}
+
+fn expand_modules(files: &[(String, String)]) -> String {
+    let mut dirs: BTreeMap<String, String> = BTreeMap::new();
+    for (path, text) in files.iter().filter(|(path, _)| path.ends_with(".tf")) {
+        let entry = dirs.entry(dir_of(path)).or_default();
+        entry.push_str(text);
+        entry.push('\n');
+    }
+    for text in dirs.values_mut() {
+        *text = substitute_refs(text, "local", &locals_of(text));
+    }
+    let mut instances = String::new();
+    let mut instantiated: BTreeSet<String> = BTreeSet::new();
+    for (dir, text) in &dirs {
+        let defaults = variable_defaults(text);
+        for call in module_calls(dir, text, &defaults) {
+            if dirs.contains_key(&call.target) && &call.target != dir {
+                instantiated.insert(call.target.clone());
+                module_instance(&dirs, &call, &call.label.clone(), 0, &mut instances);
+            }
+        }
+    }
+    let mut out = String::new();
+    for (dir, text) in &dirs {
+        // A module read through its calls would otherwise be read twice, once
+        // with its inputs left unfilled.
+        if !instantiated.contains(dir) {
+            out.push_str(text);
+        }
+    }
+    out.push_str(&instances);
+    out
+}
+
 /// Records from all Terraform files of one project, read together so that
 /// references across files resolve.
 #[must_use]
@@ -619,12 +825,33 @@ fn braced(text: &str, open: usize) -> Option<&str> {
     None
 }
 
-/// The body with every nested `{...}` removed.
+/// The body with every nested `{...}` block removed. Braces inside quoted
+/// strings (`"${var.name}"`) are text, not blocks.
 fn top_level(body: &str) -> String {
     let mut out = String::new();
     let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
     for c in body.chars() {
+        if in_string {
+            if depth == 0 {
+                out.push(c);
+            }
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
         match c {
+            '"' => {
+                in_string = true;
+                if depth == 0 {
+                    out.push(c);
+                }
+            }
             '{' => depth += 1,
             '}' => depth = depth.saturating_sub(1),
             _ if depth == 0 => out.push(c),
@@ -1456,5 +1683,117 @@ resource "aws_lambda_function" "report" {
         let text = "Resources:\n  Db:\n    Type: AWS::RDS::DBInstance\n    Properties:\n      DBInstanceIdentifier: orders-db\n  Task:\n    Type: AWS::ECS::TaskDefinition\n    Properties:\n      ContainerDefinitions:\n        - Image: orders-api\n          Environment:\n            - Name: DB\n              Value: !GetAtt Db.Endpoint.Address\n  Svc:\n    Type: AWS::ECS::Service\n    Properties:\n      ServiceName: orders-api\n      TaskDefinition: !Ref Task\n";
         let records = cloudformation_records("group/app", text);
         assert_eq!(pairs(&records), ["orders-api -> orders-db database"]);
+    }
+
+    #[test]
+    fn local_modules_are_expanded_once_per_call() {
+        let module = r#"
+variable "name" {}
+variable "db" {
+  default = "shared-db"
+}
+resource "aws_security_group" "svc" {
+  name = "${var.name}-sg"
+}
+resource "aws_security_group" "database" {
+  name = "${var.db}-sg"
+  ingress {
+    security_groups = [aws_security_group.svc.id]
+  }
+}
+resource "aws_db_instance" "main" {
+  identifier             = var.db
+  vpc_security_group_ids = [aws_security_group.database.id]
+}
+resource "aws_ecs_service" "svc" {
+  name = var.name
+  network_configuration {
+    security_groups = [aws_security_group.svc.id]
+  }
+}
+"#;
+        let root = r#"
+module "orders" {
+  source = "./modules/service"
+  name   = "orders-api"
+  db     = "orders-db"
+}
+module "billing" {
+  source = "../infra/modules/service"
+  name   = "billing-api"
+}
+module "remote" {
+  source = "terraform-aws-modules/vpc/aws"
+  name   = "ignored"
+}
+"#;
+        let files = vec![
+            ("infra/main.tf".to_owned(), root.replace("../infra/", "./")),
+            (
+                "infra/modules/service/main.tf".to_owned(),
+                module.to_owned(),
+            ),
+        ];
+        let records = terraform_records_from_files("group/infra", &files);
+        assert_eq!(
+            pairs(&records),
+            [
+                "billing-api -> shared-db database",
+                "orders-api -> orders-db database"
+            ]
+        );
+    }
+
+    #[test]
+    fn modules_called_but_missing_leave_the_rest_alone() {
+        let files = vec![(
+            "main.tf".to_owned(),
+            "module \"x\" {\n  source = \"./gone\"\n}\nresource \"aws_db_instance\" \"d\" {\n  identifier = \"d-db\"\n}\n".to_owned(),
+        )];
+        assert!(terraform_records_from_files("g/p", &files).is_empty());
+    }
+
+    #[test]
+    fn plain_string_locals_name_services_and_modules() {
+        let root = r#"
+locals {
+  app  = "orders-api"
+  full = "${local.app}-svc"
+  dyn  = "ex-${basename(path.cwd)}"
+}
+module "svc" {
+  source = "./modules/service"
+  name   = local.full
+}
+module "other" {
+  source = "./modules/service"
+  name   = local.dyn
+}
+"#;
+        let module = r#"
+resource "aws_db_instance" "db" {
+  identifier = "${var.name}-db"
+}
+resource "aws_ecs_service" "svc" {
+  name = var.name
+}
+resource "aws_security_group" "sg" {
+  name = "${var.name}-sg"
+}
+resource "aws_vpc_security_group_ingress_rule" "r" {
+  security_group_id            = aws_security_group.sg.id
+  referenced_security_group_id = aws_security_group.sg.id
+}
+"#;
+        let files = vec![
+            ("main.tf".to_owned(), root.to_owned()),
+            ("modules/service/main.tf".to_owned(), module.to_owned()),
+        ];
+        let names: Vec<String> = terraform_records_from_files("g/infra", &files)
+            .iter()
+            .filter(|record| record.kind == "resource")
+            .map(|record| record.payload["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(names.contains(&"orders-api-svc-sg".to_owned()), "{names:?}");
     }
 }

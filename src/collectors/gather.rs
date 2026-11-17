@@ -151,12 +151,11 @@ pub async fn records_from_gitlab(
                 .map(|item| item.path.clone())
                 .collect();
             records.extend(project_facts(&project.path_with_namespace, &paths));
-            let mut terraform = String::new();
+            let mut terraform: Vec<(String, String)> = Vec::new();
             for item in manifest_items(tree) {
                 if let Some(text) = client.file_text(project.id, &item.path, &branch).await? {
                     if item.path.ends_with(".tf") {
-                        terraform.push_str(&text);
-                        terraform.push('\n');
+                        terraform.push((item.path.clone(), text.clone()));
                     }
                     records.extend(records_from_file(
                         &project.path_with_namespace,
@@ -165,7 +164,7 @@ pub async fn records_from_gitlab(
                     ));
                 }
             }
-            records.extend(super::aws::terraform_records(
+            records.extend(super::aws::terraform_records_from_files(
                 &project.path_with_namespace,
                 &terraform,
             ));
@@ -271,15 +270,17 @@ fn records_from_tree(project_path: &str, root: &Path) -> Result<Vec<RawRecord>, 
     let mut paths = Vec::new();
     collect_paths(root, root, &mut paths)?;
     records.extend(project_facts(project_path, &paths));
-    let mut terraform = String::new();
+    let mut terraform: Vec<(String, String)> = Vec::new();
     for (path, text) in files {
         if path.ends_with(".tf") {
-            terraform.push_str(&text);
-            terraform.push('\n');
+            terraform.push((path.clone(), text.clone()));
         }
         records.extend(records_from_file(project_path, &path, &text));
     }
-    records.extend(super::aws::terraform_records(project_path, &terraform));
+    records.extend(super::aws::terraform_records_from_files(
+        project_path,
+        &terraform,
+    ));
     Ok(records)
 }
 
