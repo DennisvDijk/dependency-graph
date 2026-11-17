@@ -96,6 +96,10 @@ depgraph discover --kubernetes            # read-only: current kubectl context
 
 The default cloud scope is the AWS CLI's selected region and the Azure CLI's selected subscription. AWS flow evidence currently covers supported ECS task interfaces; Azure VNet Traffic Analytics discovers VM-to-VM traffic, not the application responsible on a VM. See [cloud discovery](docs/tutorials/09-cloud-discovery.md) for permissions, supported formats and gaps.
 
+### Share what happened, safely
+
+Run `depgraph report` after a run to get a short Markdown summary: node, edge and evidence counts, which collectors worked, and what kinds of names could not be resolved (for example "built from a variable" or "plain name with no matching service"). It contains **counts only**: no repository, host or service names. `--include-names` adds up to 40 unresolved names with secrets removed, and `--output report.md` writes a file. Read it before you share it.
+
 ## Ask the graph
 
 ```bash

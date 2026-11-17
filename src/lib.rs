@@ -27,6 +27,7 @@ pub mod quickstart;
 pub mod raw;
 pub mod redact;
 pub mod repo_scan;
+pub mod report;
 pub mod score;
 pub mod store;
 pub mod suggest;
