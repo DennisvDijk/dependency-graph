@@ -47,6 +47,8 @@ flowchart LR
 
 Collectors gather source records. The normalizer resolves them into a snapshot and records names it couldn't place. Queries work from that snapshot, so the graph can be inspected without calling every source again. Historical snapshots support comparisons over time.
 
+**Going deeper:** [how the graph is built](docs/graph-construction.md) (the abstraction layers, the rules that turn facts into nodes and edges, and the tools used) and [architecture: layers, methods and why](docs/architecture.md). Accuracy is measured against real open-source systems in CI: see [benchmarks](docs/benchmarks.md).
+
 ### What it reads, with nothing to configure per service
 
 | Source | What depgraph finds |
