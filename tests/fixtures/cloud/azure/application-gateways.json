@@ -1,0 +1,20 @@
+[
+  {
+    "name": "shop-appgw",
+    "backendAddressPools": [
+      {
+        "backendAddresses": [
+          {
+            "fqdn": "billing-ex.azurewebsites.net"
+          },
+          {
+            "fqdn": "legacy-erp.azurewebsites.net"
+          },
+          {
+            "ipAddress": "10.0.0.4"
+          }
+        ]
+      }
+    ]
+  }
+]

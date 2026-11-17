@@ -1,0 +1,13 @@
+[
+  {
+    "name": "shop-apim",
+    "apis": [
+      {
+        "serviceUrl": "https://notifications.internal.contoso.net/v1"
+      },
+      {
+        "serviceUrl": null
+      }
+    ]
+  }
+]

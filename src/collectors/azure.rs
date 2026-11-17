@@ -44,6 +44,11 @@ pub struct AzureSubscription {
     pub dependencies: Vec<Value>,
     /// NTANetAnalytics query results from discovered workspaces.
     pub network_flows: Vec<Value>,
+    /// `az network application-gateway list`.
+    pub application_gateways: Option<Value>,
+    /// API Management services with their APIs:
+    /// `[{"name": ..., "apis": <az apim api list>}]`.
+    pub apim_services: Option<Value>,
 }
 
 /// Records from one subscription. `env` names its environment.
@@ -113,6 +118,7 @@ pub fn subscription_records(subscription: &AzureSubscription, env: Option<&str>)
             json!({"source": source, "destination": destination, "loose": true}),
         ));
     }
+    records.extend(gateway_links(subscription));
     for rows in &subscription.dependencies {
         for row in array(Some(rows)) {
             let source = row.get("AppRoleName").and_then(Value::as_str).unwrap_or("");
@@ -196,6 +202,58 @@ fn dependency_target(kind: &str, target: &str) -> Option<Target> {
     }
 }
 
+/// The service a host name stands for: its first label. Only the merge
+/// decides whether a component of that name exists.
+fn host_service(host: &str) -> Option<String> {
+    let host = host.trim().trim_end_matches('.');
+    let first = host.split('.').next()?;
+    let name = kebab_name(first);
+    (!name.is_empty()).then_some(name)
+}
+
+/// Gateways read from the subscription: an Application Gateway routes to the
+/// hosts in its backend pools, and an API Management service to the
+/// `serviceUrl` of each of its APIs. Only these two types are read.
+fn gateway_links(subscription: &AzureSubscription) -> Vec<RawRecord> {
+    let mut links: std::collections::BTreeSet<(String, String)> = std::collections::BTreeSet::new();
+    let mut add = |gateway: Option<&str>, host: Option<&str>| {
+        if let (Some(gateway), Some(host)) = (gateway, host)
+            && let Some(target) = host_service(host)
+        {
+            links.insert((kebab_name(gateway), target));
+        }
+    };
+    for gateway in array(subscription.application_gateways.as_ref()) {
+        let name = gateway.get("name").and_then(Value::as_str);
+        for pool in array(gateway.get("backendAddressPools")) {
+            for address in array(pool.get("backendAddresses")) {
+                add(name, address.get("fqdn").and_then(Value::as_str));
+            }
+        }
+    }
+    for service in array(subscription.apim_services.as_ref()) {
+        let name = service.get("name").and_then(Value::as_str);
+        for api in array(service.get("apis")) {
+            let url = api.get("serviceUrl").and_then(Value::as_str);
+            let host = url
+                .and_then(|url| url.split("://").nth(1))
+                .and_then(|rest| rest.split(['/', ':']).next());
+            add(name, host);
+        }
+    }
+    links
+        .into_iter()
+        .filter(|(gateway, _)| !gateway.is_empty())
+        .map(|(gateway, target)| {
+            record(
+                "resource_link",
+                json!({"edge": "routes_to", "from_kind": "gateway", "from": gateway,
+                       "to_kind": "component", "to": target}),
+            )
+        })
+        .collect()
+}
+
 fn array(value: Option<&Value>) -> Vec<&Value> {
     value
         .and_then(Value::as_array)
@@ -212,11 +270,13 @@ fn record(kind: &str, payload: Value) -> RawRecord {
 }
 
 /// Files read by [`records_from_azure_dir`], named after the CLI call.
-pub const AZURE_FIXTURE_FILES: [&str; 4] = [
+pub const AZURE_FIXTURE_FILES: [&str; 6] = [
     "asgs.json",
     "nsgs.json",
     "dependencies.json",
     "vnet-flows.json",
+    "application-gateways.json",
+    "apim.json",
 ];
 
 /// Read saved `az` output from a directory (for tests and dry runs).
@@ -230,6 +290,8 @@ pub fn records_from_azure_dir(dir: &Path, env: Option<&str>) -> Result<Vec<RawRe
         nsgs: read_json(dir, "nsgs.json")?,
         dependencies: read_json(dir, "dependencies.json")?.into_iter().collect(),
         network_flows: read_json(dir, "vnet-flows.json")?.into_iter().collect(),
+        application_gateways: read_json(dir, "application-gateways.json")?,
+        apim_services: read_json(dir, "apim.json")?,
     };
     Ok(subscription_records(&subscription, env))
 }
@@ -245,6 +307,33 @@ pub struct AzureLive {
     pub env: Option<String>,
     /// Discover VNet Traffic Analytics workspaces automatically.
     pub flow_logs: bool,
+}
+
+/// API Management services and their APIs. A service or call that fails
+/// is left out; gateways are optional evidence.
+fn apim_services(call: &dyn Fn(&[&str]) -> Result<Value, Error>) -> Option<Value> {
+    let services = call(&["apim", "list"]).ok()?;
+    let mut found = Vec::new();
+    for service in services.as_array()? {
+        let (Some(name), Some(group)) = (
+            service.get("name").and_then(Value::as_str),
+            service.get("resourceGroup").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        let apis = call(&[
+            "apim",
+            "api",
+            "list",
+            "--resource-group",
+            group,
+            "--service-name",
+            name,
+        ])
+        .unwrap_or(Value::Null);
+        found.push(json!({"name": name, "apis": apis}));
+    }
+    Some(Value::Array(found))
 }
 
 /// Read Azure with the `az` CLI. A failed dependency query is a warning.
@@ -280,6 +369,8 @@ pub fn records_from_azure(live: &AzureLive) -> Result<(Vec<RawRecord>, Vec<Strin
             nsgs: Some(call(&["network", "nsg", "list"])?),
             dependencies: Vec::new(),
             network_flows: Vec::new(),
+            application_gateways: call(&["network", "application-gateway", "list"]).ok(),
+            apim_services: apim_services(&call),
         };
         // Workspaces are not tied to a subscription: query them once.
         if index == 0 {
@@ -454,6 +545,7 @@ mod tests {
             ]}])),
             dependencies: Vec::new(),
             network_flows: Vec::new(),
+            ..AzureSubscription::default()
         };
         let records = subscription_records(&subscription, None);
         let candidates: Vec<String> = records

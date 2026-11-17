@@ -1,0 +1,15 @@
+{
+  "apis": [
+    {
+      "Name": "partner-api",
+      "Items": [
+        {
+          "IntegrationUri": "arn:aws:lambda:eu-west-1:1:function:notifications"
+        },
+        {
+          "IntegrationUri": "https://backend.partner.test/v1"
+        }
+      ]
+    }
+  ]
+}

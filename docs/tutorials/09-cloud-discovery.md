@@ -8,7 +8,7 @@ Repos show what is *written down*. Your cloud account shows what *exists* and, w
 | Allowed traffic (candidate edges) | Security groups and their rules, attached to ECS services, Lambda functions, RDS/Aurora and ElastiCache | Network security group rules between application security groups (ASGs) |
 | Real traffic (observed edges) | X-Ray service map, last 6 hours | Application Insights dependencies (application map), last 7 days |
 | Becomes a database / queue / topic | RDS, Aurora, DynamoDB, ElastiCache / SQS / SNS | SQL, Cosmos DB, Redis, PostgreSQL, MySQL / Service Bus / Event Hubs |
-| Calls made | `ec2 describe-security-groups`, `ecs list-*` / `describe-services`, `lambda list-functions`, `rds describe-db-*`, `elasticache describe-cache-clusters`, `xray get-service-graph` | `network asg list`, `network nsg list`, `monitor log-analytics query` |
+| Calls made | `ec2 describe-security-groups`, `ecs list-*` / `describe-services`, `lambda list-functions`, `rds describe-db-*`, `elasticache describe-cache-clusters`, `elbv2 describe-load-balancers` / `describe-target-groups`, `apigatewayv2 get-apis` / `get-integrations`, `xray get-service-graph` | `network asg list`, `network nsg list`, `network application-gateway list`, `apim list` / `apim api list`, `monitor log-analytics query` |
 
 depgraph never sees or stores a key. It runs the CLI you already use, with the login that CLI already has. An error names the command that failed, never its output.
 
@@ -189,3 +189,25 @@ a warning is printed. For regular collection, set `azure.enabled: true` and
 
 Azure NSG flow logs are being retired; the reader uses the VNet Traffic
 Analytics table instead. See [Microsoft's migration notice](https://learn.microsoft.com/en-us/azure/network-watcher/nsg-flow-logs-overview).
+
+## Gateways
+
+The same read-only calls also show the intermediaries in front of your services.
+Each becomes a `gateway` node with a `routes_to` edge to what it forwards to:
+
+| Cloud | Gateway | Routes to | How it is known |
+|---|---|---|---|
+| AWS | Application and Network Load Balancer | ECS services registered in its target groups | target group ARNs in the API output |
+| AWS | API Gateway (HTTP API) | Lambda functions its integrations call | integration URI |
+| Azure | Application Gateway | hosts in its backend pools | pool addresses |
+| Azure | API Management | `serviceUrl` of each API | the API definition |
+
+The list is deliberately short. A resource type that is not in it is not read as
+a gateway, and nothing is guessed from tags or names. A backend that is not a
+known component goes to `unresolved.json` as "route target is not a known
+component". To support another gateway type, add its read in
+`gateway_links` in `src/collectors/aws.rs` or `azure.rs` with a fixture; do not
+add a parser per resource type.
+
+Reads need only list and describe rights: `elasticloadbalancing:Describe*` and
+`apigateway:GET` on AWS, Reader on Azure.

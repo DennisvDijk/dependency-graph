@@ -135,6 +135,8 @@ fn aws_account_ties_services_databases_and_real_calls() {
             "resource:firewall-rule:keycloak-prod",
             "resource:firewall-rule:notifications-ecs",
             "resource:firewall-rule:orders-py-prod-ecs-sg",
+            "resource:gateway:partner-api",
+            "resource:gateway:shop-alb",
             "resource:queue:orders-events",
         ])
     );
@@ -154,6 +156,10 @@ fn aws_account_ties_services_databases_and_real_calls() {
             "observed_calls component:orders-py -> resource:external-api:api-mailgun-net prod observed_only cloud",
             "observed_calls component:orders-py -> resource:queue:orders-events prod observed_only cloud",
             "observed_calls component:notifications -> component:keycloak prod observed_only cloud",
+            // Gateways: a load balancer to the ECS service behind its target
+            // group, and an API Gateway to the Lambda its integration calls.
+            "routes_to resource:gateway:shop-alb -> component:orders-py - declared_only static",
+            "routes_to resource:gateway:partner-api -> component:notifications - declared_only static",
         ])
     );
     let unresolved_json = fs::read_to_string(cloud.root.join("data/unresolved.json")).unwrap();
@@ -184,6 +190,8 @@ fn azure_subscription_ties_asgs_and_application_insights_calls() {
         set(&[
             "resource:database:billing-db",
             "resource:firewall-rule:asg-storefront",
+            "resource:gateway:shop-apim",
+            "resource:gateway:shop-appgw",
             "resource:firewall-rule:billing-ex-asg",
             "resource:queue:invoice-events",
         ])
@@ -201,6 +209,9 @@ fn azure_subscription_ties_asgs_and_application_insights_calls() {
             "observed_calls component:billing-ex -> component:notifications prod observed_only cloud",
             "observed_calls component:billing-ex -> resource:queue:invoice-events prod observed_only cloud",
             "observed_calls component:billing-ex -> resource:external-api:api-stripe-com prod observed_only cloud",
+            // Gateways: Application Gateway backend pools and API Management APIs.
+            "routes_to resource:gateway:shop-appgw -> component:billing-ex - declared_only static",
+            "routes_to resource:gateway:shop-apim -> component:notifications - declared_only static",
         ])
     );
     let unresolved_json = fs::read_to_string(cloud.root.join("data/unresolved.json")).unwrap();
@@ -216,6 +227,11 @@ fn azure_subscription_ties_asgs_and_application_insights_calls() {
         unresolved.contains(
             "environment,edge-proxy-rs,environment is not known; set env in the cloud config"
         ),
+        "{unresolved}"
+    );
+    // A backend that is not a known component is reported, not invented.
+    assert!(
+        unresolved.contains("route,legacy-erp,route target is not a known component"),
         "{unresolved}"
     );
 }
