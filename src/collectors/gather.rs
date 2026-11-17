@@ -45,20 +45,18 @@ pub struct KubectlRead {
 
 impl LiveRead for KubectlRead {
     fn list_workloads(&self) -> Result<Vec<RawRecord>, Error> {
-        let output = std::process::Command::new("kubectl")
-            .args([
-                "--kubeconfig",
-                &self.kubeconfig.to_string_lossy(),
-                "get",
-                "deploy,networkpolicy",
-                "-A",
-                "-o",
-                "json",
-            ])
-            .output()
-            .map_err(|_| {
-                Error::Config("kubectl failed. The kubeconfig contents were not logged.".to_owned())
-            })?;
+        let output = crate::proc::output(std::process::Command::new("kubectl").args([
+            "--kubeconfig",
+            &self.kubeconfig.to_string_lossy(),
+            "get",
+            "deploy,networkpolicy",
+            "-A",
+            "-o",
+            "json",
+        ]))
+        .map_err(|_| {
+            Error::Config("kubectl failed. The kubeconfig contents were not logged.".to_owned())
+        })?;
         if !output.status.success() {
             return Err(Error::Config(
                 "kubectl get failed. The kubeconfig contents were not logged.".to_owned(),
@@ -986,7 +984,12 @@ fn collect_files(root: &Path, dir: &Path, files: &mut Vec<(String, String)>) -> 
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
+        let kind = entry.file_type()?;
+        if kind.is_symlink() {
+            // A link can loop or point outside the checkout. Never follow it.
+            continue;
+        }
+        if kind.is_dir() {
             collect_files(root, &path, files)?;
             continue;
         }
@@ -1002,8 +1005,13 @@ fn collect_files(root: &Path, dir: &Path, files: &mut Vec<(String, String)>) -> 
 
 fn collect_paths(root: &Path, dir: &Path, paths: &mut Vec<String>) -> Result<(), Error> {
     for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
+        let entry = entry?;
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_symlink() {
+            continue;
+        }
+        if kind.is_dir() {
             collect_paths(root, &path, paths)?;
         } else {
             let relative = path.strip_prefix(root).unwrap_or(&path);

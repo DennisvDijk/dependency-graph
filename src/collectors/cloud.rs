@@ -123,7 +123,7 @@ pub(super) fn run_json(program: &str, args: &[String]) -> Result<Value, Error> {
             .collect::<Vec<_>>()
             .join(" ")
     );
-    let output = Command::new(program).args(args).output().map_err(|_| {
+    let output = crate::proc::output(Command::new(program).args(args)).map_err(|_| {
         Error::Config(format!(
             "could not run `{program}`. Install it and sign in first (docs/tutorials/09-cloud-discovery.md)."
         ))

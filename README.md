@@ -49,6 +49,8 @@ Collectors gather source records. The normalizer resolves them into a snapshot a
 
 **Going deeper:** [how the graph is built](docs/graph-construction.md) (the abstraction layers, the rules that turn facts into nodes and edges, and the tools used) and [architecture: layers, methods and why](docs/architecture.md). Accuracy is measured against real open-source systems in CI: see [benchmarks](docs/benchmarks.md).
 
+**Coding agents:** `depgraph skill install` copies the skill ([`skills/analyzing-service-dependencies`](skills/analyzing-service-dependencies/SKILL.md)) to Claude Code, OpenCode, Pi and the shared `.agents/skills` folder. `depgraph serve-mcp --stdio` gives the same answers as MCP tools. Setup per agent, a Claude Code plugin and what has been verified: [docs/agents.md](docs/agents.md).
+
 ### What it reads, with nothing to configure per service
 
 | Source | What depgraph finds |

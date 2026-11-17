@@ -6,7 +6,9 @@
 
 mod auth;
 mod clients;
+mod rpc;
 mod server;
+mod stdio;
 
 pub use clients::render as render_client_config;
 
@@ -14,6 +16,7 @@ pub use auth::{
     AccessPolicy, AuthKind, EntraEndpoints, JwksCache, authorize_with_jwks, entra_endpoints,
     jwks_from_discovery, policy_from_config,
 };
+pub use rpc::{SUPPORTED_VERSIONS, handle as handle_message};
 pub use server::{McpState, router, serve};
 
 use crate::error::Error;
@@ -82,6 +85,22 @@ pub const TOOLS: &[Tool] = &[
         read_only: true,
     },
 ];
+
+/// Serve MCP on standard input and output until the agent closes it.
+///
+/// # Errors
+///
+/// Returns an error when the snapshot cannot be read or the pipe breaks.
+pub fn serve_stdio(
+    policy: auth::AccessPolicy,
+    snapshot: &std::path::Path,
+    aliases: crate::config::Aliases,
+) -> Result<(), Error> {
+    let state = server::build_state(true, policy, "", snapshot, aliases)?;
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout().lock();
+    stdio::run(&state, stdin.lock(), &mut stdout).map_err(Error::Io)
+}
 
 /// Start the MCP server on `bind`.
 ///
