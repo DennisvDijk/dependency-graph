@@ -1,0 +1,12 @@
+dev:
+  gitlab: [development]
+  otel: [dev]
+  k8s_namespaces: [shop-dev]
+acc:
+  gitlab: [acceptance, staging]
+  otel: [acc]
+  k8s_namespaces: [shop-acc]
+prod:
+  gitlab: [production]
+  otel: [prod]
+  k8s_namespaces: [shop-prod, platform-prod]

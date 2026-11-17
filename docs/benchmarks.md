@@ -50,4 +50,19 @@ false edge, add the smallest trap that reproduces it, then fix the scanner.
 3. Write `truth.yaml` from the manifests' env vars and service addresses.
 4. Add `#[test] fn <name>() { benchmark("<name>", "0.90", "0.90"); }` and ratchet up.
 
-Next candidates: Sock Shop, OpenTelemetry Demo, Istio Bookinfo.
+Next candidates: OpenTelemetry Demo, Istio Bookinfo.
+
+## Systems today
+
+| System | Where the calls are written | Truth | Precision | Recall |
+|---|---|---|---|---|
+| Online Boutique (Go, C#, Java, Node, Python) | manifest env vars | 16 edges | 1.00 | 1.00 |
+| Sock Shop (Java, Go, Node) | source and `application.properties` | 14 edges | 1.00 | 0.79 |
+
+Sock Shop is the harder one: the hosts are literals in code, not env vars. It was
+added after Boutique was tuned, so it is the first score not fitted to its own
+test. Fixing it exposed four real gaps (a host with a `%s` domain suffix,
+`${var:default}` hosts, SQL `tcp(host:port)` DSNs, `*.host=` settings in
+properties files) and one resolution fix (a database that runs as a workload is
+a component, not a second node). The three edges it still misses are listed in
+its README, so the ratchet shows real headroom.

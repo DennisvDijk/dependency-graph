@@ -108,3 +108,8 @@ fn copy_dir(from: &Path, to: &Path) {
 fn online_boutique() {
     benchmark("boutique", "0.95", "0.95");
 }
+
+#[test]
+fn sock_shop() {
+    benchmark("sockshop", "0.95", "0.75");
+}

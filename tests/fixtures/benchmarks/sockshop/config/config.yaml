@@ -1,0 +1,111 @@
+# Placeholder configuration. example.com only — no tokens, kubeconfigs, or real groups.
+schema_version: "0.1.0"
+gitlab:
+  base_url: https://gitlab.example.com
+  # Empty groups and projects: every project the token can see (ADR-006).
+  # A group or subgroup path is recursive. One path collects every project beneath it:
+  #   groups:
+  #     - platform
+  #     - org/infra/platform
+  groups: []
+  # Explicit projects are fetched one by one and unioned with the groups above.
+  # They skip include/exclude filters. Archived ones are skipped with a warning.
+  #   projects:
+  #     - org/other-team/ingress-gateway
+  projects: []
+  include_paths: []
+  exclude_paths: []
+  topics: []
+  exclude_forks: true
+  exclude_archived: true
+  # Name of the env var that holds the bot token for MR notes and drift issues.
+  bot_token_env: DEPGRAPH_GITLAB_BOT_TOKEN
+  catalog_file: catalog-info.yaml
+  per_page: 100
+  max_concurrency: 4
+kubernetes:
+  # ADR-004: pilot collection reads Git. Live kubectl is optional and off.
+  live_read: false
+  clusters:
+    # kubeconfig_env is the variable name. Never put kubeconfig contents here.
+    - name: main
+      kubeconfig_env: DEPGRAPH_KUBECONFIG_MAIN
+# Opt-in live cloud discovery: off until you turn it on. depgraph runs the
+# `aws` / `az` CLI with list, describe and read-only query calls only, using
+# the login that CLI already has. No keys here. docs/tutorials/09-cloud-discovery.md
+aws:
+  enabled: false
+  # profile: readonly        # AWS CLI profile name; empty uses the default chain
+  regions: []                # empty: the CLI's default region
+  # env: prod                # environment of this account; empty: from names like orders-prod
+  xray: true                 # also read the X-Ray service map (calls that really happen)
+  flow_logs: false           # opt in to discover CloudWatch VPC flow logs
+  # flow_log_group: /aws/vpc/flow  # optional: read just this group
+azure:
+  enabled: false
+  subscriptions: []          # empty: the az default subscription
+  log_analytics_workspaces: []  # workspace ids with Application Insights data
+  flow_logs: false           # opt in to discover VNet Traffic Analytics
+  # env: prod
+prometheus:
+  url: https://prometheus.example.com
+  env_label: env
+  window_days: 7
+  # Shorter than window_days: queries use [1d] and store a running counter (ADR-008).
+  retention_days: 15
+  health_paths:
+    - /health
+    - /healthz
+    - /ready
+    - /live
+  test_clients:
+    - k6
+  # token_env names an env var. Never put the token itself here.
+# ADR-003: Istio is the runtime source. Tempo stays off until its metric names are verified.
+runtime_source: istio
+tempo:
+  enabled: false
+  url: https://tempo.example.com
+# ADR-001 question 8: no internal libraries. Types stay in the model; collectors must not emit them.
+libraries:
+  enabled: false
+# ADR-004: optional read-only Datadog status. Env var names only, never key material.
+datadog:
+  enabled: false
+  site: api.datadog.example
+  api_key_env: DEPGRAPH_DATADOG_API_KEY
+  app_key_env: DEPGRAPH_DATADOG_APP_KEY
+sbom:
+  sources: []
+  internal_package_prefixes: []
+contract_paths:
+  - openapi/**
+  - "**/*.proto"
+  - schema/**
+edge_expiry_days: 30
+retention_days: 90
+# Path scores use these factors. They are assumptions for ranking, not probabilities.
+scoring:
+  hard: "1.0"
+  unknown: "0.5"
+  soft: "0.2"
+# Blocking MR check is off. A team opts in only after explicit approval.
+mr_check:
+  blocking: false
+  override_label: depgraph-override
+# ADR-010: generic OAuth resource server. Set provider: entra to derive Entra v2 endpoints.
+# Tenant and client ids below are placeholders. DEPGRAPH_ENTRA_TENANT_ID and
+# DEPGRAPH_ENTRA_CLIENT_ID override them and are never written here.
+auth:
+  provider: generic
+  tenant_id: 00000000-0000-0000-0000-000000000000
+  client_id: 11111111-1111-1111-1111-111111111111
+  audience: api://11111111-1111-1111-1111-111111111111
+  allowed_roles: []
+  allowed_groups: []
+# ADR-005: OAuth 2.1 resource server. No client secret and no JWT in this file.
+mcp:
+  issuer: https://idp.example.com
+  audience: http://127.0.0.1:8080
+  jwks_url: https://idp.example.com/.well-known/jwks.json
+  bind: 127.0.0.1:8080

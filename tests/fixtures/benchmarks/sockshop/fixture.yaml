@@ -1,0 +1,10 @@
+projects:
+  - {path: demo/sock/carts, dir: carts}
+  - {path: demo/sock/catalogue, dir: catalogue}
+  - {path: demo/sock/front-end, dir: front-end}
+  - {path: demo/sock/orders, dir: orders}
+  - {path: demo/sock/payment, dir: payment}
+  - {path: demo/sock/queue-master, dir: queue-master}
+  - {path: demo/sock/shipping, dir: shipping}
+  - {path: demo/sock/user, dir: user}
+  - {path: demo/sock/manifests, dir: manifests}
