@@ -341,7 +341,14 @@ fn index(graph: &GraphSnapshot, env: Option<Env>, keep: impl Fn(&Edge) -> bool) 
         let Some(&to) = ids.get(&edge.to_id) else {
             continue;
         };
-        directed.add_edge(from, to, ());
+        // A publisher is not affected by the topic it writes to; the topic and
+        // its consumers are affected by the publisher. Point the edge the way a
+        // dependency points: from the one that depends to the one depended on.
+        if edge.edge_type == EdgeType::PublishesTo {
+            directed.add_edge(to, from, ());
+        } else {
+            directed.add_edge(from, to, ());
+        }
         if from != to {
             undirected.add_edge(from, to, ());
         }
@@ -587,6 +594,43 @@ mod tests {
                 ),
             ],
         }
+    }
+
+    #[test]
+    fn a_topic_carries_impact_from_publisher_to_consumer_and_not_back() {
+        let mut graph = fixture();
+        graph.nodes.push(node("component:pub"));
+        graph.nodes.push(node("component:sub"));
+        graph.nodes.push(node("resource:topic:events"));
+        graph.edges.push(edge(
+            "component:pub",
+            "resource:topic:events",
+            EdgeType::PublishesTo,
+            None,
+            false,
+            true,
+        ));
+        graph.edges.push(edge(
+            "component:sub",
+            "resource:topic:events",
+            EdgeType::ConsumesFrom,
+            None,
+            false,
+            true,
+        ));
+        let from_publisher: Vec<String> = impact(&graph, "pub", None)
+            .unwrap()
+            .into_iter()
+            .map(|visit| visit.id)
+            .collect();
+        assert_eq!(from_publisher, ["resource:topic:events", "component:sub"]);
+        assert!(impact(&graph, "sub", None).unwrap().is_empty());
+        let needs: Vec<String> = dependencies(&graph, "sub", None, None)
+            .unwrap()
+            .into_iter()
+            .map(|visit| visit.id)
+            .collect();
+        assert_eq!(needs, ["resource:topic:events", "component:pub"]);
     }
 
     #[test]

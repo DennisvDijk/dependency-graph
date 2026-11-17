@@ -50,7 +50,7 @@ Collectors gather source records. The normalizer resolves them into a snapshot a
 | Source | What depgraph finds |
 |---|---|
 | **Catalog files and manifests** | Components, owners, declared `dependsOn`, Kubernetes manifests, network policies, `docker-compose` `depends_on` |
-| **Any language** | Python, Elixir, Rust and others are found through catalog files, manifests and telemetry, not by reading source code. The languages a repo uses are recorded from file names |
+| **Source code** | Python, Elixir, Rust, JavaScript, TypeScript, Go, Java, Kotlin and C#: service URLs, database hosts and literal queue and topic names. Queues and topics carry impact from publisher to consumer. Only literal names are read, and secrets in connection strings are dropped |
 | **Firewall rules** | `kind: FirewallRule` YAML, and AWS security groups from Terraform and CloudFormation. A group is linked to the service it is attached to |
 | **Terraform and CloudFormation** | The container image a service runs links it to the component built from that image. Environment settings that name a database add a candidate tie to it. Local Terraform modules and plain-string locals are expanded |
 | **Live cloud (opt-in)** | AWS and Azure resources, X-Ray and Application Insights calls, existing flow logs |

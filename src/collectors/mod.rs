@@ -21,6 +21,7 @@ mod k8s_workloads;
 mod kubernetes_live;
 mod runtime_edges;
 mod sbom_links;
+mod source;
 
 pub use crate::raw::RawRecord;
 pub use aws::{
