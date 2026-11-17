@@ -134,8 +134,19 @@ depgraph stats --snapshot data/snapshot.json
 
 Paste `active_edges` and `query_p95_ms` into [ADR-012](../decisions/ADR-012-graph-database.md). That decides whether the in-memory store stays enough or a graph database is worth it.
 
+## Share a run summary
+
+If depgraph runs somewhere nobody else can look, such as inside a firewall, `depgraph report` writes a short Markdown summary that is safe to hand over:
+
+```bash
+depgraph discover --repos-only      # or the sources you use
+depgraph report --output report.md
+```
+
+It holds counts only: nodes, edges and the evidence behind them, which collectors worked, and what kinds of names could not be resolved ("built from a variable", "host name or reference", "plain name with no matching service"). It never names a repository, host or service unless you add `--include-names`, which lists up to 40 unresolved names with secrets removed (host and service names stay). Read the file before you share it.
+
 ## Optional sources
 
-- **Kubernetes live read** (`kubernetes.live_read`, off): reads Git manifests by default. Kubeconfigs are referenced by env var name only.
+- **Kubernetes live read** (off): `depgraph discover --kubernetes` reads the current `kubectl` context with read-only calls and adds a cluster node and its workloads. Secrets are never read. Without it, depgraph reads the manifests in Git. Kubeconfigs are referenced by env var name only.
 - **Tempo** (`tempo.enabled`, off): stays off until its metric names are verified (ADR-003).
 - **Datadog** (`datadog.enabled`, off): read-only status. Keys by env var name only.

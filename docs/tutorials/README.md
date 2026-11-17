@@ -14,6 +14,7 @@ Pick the path that matches what you want to do:
 | Let Cursor, Claude, VS Code or opencode use the graph | [4. Connect your AI agent](04-ai-agent.md) | 5 min |
 | Get a comment on merge requests that touch an API with prod consumers | [5. Merge request check](05-mr-check.md) | 15 min |
 | Run depgraph for my team on real GitLab and Prometheus data | [6. Run it on real data](06-real-data.md) | 1 hour |
+| Share a summary of a run without exposing repository or host names | [6. Run it on real data](06-real-data.md#share-a-run-summary) | 2 min |
 | Fix something that does not work | [7. Troubleshooting](07-troubleshooting.md) | — |
 
 Most developers only need **1, 2 and 4**; add **8** if you own infrastructure or run open-source apps. Tutorial 6 is for the person who runs depgraph for a team.

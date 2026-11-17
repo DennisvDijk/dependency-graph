@@ -11,6 +11,7 @@ Start with `depgraph doctor`. Every `fail` line ends with a `next:` line that sa
 | `fail snapshot: snapshot is N days old` | Scheduled refresh stopped | Check the refresh pipeline. With sample data this is expected: `doctor --now <time>`. |
 | `--env prod` shows no observed edges; drift is all `declared_only` | Kubernetes namespaces are not mapped | Paste the block that `depgraph build` prints after `hint:` into `config/environments.yaml` ([tutorial 6](06-real-data.md#2-environments-the-step-people-miss)) |
 | My service shows up as two nodes, such as `payments` and `payments-api` | Workload name differs from catalog name | Add an alias in `config/aliases.yaml`, or align `app.kubernetes.io/name` |
+| `depgraph report` says a file is not found | No run has been made in this folder | Run `depgraph discover` (or `build`) first; `report` reads `data/snapshot.json` and `data/unresolved.json` |
 | `build` reports many unresolved names | Missing aliases or catalog files | See above; `depgraph orphans` lists what is loose |
 | Impact treats a `dependsOn` as 0.5, not as hard | By design: `dependsOn` is *unknown* until a failed chaos experiment marks it hard | Mark what you can live without in `depgraph/soft-dependencies`; hard needs experiment evidence |
 | A soft dependency shows no edge | The name in `depgraph/soft-dependencies` does not resolve | It accepts a name, project path or `component:default/<name>`; check `unresolved.json` for a `soft_dependency` row |

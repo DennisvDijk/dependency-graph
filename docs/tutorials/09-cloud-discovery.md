@@ -107,7 +107,7 @@ guess_namespaces: true
 - **VPC Flow Logs / NSG flow logs.** IP-level traffic would also catch services without X-Ray or Application Insights. Not read yet.
 - **New services from the cloud.** Cloud resources tie to services that exist in your repos. An ECS service with no repo shows up in `unresolved.json` and doesn't become a node of its own.
 - **Network Firewall, WAF, NACLs, Azure Firewall, CIDR-only rules.** These rules don't say which service they're for.
-- **EKS / AKS workloads.** These come from the Kubernetes manifests in your repos (tutorial 8) and Istio, not from these readers.
+- **EKS / AKS workloads.** These readers don't list them. Use `depgraph discover --kubernetes` for the live cluster ([tutorial 8](08-terraform-python-open-source.md#kubernetes-clusters)), or the manifests in your repos and Istio.
 
 ## Optional: VPC flow logs between ECS services
 
