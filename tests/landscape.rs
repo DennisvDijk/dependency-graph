@@ -167,6 +167,7 @@ fn every_edge_is_expected() {
         "candidate_calls component:billing-ex -> resource:external-api:api-stripe-com - candidate unknown static",
         "candidate_calls component:billing-ex -> component:notifications - candidate unknown static",
         "candidate_calls component:billing-ex -> component:orders-py - candidate unknown static",
+        "candidate_calls component:billing-ex -> resource:gateway:public-edge - candidate unknown static",
         // AWS security groups (Terraform and CloudFormation). Each group belongs
         // to the service it is attached to (ECS, Lambda) or named after
         // (`orders-py-prod-sg`, tag `app`); a rule between two groups is a

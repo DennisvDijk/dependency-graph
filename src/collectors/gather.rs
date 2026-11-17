@@ -393,6 +393,7 @@ pub fn gateway_records(text: &str) -> Vec<RawRecord> {
             continue;
         };
         let mut backends: Vec<String> = Vec::new();
+        let mut hosts: Vec<String> = Vec::new();
         match kind {
             "Ingress" => {
                 let spec = value.get("spec").unwrap_or(&serde_json::Value::Null);
@@ -408,6 +409,9 @@ pub fn gateway_records(text: &str) -> Vec<RawRecord> {
                     .into_iter()
                     .flatten()
                 {
+                    if let Some(host) = rule.get("host").and_then(|v| v.as_str()) {
+                        hosts.push(host.to_owned());
+                    }
                     for path in rule
                         .pointer("/http/paths")
                         .and_then(|v| v.as_array())
@@ -424,6 +428,15 @@ pub fn gateway_records(text: &str) -> Vec<RawRecord> {
                 }
             }
             "HTTPRoute" | "GRPCRoute" => {
+                for host in value
+                    .pointer("/spec/hostnames")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str())
+                {
+                    hosts.push(host.to_owned());
+                }
                 for rule in value
                     .pointer("/spec/rules")
                     .and_then(|v| v.as_array())
@@ -443,6 +456,15 @@ pub fn gateway_records(text: &str) -> Vec<RawRecord> {
                 }
             }
             _ => continue,
+        }
+        hosts.sort();
+        hosts.dedup();
+        for host in hosts.iter().filter(|h| !h.contains('*')) {
+            records.push(record(
+                "k8s_workloads",
+                "gateway_host",
+                json!({"gateway": name, "host": host}),
+            ));
         }
         backends.sort();
         backends.dedup();
@@ -928,6 +950,7 @@ mod manifest_selection_tests {
         let text = "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: edge\nspec:\n  defaultBackend:\n    service:\n      name: web\n  rules:\n    - http:\n        paths:\n          - backend:\n              service:\n                name: api\n---\napiVersion: gateway.networking.k8s.io/v1\nkind: HTTPRoute\nmetadata:\n  name: mesh-route\nspec:\n  rules:\n    - backendRefs:\n        - name: api\n";
         let mut found: Vec<String> = gateway_records(text)
             .iter()
+            .filter(|r| r.kind == "resource_link")
             .map(|r| format!("{}->{}", r.payload["from"], r.payload["to"]))
             .collect();
         found.sort();
@@ -939,6 +962,24 @@ mod manifest_selection_tests {
                 "\"mesh-route\"->\"api\""
             ]
         );
+    }
+
+    #[test]
+    fn gateway_hosts_are_read_and_wildcards_skipped() {
+        let text = "kind: Ingress\nmetadata:\n  name: edge\nspec:\n  rules:\n    - host: shop.example.com\n    - host: '*.example.com'\n---\nkind: HTTPRoute\nmetadata:\n  name: r\nspec:\n  hostnames: [api.example.com]\n  rules:\n    - backendRefs:\n        - name: api\n";
+        let mut hosts: Vec<String> = gateway_records(text)
+            .iter()
+            .filter(|r| r.kind == "gateway_host")
+            .map(|r| {
+                format!(
+                    "{}={}",
+                    r.payload["gateway"].as_str().unwrap(),
+                    r.payload["host"].as_str().unwrap()
+                )
+            })
+            .collect();
+        hosts.sort();
+        assert_eq!(hosts, ["edge=shop.example.com", "r=api.example.com"]);
     }
 
     use super::*;
