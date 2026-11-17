@@ -1,0 +1,122 @@
+# Signed release pipeline. It runs only for a tag such as v0.2.0.
+#
+# What a release contains:
+#   depgraph-x86_64-unknown-linux-gnu.tar.gz   the binary
+#   SHA256SUMS                                  checksums of everything below
+#   *.bundle                                    cosign signature + certificate per file
+#   sbom.cdx.json                               CycloneDX dependency list
+#   container image                             $CI_REGISTRY_IMAGE:<tag>, signed by digest
+#
+# Signing is keyless: the job gets a short-lived identity token from GitLab
+# (id_tokens) and cosign trades it for a certificate that names this project,
+# this file and this tag. There is no key to guard or rotate.
+#
+# Behind a firewall, keyless needs your own Sigstore (Fulcio + Rekor), or set
+# COSIGN_PRIVATE_KEY and COSIGN_PASSWORD as masked, protected CI/CD variables
+# to sign with a key instead. Set SIGSTORE_URL variables only if you run your
+# own Sigstore; see docs/releases.md.
+#
+# macOS binaries need a macOS runner. Add a job with the runner's tag when you
+# have one; the Linux job below is the template.
+
+.release-rules: &release_rules
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+/
+
+.cosign: &cosign
+  image:
+    name: cgr.dev/chainguard/cosign:latest-dev
+    entrypoint: [""]
+  id_tokens:
+    SIGSTORE_ID_TOKEN:
+      aud: sigstore
+  variables:
+    COSIGN_YES: "true"
+
+build-linux:
+  stage: release-build
+  <<: *release_rules
+  script:
+    - cargo build --release --locked
+    - mkdir -p dist
+    - cp target/release/depgraph dist/depgraph
+    - tar -C dist -czf "depgraph-x86_64-unknown-linux-gnu.tar.gz" depgraph
+    - cargo install cargo-cyclonedx --locked
+    - cargo cyclonedx --format json --override-filename sbom
+    - mv sbom.json sbom.cdx.json
+    - sha256sum depgraph-*.tar.gz sbom.cdx.json > SHA256SUMS
+  artifacts:
+    paths:
+      - depgraph-*.tar.gz
+      - sbom.cdx.json
+      - SHA256SUMS
+
+sign-files:
+  stage: release-sign
+  <<: [*release_rules, *cosign]
+  needs: [build-linux]
+  script:
+    - |
+      for file in depgraph-*.tar.gz sbom.cdx.json SHA256SUMS; do
+        if [ -n "${COSIGN_PRIVATE_KEY:-}" ]; then
+          printf '%s' "$COSIGN_PRIVATE_KEY" > /tmp/cosign.key
+          cosign sign-blob --key /tmp/cosign.key --bundle "${file}.bundle" "$file"
+        else
+          cosign sign-blob --bundle "${file}.bundle" "$file"
+          # Check our own signature the way a user will; a failure stops the release.
+          cosign verify-blob --bundle "${file}.bundle" \
+            --certificate-identity-regexp "^${CI_SERVER_URL}/${CI_PROJECT_PATH}//" \
+            --certificate-oidc-issuer "${CI_SERVER_URL}" "$file"
+        fi
+      done
+  artifacts:
+    paths:
+      - "*.bundle"
+
+build-image:
+  stage: release-build
+  <<: *release_rules
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - |
+      printf '{"auths":{"%s":{"auth":"%s"}}}' "$CI_REGISTRY" \
+        "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')" \
+        > /kaniko/.docker/config.json
+    - >
+      /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile Dockerfile
+      --destination "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
+      --digest-file image.digest
+  artifacts:
+    paths:
+      - image.digest
+
+sign-image:
+  stage: release-sign
+  <<: [*release_rules, *cosign]
+  needs: [build-image]
+  script:
+    - ref="$CI_REGISTRY_IMAGE@$(cat image.digest)"
+    - cosign login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
+    - |
+      if [ -n "${COSIGN_PRIVATE_KEY:-}" ]; then
+        printf '%s' "$COSIGN_PRIVATE_KEY" > /tmp/cosign.key
+        cosign sign --key /tmp/cosign.key "$ref"
+      else
+        cosign sign "$ref"
+      fi
+
+release:
+  stage: release-publish
+  <<: *release_rules
+  image:
+    name: registry.gitlab.com/gitlab-org/cli:latest
+    entrypoint: [""]
+  needs: [build-linux, sign-files, sign-image]
+  script:
+    - |
+      glab release create "$CI_COMMIT_TAG" \
+        --notes "Signed release $CI_COMMIT_TAG. Verify with the steps in docs/releases.md." \
+        depgraph-*.tar.gz sbom.cdx.json SHA256SUMS *.bundle
