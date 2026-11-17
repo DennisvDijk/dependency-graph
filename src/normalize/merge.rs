@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use semver::Version;
+use serde_json::Value;
 
 use crate::config::{Aliases, EnvIndex};
 use crate::error::Error;
@@ -91,6 +92,8 @@ pub fn merge_records(
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
     let mut observed: BTreeMap<ObservedKey, ObservedAgg> = BTreeMap::new();
     let mut flows = Vec::new();
+    let mut live_clusters: BTreeMap<String, Value> = BTreeMap::new();
+    let mut live_workloads: BTreeMap<String, Value> = BTreeMap::new();
     let mut candidates: Vec<CandidateCall> = Vec::new();
     let mut soft_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut heuristics: BTreeMap<String, bool> = BTreeMap::new();
@@ -241,6 +244,34 @@ pub fn merge_records(
             }
             "observed_call" => absorb_observed(record, &mut observed)?,
             "network_flow" => flows.push(record.payload.clone()),
+            "cluster" => {
+                let id = required_str(&record.payload, "id")?;
+                if !matches!(
+                    ids::parse_node_id(id),
+                    Ok(ids::ParsedNodeId::Cluster { .. })
+                ) {
+                    return Err(Error::Validation(
+                        "invalid discovered cluster identity".into(),
+                    ));
+                }
+                live_clusters
+                    .entry(id.to_owned())
+                    .or_insert_with(|| record.payload.clone());
+            }
+            "cluster_workload" => {
+                let id = required_str(&record.payload, "id")?;
+                if !matches!(
+                    ids::parse_node_id(id),
+                    Ok(ids::ParsedNodeId::Workload { .. })
+                ) {
+                    return Err(Error::Validation(
+                        "invalid discovered workload identity".into(),
+                    ));
+                }
+                live_workloads
+                    .entry(id.to_owned())
+                    .or_insert_with(|| record.payload.clone());
+            }
             "network_flow_checkpoint" => {}
             "network_node" => {
                 let name = required_str(&record.payload, "name")?;
@@ -552,6 +583,91 @@ pub fn merge_records(
         edges.push(deployed_edge(&from_id, &deployment_id, env, &stamp));
     }
     edges.append(&mut runtime_edges);
+    for (id, cluster) in &live_clusters {
+        let display = required_str(cluster, "display_name")?;
+        nodes.push(Node {
+            id: id.clone(),
+            node_type: NodeType::Cluster,
+            attrs: BTreeMap::from([
+                ("display_name".into(), Value::String(display.to_owned())),
+                ("platform".into(), Value::String("kubernetes".into())),
+            ]),
+        });
+    }
+    for (id, workload) in &live_workloads {
+        let cluster_id = required_str(workload, "cluster_id")?;
+        if !live_clusters.contains_key(cluster_id) {
+            return Err(Error::Validation(
+                "workload has no discovered cluster".into(),
+            ));
+        }
+        let name = required_str(workload, "name")?;
+        let namespace = required_str(workload, "namespace")?;
+        let kind = required_str(workload, "workload_kind")?;
+        let stamp = Timestamp::parse(required_str(workload, "last_seen")?)
+            .map_err(|_| Error::Validation("invalid Kubernetes observation time".into()))?;
+        let env = environments.resolve_namespace(namespace);
+        nodes.push(Node {
+            id: id.clone(),
+            node_type: NodeType::Workload,
+            attrs: BTreeMap::from([
+                (
+                    "display_name".into(),
+                    Value::String(format!("{namespace}/{name}")),
+                ),
+                ("kind".into(), Value::String(kind.to_owned())),
+                ("namespace".into(), Value::String(namespace.to_owned())),
+            ]),
+        });
+        let source = |evidence: &str| EdgeSource {
+            kind: SourceKind::Kubernetes,
+            first_seen: stamp.clone(),
+            last_seen: stamp.clone(),
+            evidence_ref: Some(evidence.to_owned()),
+        };
+        edges.push(Edge {
+            id: ids::edge_id(EdgeType::RunsInCluster, id, cluster_id, env),
+            edge_type: EdgeType::RunsInCluster,
+            from_id: id.clone(),
+            to_id: cluster_id.to_owned(),
+            env,
+            sources: vec![source("kubernetes:workload")],
+            status: EdgeStatus::NotApplicable,
+            criticality: Default::default(),
+            criticality_source: Default::default(),
+            active: true,
+            attrs: EdgeAttrs::default(),
+        });
+        if let (Some(label), Some(label_key)) = (
+            workload.get("component_label").and_then(Value::as_str),
+            workload
+                .get("component_label_key")
+                .and_then(Value::as_str)
+                .filter(|key| matches!(*key, "app" | "app.kubernetes.io/name")),
+        ) {
+            let component = canonical_name(label, aliases);
+            let owners = project_components
+                .values()
+                .filter(|names| names.contains(&component))
+                .count();
+            if components.contains_key(&component) && owners <= 1 {
+                let from_id = format!("component:{component}");
+                edges.push(Edge {
+                    id: ids::edge_id(EdgeType::HasWorkload, &from_id, id, env),
+                    edge_type: EdgeType::HasWorkload,
+                    from_id,
+                    to_id: id.clone(),
+                    env,
+                    sources: vec![source(&format!("kubernetes:label:{label_key}"))],
+                    status: EdgeStatus::NotApplicable,
+                    criticality: Default::default(),
+                    criticality_source: Default::default(),
+                    active: true,
+                    attrs: EdgeAttrs::default(),
+                });
+            }
+        }
+    }
     let mut flow_edges = Vec::new();
     for flow in &flows {
         let source = required_str(flow, "source")?;
@@ -663,7 +779,12 @@ pub fn merge_records(
     edges.sort_by(|left, right| left.id.cmp(&right.id));
     edges.dedup_by(|left, right| left.id == right.id);
     let mut graph = GraphSnapshot {
-        schema_version: "0.1.0".to_owned(),
+        schema_version: if live_clusters.is_empty() {
+            "0.1.0"
+        } else {
+            "0.2.0"
+        }
+        .to_owned(),
         run_id: run_id.to_owned(),
         generated_at: generated_at.clone(),
         sources,

@@ -54,7 +54,9 @@ Collectors gather source records. The normalizer resolves them into a snapshot a
 | **Candidate** | Configuration or static evidence suggests a possible tie; it is not proof of a call. |
 | **Network traffic** | Flow logs saw packets. Packet direction does not prove which application initiated a call, so these edges do not drive impact or drift. |
 
-A missing edge is not proof that a connection doesn't exist. See [cloud discovery](docs/tutorials/09-cloud-discovery.md) for the sources and current limits.
+A missing edge is not proof that a connection doesn't exist. **Kubernetes** discovery (`--kubernetes`) reads the current `kubectl` context with read-only calls and adds a cluster node plus workload nodes (Deployments, StatefulSets and similar). Secrets are never read. A workload is linked to a repository component only when an existing label matches one; otherwise it stays visible, unlinked. Network-traffic edges never count towards dependency or impact analysis.
+
+See [cloud discovery](docs/tutorials/09-cloud-discovery.md) for the sources and current limits.
 
 ## Try it without an account
 
@@ -87,6 +89,7 @@ For non-interactive use, choose sources explicitly:
 depgraph discover --repos-only
 depgraph discover --aws --azure           # optional cloud reads
 depgraph discover --prometheus --aws      # configured Istio metrics + AWS
+depgraph discover --kubernetes            # read-only: current kubectl context
 ```
 
 The default cloud scope is the AWS CLI's selected region and the Azure CLI's selected subscription. AWS flow evidence currently covers supported ECS task interfaces; Azure VNet Traffic Analytics discovers VM-to-VM traffic, not the application responsible on a VM. See [cloud discovery](docs/tutorials/09-cloud-discovery.md) for permissions, supported formats and gaps.

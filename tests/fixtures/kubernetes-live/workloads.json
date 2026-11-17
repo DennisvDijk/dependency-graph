@@ -1,0 +1,94 @@
+{
+  "kind": "List",
+  "items": [
+    {
+      "kind": "Deployment",
+      "metadata": {
+        "name": "orders-web",
+        "namespace": "shop-prod",
+        "uid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "labels": {
+          "app.kubernetes.io/name": "orders-py"
+        }
+      },
+      "spec": {
+        "template": {
+          "spec": {
+            "containers": [
+              {
+                "name": "app",
+                "env": [
+                  {
+                    "name": "API_KEY",
+                    "value": "secret-value-never-include"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "StatefulSet",
+      "metadata": {
+        "name": "billing",
+        "namespace": "shop-prod",
+        "uid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+      },
+      "spec": {
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "billing-ex"
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "Deployment",
+      "metadata": {
+        "name": "orders-web",
+        "namespace": "qa",
+        "uid": "cccccccc-cccc-cccc-cccc-cccccccccccc"
+      }
+    },
+    {
+      "kind": "DaemonSet",
+      "metadata": {
+        "name": "agent",
+        "namespace": "shop-prod",
+        "uid": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+        "labels": {
+          "app": "orders-py"
+        }
+      },
+      "spec": {
+        "template": {
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/name": "billing-ex"
+            }
+          }
+        }
+      }
+    },
+    {
+      "kind": "Deployment",
+      "metadata": {
+        "name": "keycloak",
+        "namespace": "shop-prod",
+        "uid": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+      }
+    },
+    {
+      "kind": "Pod",
+      "metadata": {
+        "name": "ignored-pod",
+        "namespace": "shop-prod",
+        "uid": "ffffffff-ffff-ffff-ffff-ffffffffffff"
+      }
+    }
+  ]
+}

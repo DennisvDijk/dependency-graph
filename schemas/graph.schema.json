@@ -263,6 +263,16 @@
           "type": "string"
         },
         {
+          "const": "runs_in_cluster",
+          "description": "A workload runs in a cluster.",
+          "type": "string"
+        },
+        {
+          "const": "has_workload",
+          "description": "A component is associated with a workload by an explicit label.",
+          "type": "string"
+        },
+        {
           "const": "uses_library",
           "description": "Component includes this library.",
           "type": "string"
@@ -346,6 +356,16 @@
           "const": "library",
           "description": "A versionless package URL.",
           "type": "string"
+        },
+        {
+          "const": "cluster",
+          "description": "A discovered Kubernetes cluster.",
+          "type": "string"
+        },
+        {
+          "const": "workload",
+          "description": "A discovered Kubernetes workload object.",
+          "type": "string"
         }
       ]
     },
@@ -410,6 +430,11 @@
         {
           "const": "cloud",
           "description": "A cloud provider's own service map: AWS X-Ray or Azure Application Insights.",
+          "type": "string"
+        },
+        {
+          "const": "kubernetes",
+          "description": "Kubernetes API workload metadata.",
           "type": "string"
         }
       ]

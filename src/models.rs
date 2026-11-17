@@ -90,6 +90,10 @@ pub enum NodeType {
     Resource,
     /// A versionless package URL.
     Library,
+    /// A discovered Kubernetes cluster.
+    Cluster,
+    /// A discovered Kubernetes workload object.
+    Workload,
 }
 
 impl NodeType {
@@ -101,6 +105,8 @@ impl NodeType {
             Self::Deployment => "deployment",
             Self::Resource => "resource",
             Self::Library => "library",
+            Self::Cluster => "cluster",
+            Self::Workload => "workload",
         }
     }
 }
@@ -121,6 +127,10 @@ pub enum EdgeType {
     CandidateCalls,
     /// Component runs as this deployment.
     DeployedAs,
+    /// A workload runs in a cluster.
+    RunsInCluster,
+    /// A component is associated with a workload by an explicit label.
+    HasWorkload,
     /// Component includes this library.
     UsesLibrary,
     /// Component publishes to a topic or queue.
@@ -139,6 +149,8 @@ impl EdgeType {
             Self::NetworkTraffic => "network_traffic",
             Self::CandidateCalls => "candidate_calls",
             Self::DeployedAs => "deployed_as",
+            Self::RunsInCluster => "runs_in_cluster",
+            Self::HasWorkload => "has_workload",
             Self::UsesLibrary => "uses_library",
             Self::PublishesTo => "publishes_to",
             Self::ConsumesFrom => "consumes_from",
@@ -166,6 +178,8 @@ pub enum SourceKind {
     Static,
     /// A cloud provider's own service map: AWS X-Ray or Azure Application Insights.
     Cloud,
+    /// Kubernetes API workload metadata.
+    Kubernetes,
 }
 
 /// Agreement between declared and observed edges.
@@ -452,6 +466,8 @@ mod tests {
             EdgeType::ObservedCalls,
             EdgeType::CandidateCalls,
             EdgeType::DeployedAs,
+            EdgeType::RunsInCluster,
+            EdgeType::HasWorkload,
             EdgeType::UsesLibrary,
             EdgeType::PublishesTo,
             EdgeType::ConsumesFrom,

@@ -280,7 +280,7 @@ fn walk(
 ) -> Result<Vec<Visit>, Error> {
     let start_id = resolve_id(graph, component)
         .ok_or_else(|| Error::Validation(format!("unknown node `{component}`")))?;
-    let indexed = index(graph, env, |_| true);
+    let indexed = index(graph, env, dependency_edge);
     let start = *indexed
         .ids
         .get(&start_id)
@@ -358,6 +358,14 @@ fn env_matches(edge: &Edge, env: Option<Env>) -> bool {
         Some(env) => edge.env == Some(env) || edge.env.is_none(),
         None => true,
     }
+}
+
+/// Network and placement evidence is not a service dependency.
+pub(crate) fn dependency_edge(edge: &Edge) -> bool {
+    !matches!(
+        edge.edge_type,
+        EdgeType::NetworkTraffic | EdgeType::RunsInCluster | EdgeType::HasWorkload
+    )
 }
 
 fn deploy_edge(edge: &Edge) -> bool {

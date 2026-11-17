@@ -29,6 +29,16 @@ pub enum ParsedNodeId {
         /// Resource name.
         name: String,
     },
+    /// `cluster:k8s-<fingerprint>`.
+    Cluster {
+        /// SHA-256 fingerprint of the Kubernetes cluster identity.
+        fingerprint: String,
+    },
+    /// `workload:<fingerprint>`.
+    Workload {
+        /// SHA-256 fingerprint of the cluster and workload UIDs.
+        fingerprint: String,
+    },
     /// `library:<purl-without-version>`.
     Library {
         /// Package URL without version, qualifiers, or subpath.
@@ -222,6 +232,22 @@ pub fn parse_node_id(id: &str) -> Result<ParsedNodeId, String> {
             name: name.to_owned(),
         });
     }
+    if let Some(fingerprint) = id.strip_prefix("cluster:k8s-") {
+        if valid_fingerprint(fingerprint) {
+            return Ok(ParsedNodeId::Cluster {
+                fingerprint: fingerprint.to_owned(),
+            });
+        }
+        return Err(format!("invalid cluster id `{id}`"));
+    }
+    if let Some(fingerprint) = id.strip_prefix("workload:") {
+        if valid_fingerprint(fingerprint) {
+            return Ok(ParsedNodeId::Workload {
+                fingerprint: fingerprint.to_owned(),
+            });
+        }
+        return Err(format!("invalid workload id `{id}`"));
+    }
     if let Some(purl) = id.strip_prefix("library:") {
         if is_versionless_purl(purl) {
             return Ok(ParsedNodeId::Library {
@@ -231,6 +257,13 @@ pub fn parse_node_id(id: &str) -> Result<ParsedNodeId, String> {
         return Err(format!("invalid library id `{id}`"));
     }
     Err(format!("invalid node id `{id}`"))
+}
+
+fn valid_fingerprint(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Stable edge id: `edge:` plus the lowercase hex SHA-256 of

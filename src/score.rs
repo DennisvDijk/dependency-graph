@@ -256,11 +256,9 @@ fn path_scores(
     weights: &BTreeMap<String, f64>,
 ) -> BTreeMap<String, f64> {
     let mut incoming: BTreeMap<&str, Vec<&Edge>> = BTreeMap::new();
-    for edge in graph
-        .edges
-        .iter()
-        .filter(|edge| edge.active && env_ok(edge, env))
-    {
+    for edge in graph.edges.iter().filter(|edge| {
+        edge.active && env_ok(edge, env) && crate::analysis::algo::dependency_edge(edge)
+    }) {
         incoming.entry(edge.to_id.as_str()).or_default().push(edge);
     }
     // Best score per node over every path. A declared edge and an observed

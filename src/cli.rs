@@ -139,8 +139,8 @@ pub struct DiscoverArgs {
     /// Include Azure discovery, including existing VNet Traffic Analytics.
     #[arg(long, conflicts_with = "repos_only")]
     pub azure: bool,
-    /// Scan repository sources only, without live cloud or Prometheus calls.
-    #[arg(long, conflicts_with_all = ["aws", "azure", "prometheus"])]
+    /// Scan repository sources only, without live cloud, Kubernetes or Prometheus calls.
+    #[arg(long, conflicts_with_all = ["aws", "azure", "prometheus", "kubernetes"])]
     pub repos_only: bool,
     /// Include Istio metrics from the configured Prometheus endpoint.
     #[arg(long, conflicts_with = "repos_only")]
@@ -148,6 +148,12 @@ pub struct DiscoverArgs {
     /// Use saved Prometheus responses (requires --prometheus).
     #[arg(long, requires = "prometheus")]
     pub prometheus_fixture: Option<PathBuf>,
+    /// Discover the current Kubernetes context (read-only).
+    #[arg(long, conflicts_with = "repos_only")]
+    pub kubernetes: bool,
+    /// Use saved Kubernetes responses (requires --kubernetes).
+    #[arg(long, requires = "kubernetes")]
+    pub kubernetes_fixture: Option<PathBuf>,
     /// Use a saved repository landscape instead of GitLab.
     #[arg(long)]
     pub fixture: Option<PathBuf>,
@@ -186,6 +192,12 @@ pub struct CollectArgs {
     /// Query `prometheus.url` with read-only GETs.
     #[arg(long)]
     pub prometheus: bool,
+    /// Discover the current Kubernetes context (read-only).
+    #[arg(long)]
+    pub kubernetes: bool,
+    /// Use saved Kubernetes responses instead of a live cluster (requires --kubernetes).
+    #[arg(long, requires = "kubernetes")]
+    pub kubernetes_fixture: Option<PathBuf>,
     /// Read the AWS account once with the `aws` CLI (read-only), even when
     /// `aws.enabled` is false.
     #[arg(long)]
@@ -206,6 +218,9 @@ pub struct CollectArgs {
     /// Saved `az` CLI output (`asgs.json`, `nsgs.json`, `dependencies.json`).
     #[arg(long)]
     pub azure_fixture: Option<PathBuf>,
+    /// Freeze the selected Kubernetes context during guided discovery.
+    #[arg(skip)]
+    pub selected_kubernetes_context: Option<String>,
     /// Skip implicit cloud configuration for guided discovery.
     #[arg(skip)]
     pub skip_config_cloud: bool,
@@ -673,6 +688,13 @@ fn command_available(name: &str) -> bool {
         .is_ok_and(|result| result.status.success())
 }
 
+fn kubectl_available() -> bool {
+    std::process::Command::new("kubectl")
+        .args(["version", "--client"])
+        .output()
+        .is_ok_and(|result| result.status.success())
+}
+
 fn aws_scope(aws: &config::AwsConfig, fixture: bool) -> String {
     if fixture {
         return "saved AWS fixture".into();
@@ -745,11 +767,20 @@ fn run_discover(args: DiscoverArgs) -> Result<(), Error> {
             "CLI not found"
         }
     );
+    let kubectl_installed = kubectl_available();
+    println!(
+        "Kubernetes: {}. Reads the current context only when selected.",
+        if kubectl_installed {
+            "kubectl installed"
+        } else {
+            "kubectl not found"
+        }
+    );
     println!(
         "Cloud reads use your existing login and may incur CloudWatch or Azure Monitor charges. Nothing is enabled or created in the cloud."
     );
     println!("Network packets are not application calls; not every VM can be tied to a service.");
-    let guided = !(args.aws || args.azure || args.repos_only || args.prometheus);
+    let guided = !(args.aws || args.azure || args.repos_only || args.prometheus || args.kubernetes);
     if guided
         && std::io::stdin().is_terminal()
         && let Ok(project) = config::load_project(Path::new("."))
@@ -762,6 +793,12 @@ fn run_discover(args: DiscoverArgs) -> Result<(), Error> {
             "Azure configured scope: {}",
             azure_scope(&project.config.azure, false)
         );
+        if kubectl_installed {
+            match collectors::current_kubernetes_context() {
+                Ok(context) => println!("Kubernetes current context: {context}"),
+                Err(_) => println!("Kubernetes current context: not available"),
+            }
+        }
         if project.config.prometheus.url != "https://prometheus.example.com"
             && !project.config.prometheus.url.is_empty()
         {
@@ -772,7 +809,7 @@ fn run_discover(args: DiscoverArgs) -> Result<(), Error> {
         (args.aws, args.azure)
     } else {
         if !std::io::stdin().is_terminal() {
-            return Err(Error::Usage("choose --repos-only, --prometheus, --aws, --azure, or combine sources; no cloud reads were started".into()));
+            return Err(Error::Usage("choose --repos-only, --prometheus, --kubernetes, --aws, --azure, or combine sources; no live reads were started".into()));
         }
         println!("Choose: 1) repositories only  2) add AWS  3) add Azure  4) add both  0) cancel");
         print!("Selection: ");
@@ -833,6 +870,40 @@ fn run_discover(args: DiscoverArgs) -> Result<(), Error> {
                 .into(),
         ));
     }
+    let mut kubernetes = args.kubernetes;
+    if guided && args.fixture.is_none() && kubectl_installed {
+        match collectors::current_kubernetes_context() {
+            Ok(context) => {
+                println!("Read Kubernetes workloads in current context {context}? [y/N]");
+                print!("Selection: ");
+                std::io::stdout().flush()?;
+                let mut choice = String::new();
+                std::io::stdin().read_line(&mut choice)?;
+                kubernetes = match choice.trim().to_ascii_lowercase().as_str() {
+                    "y" | "yes" => true,
+                    "" | "n" | "no" => false,
+                    _ => {
+                        return Err(Error::Usage(
+                            "invalid selection; run depgraph discover again".into(),
+                        ));
+                    }
+                };
+            }
+            Err(_) => println!(
+                "Kubernetes: no usable current context; run kubectl config current-context to check."
+            ),
+        }
+    }
+    let selected_kubernetes_context = if kubernetes && args.kubernetes_fixture.is_none() {
+        let context = collectors::current_kubernetes_context()?;
+        println!("Kubernetes scope: current context {context}.");
+        Some(context)
+    } else {
+        if kubernetes {
+            println!("Kubernetes scope: saved fixture.");
+        }
+        None
+    };
     if args.fixture.is_none() {
         // Verify repository access before potentially chargeable cloud calls.
         crate::gitlab::resolve_token(&project.config.gitlab.base_url)?;
@@ -867,6 +938,9 @@ fn run_discover(args: DiscoverArgs) -> Result<(), Error> {
         project_path: Vec::new(),
         prometheus_fixture: args.prometheus_fixture,
         prometheus,
+        kubernetes,
+        kubernetes_fixture: args.kubernetes_fixture,
+        selected_kubernetes_context,
         aws,
         aws_flow_logs: aws,
         aws_fixture: args.aws_fixture,
@@ -928,6 +1002,21 @@ fn run_discover(args: DiscoverArgs) -> Result<(), Error> {
     if !prometheus {
         println!("Prometheus was not queried; Istio call evidence is not included in this run.");
     }
+    if kubernetes {
+        let clusters = graph
+            .nodes
+            .iter()
+            .filter(|node| node.node_type == crate::models::NodeType::Cluster)
+            .count();
+        let workloads = graph
+            .nodes
+            .iter()
+            .filter(|node| node.node_type == crate::models::NodeType::Workload)
+            .count();
+        println!(
+            "Kubernetes: {clusters} cluster, {workloads} workload objects. Unlabeled workloads remain visible without an application link."
+        );
+    }
     if (aws || azure) && traffic == 0 {
         println!(
             "No network traffic edges were found. Logs may be unavailable, empty, unsupported or unmatched; check warnings above."
@@ -952,6 +1041,17 @@ fn run_collect(args: CollectArgs) -> Result<(), Error> {
             || args.azure_fixture.is_some());
     let runtime = prometheus_records(&args)?;
     let cloud = cloud_records(&args)?;
+    let cluster = if let Some(dir) = &args.kubernetes_fixture {
+        collectors::kubernetes_fixture(dir)?
+    } else if args.kubernetes {
+        if let Some(context) = &args.selected_kubernetes_context {
+            collectors::kubernetes_context(context, chrono::Utc::now())?
+        } else {
+            collectors::kubernetes_current(chrono::Utc::now())?
+        }
+    } else {
+        Vec::new()
+    };
     let mut records = if let Some(fixture) = &args.fixture {
         collectors::records_from_fixture(fixture, set)?
     } else if prometheus_only {
@@ -976,7 +1076,11 @@ fn run_collect(args: CollectArgs) -> Result<(), Error> {
         let per_page = project.config.gitlab.per_page;
         let token = crate::gitlab::resolve_token(&base_url)?;
         let client = crate::gitlab::GitLabClient::new(base_url, token, per_page)?;
-        let live = live_reader(&project.config.kubernetes)?;
+        let live = if args.kubernetes {
+            None
+        } else {
+            live_reader(&project.config.kubernetes)?
+        };
         let (records, warnings) = tokio_runtime()?.block_on(collectors::records_from_gitlab(
             &client,
             collectors::GitlabScope {
@@ -997,6 +1101,7 @@ fn run_collect(args: CollectArgs) -> Result<(), Error> {
     };
     records.extend(runtime);
     records.extend(cloud);
+    records.extend(cluster);
     let output = args.output.unwrap_or_else(|| PathBuf::from("data"));
     write_raw_dir(&output.join("raw"), &records)?;
     println!(
