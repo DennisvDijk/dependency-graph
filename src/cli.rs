@@ -1797,10 +1797,20 @@ fn run_timeline(args: TimelineArgs) -> Result<(), Error> {
 }
 
 fn run_report(args: ReportArgs) -> Result<(), Error> {
+    let missing = |path: &std::path::Path| {
+        Error::Store(format!(
+            "{} not found; run `depgraph discover` first",
+            path.display()
+        ))
+    };
+    if !args.snapshot.exists() {
+        return Err(missing(&args.snapshot));
+    }
+    if !args.unresolved.exists() {
+        return Err(missing(&args.unresolved));
+    }
     let graph: crate::models::GraphSnapshot = serde_json::from_slice(&fs::read(&args.snapshot)?)
-        .map_err(|_| {
-            Error::Store("could not read the snapshot; run `depgraph discover` first".into())
-        })?;
+        .map_err(|_| Error::Store("could not read the snapshot".into()))?;
     let unresolved: normalize::merge::UnresolvedReport =
         serde_json::from_slice(&fs::read(&args.unresolved)?)
             .map_err(|_| Error::Store("could not read the unresolved report".into()))?;

@@ -233,3 +233,46 @@ fn kubernetes_fixture_discovers_workloads_without_mappings_or_secrets() {
             .contains("secret-value-never-include")
     );
 }
+
+#[test]
+fn report_summarizes_a_run_without_naming_anything() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    setup(root);
+    let run = |args: &[&str]| {
+        Command::cargo_bin("depgraph")
+            .unwrap()
+            .current_dir(root)
+            .args(args)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap()
+    };
+    let before = run(&["report"]);
+    assert!(!before.status.success());
+    assert!(String::from_utf8_lossy(&before.stderr).contains("run `depgraph discover` first"));
+    let fixture = manifest().join("tests/fixtures/landscape");
+    let discovered = Command::cargo_bin("depgraph")
+        .unwrap()
+        .current_dir(root)
+        .args(["discover", "--repos-only", "--fixture"])
+        .arg(&fixture)
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+    assert!(discovered.status.success());
+    let report = run(&["report"]);
+    assert!(report.status.success());
+    let text = String::from_utf8_lossy(&report.stdout);
+    assert!(text.contains("# depgraph run report"));
+    for name in [
+        "orders-py",
+        "billing-ex",
+        "edge-proxy-rs",
+        "legacy-batch-sg",
+    ] {
+        assert!(!text.contains(name), "{name} leaked into the report");
+    }
+    let named = run(&["report", "--include-names"]);
+    assert!(String::from_utf8_lossy(&named.stdout).contains("legacy-batch-sg"));
+}
