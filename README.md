@@ -49,6 +49,8 @@ Collectors gather source records. The normalizer resolves them into a snapshot a
 
 **Going deeper:** [how the graph is built](docs/graph-construction.md) (the abstraction layers, the rules that turn facts into nodes and edges, and the tools used) and [architecture: layers, methods and why](docs/architecture.md). Accuracy is measured against real open-source systems in CI: see [benchmarks](docs/benchmarks.md).
 
+**Agent skill:** [`skills/analyzing-service-dependencies`](skills/analyzing-service-dependencies/SKILL.md) teaches an AI assistant (Claude Code or any client that reads `SKILL.md`) to build the graph, answer impact questions, name the owners to tell and say how sure each tie is. Copy the folder to `~/.claude/skills/` (all projects) or `.claude/skills/` (one project).
+
 ### What it reads, with nothing to configure per service
 
 | Source | What depgraph finds |
