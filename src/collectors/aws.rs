@@ -406,10 +406,10 @@ pub fn terraform_records(project_path: &str, text: &str) -> Vec<RawRecord> {
             ("resource", "aws_sns_topic_subscription") => {
                 let protocol = tf_string(&top, "protocol").unwrap_or_default();
                 let endpoint = tf_value(&top, "endpoint");
-                let target = if protocol == "lambda" {
-                    tf_function(&endpoint)
-                } else {
-                    tf_ref(&endpoint, "aws_sqs_queue")
+                let target = match protocol.as_str() {
+                    "lambda" => tf_function(&endpoint),
+                    "sqs" => tf_ref(&endpoint, "aws_sqs_queue"),
+                    _ => None,
                 };
                 if let (Some(topic), Some(target)) = (
                     tf_ref(&tf_value(&top, "topic_arn"), "aws_sns_topic"),
@@ -577,9 +577,11 @@ pub fn cloudformation_records(project_path: &str, text: &str) -> Vec<RawRecord> 
             }
             "AWS::SNS::Subscription" => {
                 let protocol = field("Protocol").as_str().unwrap_or("").to_owned();
-                if let (Some(topic), Some(target)) =
-                    (cfn_ref(field("TopicArn")), cfn_ref(field("Endpoint")))
-                {
+                if let (Some(topic), Some(target), true) = (
+                    cfn_ref(field("TopicArn")),
+                    cfn_ref(field("Endpoint")),
+                    protocol == "sqs" || protocol == "lambda",
+                ) {
                     model.subscriptions.push((topic, protocol, target));
                 }
             }
@@ -780,7 +782,8 @@ fn emit(project_path: &str, model: &Model) -> Vec<RawRecord> {
 
 /// `type.label` for the first reference to a resource of this type.
 fn tf_ref(value: &str, rtype: &str) -> Option<String> {
-    let pattern = Regex::new(&format!(r"{rtype}\.([A-Za-z0-9_-]+)")).expect("regex");
+    let pattern =
+        Regex::new(&format!(r"(?:^|[^A-Za-z0-9_]){rtype}\.([A-Za-z0-9_-]+)")).expect("regex");
     pattern
         .captures(value)
         .map(|caps| format!("{rtype}.{}", &caps[1]))
@@ -799,7 +802,17 @@ fn tf_function(value: &str) -> Option<String> {
 /// their settings.
 fn messaging_records(model: &Model) -> Vec<RawRecord> {
     let strip = |name: &str| kebab(name.strip_suffix(".fifo").unwrap_or(name));
-    let function = |key: &str| kebab(model.fn_keys.get(key).map_or(key, String::as_str));
+    // A function is known by its name; a reference to one without a literal
+    // name is skipped rather than guessed, and an ARN is reduced to its name.
+    let function = |key: &str| -> Option<String> {
+        let name = match model.fn_keys.get(key) {
+            Some(name) => name.as_str(),
+            None if key.starts_with("aws_lambda_function.") => return None,
+            None => key.rsplit(':').next().unwrap_or(key),
+        };
+        let name = kebab(name);
+        (!name.is_empty()).then_some(name)
+    };
     let message = |source: &str, direction: &str, kind: &str, name: &str| {
         record(
             "messaging",
@@ -812,7 +825,9 @@ fn messaging_records(model: &Model) -> Vec<RawRecord> {
         let Some(queue) = model.queues.get(queue_key) else {
             continue;
         };
-        let reader = function(function_key);
+        let Some(reader) = function(function_key) else {
+            continue;
+        };
         records.push(message(&reader, "consume", "queue", &strip(queue)));
         readers.entry(queue_key).or_default().insert(reader);
     }
@@ -821,12 +836,9 @@ fn messaging_records(model: &Model) -> Vec<RawRecord> {
             continue;
         };
         if protocol == "lambda" {
-            records.push(message(
-                &function(target),
-                "consume",
-                "topic",
-                &strip(topic),
-            ));
+            if let Some(reader) = function(target) {
+                records.push(message(&reader, "consume", "topic", &strip(topic)));
+            }
         } else if let Some(queue) = model.queues.get(target) {
             records.push(record(
                 "resource_link",
@@ -835,7 +847,6 @@ fn messaging_records(model: &Model) -> Vec<RawRecord> {
                     "to_kind": "topic", "to": strip(topic),
                 }),
             ));
-            readers.entry(target).or_default();
         }
     }
     let reference = Regex::new(
