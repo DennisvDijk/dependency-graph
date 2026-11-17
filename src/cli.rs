@@ -108,6 +108,8 @@ pub enum Command {
     Stats(StatsArgs),
     /// Data-quality scorecard per owner.
     Scorecard(ScorecardArgs),
+    /// Summarize the last run in a form that is safe to share.
+    Report(ReportArgs),
 }
 
 /// Options for reviewable suggestions.
@@ -375,6 +377,23 @@ pub struct StatsArgs {
     /// Snapshot to measure.
     #[arg(long)]
     pub snapshot: Option<PathBuf>,
+}
+
+/// `depgraph report`.
+#[derive(Debug, clap::Args)]
+pub struct ReportArgs {
+    /// Snapshot to summarize.
+    #[arg(long, default_value = "data/snapshot.json")]
+    pub snapshot: PathBuf,
+    /// Unresolved names from the same build.
+    #[arg(long, default_value = "data/unresolved.json")]
+    pub unresolved: PathBuf,
+    /// Also list up to 40 unresolved names (secrets are removed). Off by default.
+    #[arg(long)]
+    pub include_names: bool,
+    /// Write the report to a file instead of printing it.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 }
 
 /// `depgraph scorecard`.
@@ -671,6 +690,7 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::MrCheck(args) => run_mr_check(args),
         Command::Init(args) => run_init(args),
         Command::Doctor(args) => run_doctor(args),
+        Command::Report(args) => run_report(args),
         Command::McpConfig(args) => run_mcp_config(args),
         Command::Completions(args) => run_completions(args),
         Command::Runs(args) => run_runs(args),
@@ -1772,6 +1792,34 @@ fn run_timeline(args: TimelineArgs) -> Result<(), Error> {
             "{}\t{}\t{}\t{}",
             event.at, event.env, event.kind, event.summary
         );
+    }
+    Ok(())
+}
+
+fn run_report(args: ReportArgs) -> Result<(), Error> {
+    let missing = |path: &std::path::Path| {
+        Error::Store(format!(
+            "{} not found; run `depgraph discover` first",
+            path.display()
+        ))
+    };
+    if !args.snapshot.exists() {
+        return Err(missing(&args.snapshot));
+    }
+    if !args.unresolved.exists() {
+        return Err(missing(&args.unresolved));
+    }
+    let graph: crate::models::GraphSnapshot = serde_json::from_slice(&fs::read(&args.snapshot)?)
+        .map_err(|_| Error::Store("could not read the snapshot".into()))?;
+    let unresolved: normalize::merge::UnresolvedReport =
+        serde_json::from_slice(&fs::read(&args.unresolved)?)
+            .map_err(|_| Error::Store("could not read the unresolved report".into()))?;
+    let text = crate::report::build(&graph, &unresolved.records, args.include_names);
+    if let Some(path) = args.output {
+        fs::write(&path, &text)?;
+        println!("Wrote {}. Review it before sharing.", path.display());
+    } else {
+        print!("{text}");
     }
     Ok(())
 }
