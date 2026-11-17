@@ -16,11 +16,16 @@ use crate::redact;
 /// How long a JWKS document is reused before the next `kid` forces a refresh.
 const JWKS_TTL: Duration = Duration::from_secs(600);
 
+/// Least time between two requests to the issuer. An unauthenticated caller
+/// who sends tokens with unknown `kid` values cannot make depgraph hammer it.
+const JWKS_COOLDOWN: Duration = Duration::from_secs(30);
+
 /// Cached JWKS body. The access token is never stored here.
 #[derive(Debug, Default)]
 pub struct JwksCache {
     body: Option<String>,
     fetched: Option<Instant>,
+    attempted: Option<Instant>,
 }
 
 /// Which issuer rules apply. Generic is the default resource server.
@@ -220,6 +225,11 @@ fn authorize_with_jwk(
 ) -> Result<(), Error> {
     let header =
         decode_header(token).map_err(|_| Error::Validation("token was rejected".into()))?;
+    // Issuers sign with a private key. A shared-secret algorithm in a token
+    // header is never legitimate here, whatever the key set says.
+    if !is_asymmetric(header.alg) {
+        return Err(Error::Validation("token was rejected".into()));
+    }
     let key =
         DecodingKey::from_jwk(jwk).map_err(|_| Error::Validation("token was rejected".into()))?;
     let mut validation = Validation::new(header.alg);
@@ -234,6 +244,14 @@ fn authorize_with_jwk(
         return Err(Error::Validation("token was rejected".into()));
     }
     Ok(())
+}
+
+fn is_asymmetric(alg: jsonwebtoken::Algorithm) -> bool {
+    use jsonwebtoken::Algorithm::{ES256, ES384, EdDSA, PS256, PS384, PS512, RS256, RS384, RS512};
+    matches!(
+        alg,
+        RS256 | RS384 | RS512 | PS256 | PS384 | PS512 | ES256 | ES384 | EdDSA
+    )
 }
 
 fn has_access(policy: &AccessPolicy, claims: &AccessClaims) -> bool {
@@ -302,6 +320,16 @@ async fn load_jwk(
         {
             return Ok(jwk);
         }
+    }
+    {
+        let mut guard = cache.lock().await;
+        if guard
+            .attempted
+            .is_some_and(|attempted| attempted.elapsed() < JWKS_COOLDOWN)
+        {
+            return Err(Error::Validation("token was rejected".into()));
+        }
+        guard.attempted = Some(Instant::now());
     }
     let response = http
         .get(jwks_url)
@@ -396,4 +424,33 @@ pub fn is_loopback(bind: &str) -> bool {
     let host = bind.rsplit_once(':').map(|(host, _)| host).unwrap_or(bind);
     let host = host.trim_matches(['[', ']']);
     matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn shared_secret_algorithms_are_refused() {
+        use jsonwebtoken::Algorithm;
+        assert!(!is_asymmetric(Algorithm::HS256));
+        assert!(!is_asymmetric(Algorithm::HS512));
+        assert!(is_asymmetric(Algorithm::RS256));
+        assert!(is_asymmetric(Algorithm::ES256));
+    }
+
+    #[tokio::test]
+    async fn the_issuer_is_not_asked_again_within_the_cooldown() {
+        let cache = tokio::sync::Mutex::new(JwksCache::default());
+        // Nothing listens on port 9: the first call fails and starts the cooldown.
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let url = "http://127.0.0.1:9/jwks";
+        let first = load_jwk(url, "a", &cache, &http, false).await.unwrap_err();
+        assert!(first.to_string().contains("jwks fetch failed"), "{first}");
+        let second = load_jwk(url, "b", &cache, &http, true).await.unwrap_err();
+        assert!(second.to_string().contains("rejected"), "{second}");
+    }
 }

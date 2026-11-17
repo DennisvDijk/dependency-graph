@@ -3,7 +3,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use base64::Engine;
 use depgraph::config::Aliases;
 use depgraph::mcp::{McpState, router};
 use depgraph::models::{GraphSnapshot, Node, NodeType, Timestamp};
@@ -52,10 +51,17 @@ struct Issued {
     saw_authorization: Arc<Mutex<bool>>,
 }
 
+/// P-256 test key. Generated for these tests only; it signs nothing real.
+const TEST_KEY_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgBHWNP6ILnhwGKO4M
+amvRwhi6nKwN0T40zXqeIzBo1QShRANCAATLdjUCzaT1GU84r89USvOWYk9MTVhr
+aHiVQ9VPjDVeWV+lVstCubuIbon0aMqLkYQ7Pnge/s/WATBRkU4ZKlOP
+-----END PRIVATE KEY-----
+";
+const TEST_JWK: &str = r#"{"kty":"EC","crv":"P-256","x":"y3Y1As2k9RlPOK_PVErzlmJPTE1Ya2h4lUPVT4w1Xlk","y":"X6VWy0K5u4huifRoyouRhDs-eB7-z9YBMFGRThkqU48","kid":"test","alg":"ES256","use":"sig"}"#;
+
 fn issue() -> Issued {
-    let secret = b"phase3-local-test-key-32b-long!!";
-    let k = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret);
-    let jwks = format!(r#"{{"keys":[{{"kty":"oct","k":"{k}","kid":"test","alg":"HS256"}}]}}"#);
+    let jwks = format!(r#"{{"keys":[{TEST_JWK}]}}"#);
     #[derive(Serialize)]
     struct Claims {
         iss: &'static str,
@@ -68,7 +74,7 @@ fn issue() -> Issued {
         .unwrap()
         .as_secs() as usize
         + 600;
-    let mut header = Header::new(jsonwebtoken::Algorithm::HS256);
+    let mut header = Header::new(jsonwebtoken::Algorithm::ES256);
     header.kid = Some("test".into());
     let token = jsonwebtoken::encode(
         &header,
@@ -78,7 +84,7 @@ fn issue() -> Issued {
             exp,
             scope: "depgraph:read",
         },
-        &EncodingKey::from_secret(secret),
+        &EncodingKey::from_ec_pem(TEST_KEY_PEM).unwrap(),
     )
     .unwrap();
     Issued {
