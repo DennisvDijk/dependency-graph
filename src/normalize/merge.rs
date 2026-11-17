@@ -331,6 +331,15 @@ pub fn merge_records(
                     name: required_str(&record.payload, "name")?.to_owned(),
                 });
             }
+            "unparsed_file" => {
+                let path = required_str(&record.payload, "path")?;
+                unresolved.push(unresolved_row(
+                    "file",
+                    path,
+                    "not valid Terraform; skipped",
+                    0,
+                ));
+            }
             "resource_link" => {
                 links.push(ResourceLink {
                     from_kind: required_str(&record.payload, "from_kind")?.to_owned(),

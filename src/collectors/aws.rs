@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use regex::Regex;
 use serde_json::{Value, json};
 
+use super::hcl;
 use crate::raw::RawRecord;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +72,17 @@ pub fn terraform_records_from_files(
     project_path: &str,
     files: &[(String, String)],
 ) -> Vec<RawRecord> {
-    terraform_records(project_path, &expand_modules(files))
+    let mut records = terraform_records(project_path, &expand_modules(files));
+    // A file that is not valid Terraform cannot be read; say so and carry on.
+    for (path, text) in files {
+        if path.ends_with(".tf") && !hcl::is_valid(text) {
+            records.push(record(
+                "unparsed_file",
+                json!({"project_path": project_path, "path": path}),
+            ));
+        }
+    }
+    records
 }
 
 const MODULE_DEPTH: usize = 4;
@@ -103,27 +114,21 @@ struct ModuleCall {
 }
 
 fn variable_defaults(text: &str) -> BTreeMap<String, String> {
-    let header = Regex::new(r#"(?m)^\s*variable\s+"([^"]+)"\s*\{"#).expect("regex");
-    header
-        .captures_iter(text)
-        .filter_map(|caps| {
-            let body = braced(text, caps.get(0)?.end() - 1)?;
-            Some((caps[1].to_owned(), tf_string(&top_level(body), "default")?))
-        })
+    hcl::parse(text)
+        .unwrap_or_default()
+        .iter()
+        .filter(|block| block.kind == "variable")
+        .filter_map(|block| Some((block.labels.first()?.clone(), block.body.string("default")?)))
         .collect()
 }
 
 /// Plain-string `locals`, with references to earlier locals filled in.
 /// A local that still needs a function or another unknown is left out.
 fn locals_of(text: &str) -> BTreeMap<String, String> {
-    let header = Regex::new(r"(?m)^\s*locals\s*\{").expect("regex");
-    let entry = Regex::new(r#"(?m)^\s*([A-Za-z0-9_]+)\s*=\s*"([^"]*)""#).expect("regex");
     let mut raw: BTreeMap<String, String> = BTreeMap::new();
-    for found in header.find_iter(text) {
-        if let Some(body) = braced(text, found.end() - 1) {
-            for caps in entry.captures_iter(&top_level(body)) {
-                raw.insert(caps[1].to_owned(), caps[2].to_owned());
-            }
+    for block in hcl::parse(text).unwrap_or_default() {
+        if block.kind == "locals" {
+            raw.extend(block.body.strings());
         }
     }
     let mut known: BTreeMap<String, String> = BTreeMap::new();
@@ -154,29 +159,24 @@ fn substitute_refs(text: &str, prefix: &str, values: &BTreeMap<String, String>) 
 }
 
 fn module_calls(dir: &str, text: &str, defaults: &BTreeMap<String, String>) -> Vec<ModuleCall> {
-    let header = Regex::new(r#"(?m)^\s*module\s+"([^"]+)"\s*\{"#).expect("regex");
-    let input = Regex::new(r#"(?m)^\s*([A-Za-z0-9_]+)\s*=\s*"([^"]*)""#).expect("regex");
-    header
-        .captures_iter(text)
-        .filter_map(|caps| {
-            let body = braced(text, caps.get(0)?.end() - 1)?;
-            let top = top_level(body);
-            let source = tf_string(&top, "source")?;
+    hcl::parse(text)
+        .unwrap_or_default()
+        .iter()
+        .filter(|block| block.kind == "module")
+        .filter_map(|block| {
+            let source = block.body.string("source")?;
             if !source.starts_with("./") && !source.starts_with("../") {
                 return None;
             }
-            let inputs = input
-                .captures_iter(&top)
-                .filter(|pair| &pair[1] != "source" && &pair[1] != "version")
-                .map(|pair| {
-                    (
-                        pair[1].to_owned(),
-                        substitute_vars(&pair[2], defaults).replace('"', ""),
-                    )
-                })
+            let inputs = block
+                .body
+                .strings()
+                .into_iter()
+                .filter(|(name, _)| name.as_str() != "source" && name.as_str() != "version")
+                .map(|(name, value)| (name, substitute_vars(&value, defaults)))
                 .collect();
             Some(ModuleCall {
-                label: caps[1].to_owned(),
+                label: block.labels.first()?.clone(),
                 target: join_dir(dir, &source)?,
                 inputs,
             })
@@ -203,11 +203,11 @@ fn module_instance(
     values.extend(call.inputs.clone());
     let mut text = substitute_vars(text, &values);
     text = substitute_refs(&text, "local", &locals_of(&text));
-    let header =
-        Regex::new(r#"(?m)^\s*(?:resource|data)\s+"([^"]+)"\s+"([^"]+)"\s*\{"#).expect("regex");
-    let labels: Vec<(String, String)> = header
-        .captures_iter(&text)
-        .map(|caps| (caps[1].to_owned(), caps[2].to_owned()))
+    let labels: Vec<(String, String)> = hcl::parse(&text)
+        .unwrap_or_default()
+        .iter()
+        .filter(|block| block.kind == "resource" || block.kind == "data")
+        .filter_map(|block| Some((block.labels.first()?.clone(), block.labels.get(1)?.clone())))
         .collect();
     for (rtype, label) in labels {
         let escaped = (regex::escape(&rtype), regex::escape(&label));
@@ -236,7 +236,10 @@ fn module_instance(
 
 fn expand_modules(files: &[(String, String)]) -> String {
     let mut dirs: BTreeMap<String, String> = BTreeMap::new();
-    for (path, text) in files.iter().filter(|(path, _)| path.ends_with(".tf")) {
+    for (path, text) in files
+        .iter()
+        .filter(|(path, text)| path.ends_with(".tf") && hcl::is_valid(text))
+    {
         let entry = dirs.entry(dir_of(path)).or_default();
         entry.push_str(text);
         entry.push('\n');
@@ -285,17 +288,17 @@ pub fn terraform_records(project_path: &str, text: &str) -> Vec<RawRecord> {
     }
     let mut model = Model::default();
     let task_ref = Regex::new(r"aws_ecs_task_definition\.([A-Za-z0-9_-]+)").expect("regex");
-    let header =
-        Regex::new(r#"(?m)^\s*(resource|data)\s+"([^"]+)"\s+"([^"]+)"\s*\{"#).expect("valid regex");
-    for caps in header.captures_iter(text) {
-        let whole = caps.get(0).expect("match");
-        let Some(body) = braced(text, whole.end() - 1) else {
+    let Some(blocks) = hcl::parse(text) else {
+        return Vec::new();
+    };
+    for block in &blocks {
+        let (Some(rtype), Some(label)) = (block.labels.first(), block.labels.get(1)) else {
             continue;
         };
-        let kind = &caps[1];
-        let rtype = &caps[2];
-        let label = &caps[3];
-        let top = top_level(body);
+        let kind = block.kind.as_str();
+        let (rtype, label) = (rtype.as_str(), label.as_str());
+        let top = &block.body;
+        let body = block.body.raw.as_str();
         match (kind, rtype) {
             (_, "aws_security_group") => {
                 let key = if kind == "data" {
@@ -303,9 +306,10 @@ pub fn terraform_records(project_path: &str, text: &str) -> Vec<RawRecord> {
                 } else {
                     format!("aws_security_group.{label}")
                 };
-                let tags = tf_tags(body);
-                let own = tf_string(&top, "name")
-                    .or_else(|| tf_string(&top, "name_prefix"))
+                let tags = top.tags();
+                let own = top
+                    .string("name")
+                    .or_else(|| top.string("name_prefix"))
                     .or_else(|| tags.get("Name").cloned())
                     .unwrap_or_else(|| label.to_owned());
                 let hint = tag_hint(&tags).unwrap_or_else(|| own.clone());
@@ -313,22 +317,22 @@ pub fn terraform_records(project_path: &str, text: &str) -> Vec<RawRecord> {
                 model.names.insert(key.clone(), own);
                 if kind == "resource" {
                     model.defined.insert(key.clone());
-                    for block in nested(body, "ingress") {
-                        for from in sg_refs(&tf_value(block, "security_groups")) {
+                    for block in top.nested("ingress") {
+                        for from in sg_refs(&block.value("security_groups")) {
                             model.rules.insert((from, key.clone()));
                         }
                     }
-                    for block in nested(body, "egress") {
-                        for to in sg_refs(&tf_value(block, "security_groups")) {
+                    for block in top.nested("egress") {
+                        for to in sg_refs(&block.value("security_groups")) {
                             model.rules.insert((key.clone(), to));
                         }
                     }
                 }
             }
             ("resource", "aws_security_group_rule") => {
-                let group = sg_refs(&tf_value(&top, "security_group_id"));
-                let other = sg_refs(&tf_value(&top, "source_security_group_id"));
-                let ingress = tf_string(&top, "type").as_deref() == Some("ingress");
+                let group = sg_refs(&top.value("security_group_id"));
+                let other = sg_refs(&top.value("source_security_group_id"));
+                let ingress = top.string("type").as_deref() == Some("ingress");
                 for group in &group {
                     for other in &other {
                         model.rules.insert(if ingress {
@@ -343,8 +347,8 @@ pub fn terraform_records(project_path: &str, text: &str) -> Vec<RawRecord> {
                 "resource",
                 "aws_vpc_security_group_ingress_rule" | "aws_vpc_security_group_egress_rule",
             ) => {
-                let group = sg_refs(&tf_value(&top, "security_group_id"));
-                let other = sg_refs(&tf_value(&top, "referenced_security_group_id"));
+                let group = sg_refs(&top.value("security_group_id"));
+                let other = sg_refs(&top.value("referenced_security_group_id"));
                 let ingress = rtype.ends_with("ingress_rule");
                 for group in &group {
                     for other in &other {
@@ -357,104 +361,107 @@ pub fn terraform_records(project_path: &str, text: &str) -> Vec<RawRecord> {
                 }
             }
             ("resource", "aws_ecr_repository") => {
-                let name = tf_string(&top, "name").unwrap_or_else(|| label.to_owned());
+                let name = top.string("name").unwrap_or_else(|| label.to_owned());
                 model.ecr_names.insert(label.to_owned(), name);
             }
             ("resource", "aws_ecs_task_definition") => {
                 let images = tf_images(body);
                 model.task_images.insert(label.to_owned(), images.clone());
                 model.task_env.insert(label.to_owned(), body.to_owned());
-                if let Some(family) = tf_string(&top, "family") {
+                if let Some(family) = top.string("family") {
                     model.task_images.insert(family.clone(), images);
                     model.task_env.insert(family, body.to_owned());
                 }
             }
             ("resource", "aws_ecs_service") => {
-                let name = tf_string(&top, "name");
+                let name = top.string("name");
                 if let Some(name) = &name {
-                    let reference = tf_value(&top, "task_definition");
+                    let reference = top.value("task_definition");
                     let task = task_ref
                         .captures(&reference)
                         .map(|caps| caps[1].to_owned())
-                        .or_else(|| tf_string(&top, "task_definition"));
+                        .or_else(|| top.string("task_definition"));
                     if let Some(task) = task {
                         model.service_tasks.push((name.clone(), task));
                     }
                 }
-                let refs: Vec<String> = nested(body, "network_configuration")
+                let refs: Vec<String> = top
+                    .nested("network_configuration")
                     .iter()
-                    .flat_map(|block| sg_refs(&tf_value(block, "security_groups")))
+                    .flat_map(|block| sg_refs(&block.value("security_groups")))
                     .collect();
                 attach(&mut model, refs, name.map(Owner::Service));
             }
             ("resource", "aws_sqs_queue") => {
-                let name = tf_string(&top, "name").unwrap_or_else(|| label.to_owned());
+                let name = top.string("name").unwrap_or_else(|| label.to_owned());
                 model.queues.insert(format!("aws_sqs_queue.{label}"), name);
             }
             ("resource", "aws_sns_topic") => {
-                let name = tf_string(&top, "name").unwrap_or_else(|| label.to_owned());
+                let name = top.string("name").unwrap_or_else(|| label.to_owned());
                 model.topics.insert(format!("aws_sns_topic.{label}"), name);
             }
             ("resource", "aws_lambda_event_source_mapping") => {
                 if let (Some(queue), Some(function)) = (
-                    tf_ref(&tf_value(&top, "event_source_arn"), "aws_sqs_queue"),
-                    tf_function(&tf_value(&top, "function_name")),
+                    tf_ref(&top.value("event_source_arn"), "aws_sqs_queue"),
+                    tf_function(&top.value("function_name")),
                 ) {
                     model.reads.push((function, queue));
                 }
             }
             ("resource", "aws_sns_topic_subscription") => {
-                let protocol = tf_string(&top, "protocol").unwrap_or_default();
-                let endpoint = tf_value(&top, "endpoint");
+                let protocol = top.string("protocol").unwrap_or_default();
+                let endpoint = top.value("endpoint");
                 let target = match protocol.as_str() {
                     "lambda" => tf_function(&endpoint),
                     "sqs" => tf_ref(&endpoint, "aws_sqs_queue"),
                     _ => None,
                 };
-                if let (Some(topic), Some(target)) = (
-                    tf_ref(&tf_value(&top, "topic_arn"), "aws_sns_topic"),
-                    target,
-                ) {
+                if let (Some(topic), Some(target)) =
+                    (tf_ref(&top.value("topic_arn"), "aws_sns_topic"), target)
+                {
                     model.subscriptions.push((topic, protocol, target));
                 }
             }
             ("resource", "aws_lambda_function") => {
-                let name = tf_string(&top, "function_name");
+                let name = top.string("function_name");
                 if let Some(name) = &name {
                     model
                         .fn_keys
                         .insert(format!("aws_lambda_function.{label}"), name.clone());
                     model.fn_env.insert(name.clone(), body.to_owned());
-                    if let Some(uri) = tf_string(&top, "image_uri") {
+                    if let Some(uri) = top.string("image_uri") {
                         model.images.entry(name.clone()).or_default().push(uri);
                     }
                 }
-                let refs: Vec<String> = nested(body, "vpc_config")
+                let refs: Vec<String> = top
+                    .nested("vpc_config")
                     .iter()
-                    .flat_map(|block| sg_refs(&tf_value(block, "security_group_ids")))
+                    .flat_map(|block| sg_refs(&block.value("security_group_ids")))
                     .collect();
                 attach(&mut model, refs, name.map(Owner::Service));
             }
             ("resource", "aws_db_instance" | "aws_rds_cluster") => {
-                let name =
-                    tf_string(&top, "identifier").or_else(|| tf_string(&top, "cluster_identifier"));
+                let name = top
+                    .string("identifier")
+                    .or_else(|| top.string("cluster_identifier"));
                 if let Some(name) = &name {
                     model
                         .db_ids
                         .insert(format!("{rtype}.{label}"), name.clone());
                 }
-                let refs = sg_refs(&tf_value(&top, "vpc_security_group_ids"));
+                let refs = sg_refs(&top.value("vpc_security_group_ids"));
                 attach(&mut model, refs, name.map(Owner::Database));
             }
             ("resource", "aws_elasticache_cluster" | "aws_elasticache_replication_group") => {
-                let name = tf_string(&top, "cluster_id")
-                    .or_else(|| tf_string(&top, "replication_group_id"));
+                let name = top
+                    .string("cluster_id")
+                    .or_else(|| top.string("replication_group_id"));
                 if let Some(name) = &name {
                     model
                         .db_ids
                         .insert(format!("{rtype}.{label}"), name.clone());
                 }
-                let refs = sg_refs(&tf_value(&top, "security_group_ids"));
+                let refs = sg_refs(&top.value("security_group_ids"));
                 attach(&mut model, refs, name.map(Owner::Database));
             }
             _ => {}
@@ -969,118 +976,6 @@ fn kebab(text: &str) -> String {
         }
     }
     out.trim_matches('-').to_owned()
-}
-
-/// The text between the brace at `open` and its match.
-fn braced(text: &str, open: usize) -> Option<&str> {
-    let bytes = text.as_bytes();
-    if bytes.get(open) != Some(&b'{') {
-        return None;
-    }
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (index, &byte) in bytes.iter().enumerate().skip(open) {
-        if in_string {
-            match byte {
-                _ if escaped => escaped = false,
-                b'\\' => escaped = true,
-                b'"' => in_string = false,
-                _ => {}
-            }
-            continue;
-        }
-        match byte {
-            b'"' => in_string = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return text.get(open + 1..index);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// The body with every nested `{...}` block removed. Braces inside quoted
-/// strings (`"${var.name}"`) are text, not blocks.
-fn top_level(body: &str) -> String {
-    let mut out = String::new();
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for c in body.chars() {
-        if in_string {
-            if depth == 0 {
-                out.push(c);
-            }
-            match c {
-                _ if escaped => escaped = false,
-                '\\' => escaped = true,
-                '"' => in_string = false,
-                _ => {}
-            }
-            continue;
-        }
-        match c {
-            '"' => {
-                in_string = true;
-                if depth == 0 {
-                    out.push(c);
-                }
-            }
-            '{' => depth += 1,
-            '}' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => out.push(c),
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Bodies of the nested blocks called `name`.
-fn nested<'a>(body: &'a str, name: &str) -> Vec<&'a str> {
-    let pattern = Regex::new(&format!(r"(?m)^\s*{}\s*\{{", regex::escape(name))).expect("regex");
-    pattern
-        .find_iter(body)
-        .filter_map(|found| braced(body, found.end() - 1))
-        .collect()
-}
-
-fn tf_value(body: &str, key: &str) -> String {
-    let pattern = Regex::new(&format!(
-        r"(?ms)^\s*{}\s*=\s*(\[.*?\]|[^\n]*)",
-        regex::escape(key)
-    ))
-    .expect("regex");
-    pattern
-        .captures(body)
-        .map(|caps| caps[1].to_owned())
-        .unwrap_or_default()
-}
-
-fn tf_string(body: &str, key: &str) -> Option<String> {
-    let value = tf_value(body, key);
-    let value = value.trim();
-    let inner = value.strip_prefix('"')?.split('"').next()?;
-    (!inner.is_empty()).then(|| inner.to_owned())
-}
-
-fn tf_tags(body: &str) -> BTreeMap<String, String> {
-    let pattern = Regex::new(r"(?m)^\s*tags\s*=\s*\{").expect("regex");
-    let line = Regex::new(r#"(?m)^\s*"?([A-Za-z0-9_:-]+)"?\s*=\s*"([^"]*)""#).expect("regex");
-    let mut tags = BTreeMap::new();
-    for found in pattern.find_iter(body) {
-        if let Some(inner) = braced(body, found.end() - 1) {
-            for caps in line.captures_iter(inner) {
-                tags.insert(caps[1].to_owned(), caps[2].to_owned());
-            }
-        }
-    }
-    tags
 }
 
 fn sg_refs(value: &str) -> Vec<String> {
@@ -1841,6 +1736,52 @@ resource "aws_ecs_service" "dynamic" {
             .collect();
         found.sort();
         found
+    }
+
+    #[test]
+    fn terraform_syntax_traps_do_not_throw_the_reading_off() {
+        let text = r#"
+# resource "aws_sqs_queue" "commented_out" { name = "ghost" }
+resource "aws_sqs_queue" "jobs" {
+  name   = "billing-jobs"
+  policy = <<POLICY
+{ "Statement": [ { "Effect": "Allow" } ] }
+POLICY
+}
+resource "aws_sns_topic" "events" {
+  name = "order-events" # a trailing { brace
+}
+resource "aws_sns_topic_subscription" "to_jobs" {
+  topic_arn = aws_sns_topic.events.arn
+  protocol  = "sqs"
+  endpoint  = aws_sqs_queue.jobs.arn
+}
+"#;
+        let records = terraform_records("group/infra", text);
+        assert_eq!(
+            messages(&records),
+            ["queue billing-jobs receives topic order-events"]
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_valid_terraform_is_skipped_and_the_rest_is_read() {
+        let good = (
+            "good.tf".to_owned(),
+            "resource \"aws_sqs_queue\" \"jobs\" {\n  name = \"jobs\"\n}\nresource \"aws_sns_topic\" \"t\" {\n  name = \"t\"\n}\nresource \"aws_sns_topic_subscription\" \"s\" {\n  topic_arn = aws_sns_topic.t.arn\n  protocol = \"sqs\"\n  endpoint = aws_sqs_queue.jobs.arn\n}\n".to_owned(),
+        );
+        let broken = (
+            "broken.tf".to_owned(),
+            "resource \"aws_sqs_queue\" \"x\" {".to_owned(),
+        );
+        let records = terraform_records_from_files("group/infra", &[broken, good]);
+        assert_eq!(messages(&records), ["queue jobs receives topic t"]);
+        let skipped: Vec<&str> = records
+            .iter()
+            .filter(|record| record.kind == "unparsed_file")
+            .filter_map(|record| record.payload["path"].as_str())
+            .collect();
+        assert_eq!(skipped, ["broken.tf"]);
     }
 
     #[test]

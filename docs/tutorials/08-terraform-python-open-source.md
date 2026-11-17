@@ -18,6 +18,8 @@ The short version:
 
 ## Terraform
 
+Terraform files are read with a real HCL parser, so comments, heredocs, multi-line lists and braces inside strings do not confuse it. A file that is not valid Terraform is skipped and listed in `unresolved.json` ("not valid Terraform; skipped"), and `depgraph report` counts it. The rest of the repository is still read.
+
 depgraph does not map every Terraform resource. A repository that contains `.tf` files becomes **one** infra node named after the repo:
 
 ```text
