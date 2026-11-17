@@ -218,6 +218,18 @@ fn records_from_catalog_doc(project_path: &str, yaml: &str) -> Vec<RawRecord> {
         return Vec::new();
     }
     let collector = "gitlab_inventory".to_owned();
+    if kind == "Group" {
+        let parent = value
+            .pointer("/spec/parent")
+            .and_then(|item| item.as_str())
+            .map(owner_name)
+            .unwrap_or_default();
+        return vec![record(
+            &collector,
+            "team",
+            json!({"name": owner_name(name), "parent": parent, "project_path": project_path}),
+        )];
+    }
     if kind == "Resource" {
         let resource_kind = value
             .pointer("/spec/type")
@@ -238,6 +250,11 @@ fn records_from_catalog_doc(project_path: &str, yaml: &str) -> Vec<RawRecord> {
     let owner = value
         .pointer("/spec/owner")
         .and_then(|item| item.as_str())
+        .map(owner_name)
+        .unwrap_or_default();
+    let lifecycle = value
+        .pointer("/spec/lifecycle")
+        .and_then(|item| item.as_str())
         .unwrap_or("");
     let system = value
         .pointer("/spec/system")
@@ -254,8 +271,23 @@ fn records_from_catalog_doc(project_path: &str, yaml: &str) -> Vec<RawRecord> {
             "heuristics": heuristics,
             "owner": owner,
             "system": system,
+            "lifecycle": lifecycle,
         }),
     )]
+}
+
+/// A Backstage entity reference reduced to its name:
+/// `group:default/team-a` and `Team A` both become kebab-case names.
+/// A name that is not usable stays as written, so the owner is never lost.
+fn owner_name(reference: &str) -> String {
+    let name = reference.rsplit('/').next().unwrap_or(reference);
+    let name = name.split_once(':').map_or(name, |(_, rest)| rest).trim();
+    let kebab = super::cloud::kebab_name(name);
+    if kebab.is_empty() {
+        name.to_owned()
+    } else {
+        kebab
+    }
 }
 
 fn annotation_list(value: &Value, key: &str) -> Vec<String> {
@@ -1121,5 +1153,16 @@ mod manifest_selection_tests {
             .filter_map(|record| record.payload["name"].as_str())
             .collect();
         assert_eq!(names, ["keycloak", "redis-cache"]);
+    }
+
+    #[test]
+    fn owners_are_reduced_to_names_and_groups_name_their_parent() {
+        let yaml = "kind: Component\nmetadata:\n  name: billing\nspec:\n  owner: group:default/Team-Payments\n  lifecycle: production\n---\nkind: Group\nmetadata:\n  name: team-payments\nspec:\n  parent: group:default/finance\n";
+        let records = records_from_catalog("org/billing", yaml);
+        assert_eq!(records[0].payload["owner"], "team-payments");
+        assert_eq!(records[0].payload["lifecycle"], "production");
+        assert_eq!(records[1].kind, "team");
+        assert_eq!(records[1].payload["name"], "team-payments");
+        assert_eq!(records[1].payload["parent"], "finance");
     }
 }

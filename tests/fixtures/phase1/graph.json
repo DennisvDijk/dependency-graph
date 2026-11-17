@@ -24,6 +24,7 @@
       "id": "component:billing-api",
       "type": "component",
       "attrs": {
+        "lifecycle": "experimental",
         "owner": "ai-platform"
       }
     },
@@ -34,6 +35,7 @@
         "languages": [
           "terraform"
         ],
+        "lifecycle": "experimental",
         "owner": "ai-platform"
       }
     },
