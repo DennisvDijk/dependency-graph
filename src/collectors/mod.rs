@@ -18,6 +18,7 @@ mod gather;
 mod gitlab_deployments;
 mod gitlab_inventory;
 mod k8s_workloads;
+mod kubernetes_live;
 mod runtime_edges;
 mod sbom_links;
 
@@ -33,6 +34,10 @@ pub use base::{CollectSet, Collector, all, collect};
 pub use gather::{
     GatherSet, GitlabScope, KubectlRead, LiveRead, candidate_records, records_from_fixture,
     records_from_gitlab,
+};
+pub use kubernetes_live::{
+    current_context as current_kubernetes_context, read_context as kubernetes_context,
+    read_current as kubernetes_current, read_fixture as kubernetes_fixture,
 };
 pub use runtime_edges::{
     RuntimeFilter, query_prometheus, query_window, records_from_prometheus_bodies,

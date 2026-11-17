@@ -143,7 +143,9 @@ fn check_nodes(graph: &GraphSnapshot, errors: &mut Vec<Violation>) -> BTreeSet<S
                 }
             }
             (NodeType::Resource, Ok(ParsedNodeId::Resource { .. }))
-            | (NodeType::Library, Ok(ParsedNodeId::Library { .. })) => {}
+            | (NodeType::Library, Ok(ParsedNodeId::Library { .. }))
+            | (NodeType::Cluster, Ok(ParsedNodeId::Cluster { .. }))
+            | (NodeType::Workload, Ok(ParsedNodeId::Workload { .. })) => {}
             (_, Err(detail)) => errors.push(violation("node_id_convention", detail)),
             (_, Ok(_)) => errors.push(violation(
                 "node_type_mismatch",

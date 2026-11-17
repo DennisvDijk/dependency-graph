@@ -25,7 +25,8 @@ body { font-family: sans-serif; margin: 0; }
 <script>
 const GRAPH = /*GRAPH*/;
 const ALIASES = /*ALIASES*/;
-function nameOf(id) { return id.startsWith("component:") ? id.slice(10) : id; }
+const DISPLAY_NAMES = new Map(GRAPH.nodes.map(node => [node.id, node.attrs?.display_name]).filter(([, name]) => typeof name === "string" && name));
+function nameOf(id) { return DISPLAY_NAMES.get(id) || (id.startsWith("component:") ? id.slice(10) : id); }
 function aliasHit(query) {
   const q = query.toLowerCase();
   if (!q) return null;
