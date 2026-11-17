@@ -35,8 +35,8 @@ depgraph brings those signals together in a graph you can inspect, query and sha
 flowchart LR
     A["Repositories<br/>GitLab · manifests · source code<br/>Terraform (HCL) · CloudFormation"] --> D["Collect"]
     B["Application telemetry<br/>Istio · X-Ray · App Insights"] --> D
-    C["Cloud infrastructure<br/>AWS · Azure · Kubernetes · flow logs"] --> D
-    D --> E["Normalize & resolve<br/>services · queues · topics"]
+    C["Cloud infrastructure<br/>AWS · Azure · Kubernetes<br/>gateways · flow logs"] --> D
+    D --> E["Normalize & resolve<br/>services · queues · topics · gateways"]
     E --> F[("Versioned graph<br/>snapshot.json")]
     E --> G["Unresolved names<br/>unresolved.json"]
     F --> J["Graph engine<br/>deps · consumers · impact<br/>hub flag · cycles"]
@@ -56,7 +56,7 @@ Collectors gather source records. The normalizer resolves them into a snapshot a
 | **Gateways** | Kubernetes `Ingress` and Gateway API `HTTPRoute` objects become a gateway node with a `routes_to` edge to each service they forward to. A route to a service depgraph doesn't know goes to `unresolved.json`. A service whose source code calls the gateway's hostname (for example `https://shop.acme-store.io`) gets a candidate edge to the gateway, so a change in a backend shows the gateway and its callers as affected. Wildcard hosts are skipped. With the optional AWS and Azure reads, load balancers, HTTP API Gateway, Application Gateway and API Management show up the same way (`docs/tutorials/09-cloud-discovery.md`). Terraform and CloudFormation load balancers and service meshes are not read |
 | **Firewall rules** | `kind: FirewallRule` YAML, and AWS security groups from Terraform and CloudFormation. A group is linked to the service it is attached to |
 | **Terraform and CloudFormation** | Terraform is read with a real HCL parser; a file that does not parse is skipped and listed in `unresolved.json`, not guessed at. SQS queues, SNS topics, subscriptions and Lambda event-source mappings become queue and topic nodes with edges. The container image a service runs links it to the component built from that image. Environment settings that name a database add a candidate tie to it. Local Terraform modules and plain-string locals are expanded |
-| **Live cloud (opt-in)** | AWS and Azure resources, X-Ray and Application Insights calls, existing flow logs |
+| **Live cloud (opt-in)** | AWS and Azure resources and security groups, load balancers and API gateways, X-Ray and Application Insights calls, existing flow logs. Read-only list and describe calls |
 | **Live Kubernetes (opt-in)** | A cluster node plus its workloads, read-only; secrets are never read |
 | **Application telemetry** | Istio call metrics from Prometheus |
 
@@ -171,6 +171,7 @@ depgraph mcp-config cursor          # or claude, vscode, opencode
 | [Connect an AI assistant](docs/tutorials/04-ai-agent.md) | [Terraform, firewalls and containers](docs/tutorials/08-terraform-python-open-source.md) |
 | [When something doesn't resolve](docs/tutorials/07-troubleshooting.md) | [Share a safe run summary](docs/tutorials/06-real-data.md#share-a-run-summary) |
 | [All tutorials](docs/tutorials/README.md) | [Architecture decisions](docs/decisions/) · [Naming rules](docs/naming.md) |
+| [Run it on a schedule: runbook](docs/runbook.md) | [Releases and signatures](docs/releases.md) · [MCP authentication](docs/mcp.md) |
 
 ## Status and trust
 
@@ -179,6 +180,7 @@ depgraph is ready for a **supervised pilot**, not yet a trusted source of truth.
 - **Secrets:** a test plants fake secrets in Terraform, Python, Compose and Kubernetes files and fails if any reaches an output file or message. It covers those file types, not every collector.
 - **MCP server:** only asymmetric token signatures (RSA, ECDSA, EdDSA) are accepted, key-set fetches have a cooldown, and `--insecure-local` accepts only loopback Host and Origin headers. See [MCP authentication](docs/mcp.md).
 - **Supply chain:** `cargo deny` runs on every change. A tag on GitLab builds the release, signs the files and the container image with cosign, and attaches checksums and a dependency list; see [releases](docs/releases.md). That pipeline has not run on a real GitLab yet.
+- **Operations:** `depgraph freshness` fails a scheduled pipeline when the snapshot is stale, so the schedule owner is told; see the [runbook](docs/runbook.md).
 - **CI:** GitHub Actions gates this repository. `.gitlab-ci.yml` runs the same checks (fmt, clippy, test, deny) plus the scheduled collector jobs, but has not run on a real GitLab runner yet.
 
 ## Development
