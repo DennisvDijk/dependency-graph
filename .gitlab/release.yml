@@ -23,14 +23,19 @@
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+/
 
+# The cosign image is the variable COSIGN_IMAGE so a firewalled site can mirror
+# it and pin it by digest: set COSIGN_IMAGE=registry.example/cosign@sha256:... as
+# a project CI/CD variable (project variables beat the default below). The
+# default is a moving tag; pin it for production.
 .cosign: &cosign
   image:
-    name: cgr.dev/chainguard/cosign:latest-dev
+    name: $COSIGN_IMAGE
     entrypoint: [""]
   id_tokens:
     SIGSTORE_ID_TOKEN:
       aud: sigstore
   variables:
+    COSIGN_IMAGE: cgr.dev/chainguard/cosign:latest-dev
     COSIGN_YES: "true"
 
 build-linux:
