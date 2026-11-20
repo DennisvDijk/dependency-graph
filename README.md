@@ -45,9 +45,9 @@ flowchart LR
     H -.-> K["depgraph report<br/>counts only, safe to share"]
 ```
 
-Collectors gather source records. The normalizer resolves them into a snapshot and records names it couldn't place. Queries work from that snapshot, so the graph can be inspected without calling every source again. Historical snapshots support comparisons over time.
+Collectors gather source records. The normalizer resolves them into a snapshot and records names it couldn't place. Queries work from that snapshot, so the graph can be inspected without calling every source again. Every build archives its snapshot, so `depgraph diff` can show what changed since the last run.
 
-**Going deeper:** [how the graph is built](docs/graph-construction.md) (the abstraction layers, the rules that turn facts into nodes and edges, and the tools used) and [architecture: layers, methods and why](docs/architecture.md). Accuracy is measured against real open-source systems in CI: see [benchmarks](docs/benchmarks.md).
+**Going deeper:** [how the graph is built](docs/graph-construction.md) (the abstraction layers, the rules that turn facts into nodes and edges, and the tools used) and [architecture: layers, methods and why](docs/architecture.md). Accuracy is measured against two real open-source systems in CI (Online Boutique and Sock Shop: precision and recall 1.00 on both, but the scanner was tuned on them, so treat that as a floor for what it can read, not a forecast for your estate): see [benchmarks](docs/benchmarks.md).
 
 **Coding agents:** `depgraph skill install` copies the skill ([`skills/analyzing-service-dependencies`](skills/analyzing-service-dependencies/SKILL.md)) to Claude Code, OpenCode, Pi and the shared `.agents/skills` folder. `depgraph serve-mcp --stdio` gives the same answers as MCP tools. Setup per agent, a Claude Code plugin and what has been verified: [docs/agents.md](docs/agents.md).
 
@@ -56,7 +56,7 @@ Collectors gather source records. The normalizer resolves them into a snapshot a
 | Source | What depgraph finds |
 |---|---|
 | **Catalog files and manifests** | Components, owners, declared `dependsOn`, Kubernetes manifests, network policies, `docker-compose` `depends_on` |
-| **Source code** | Python, Elixir, Rust, JavaScript, TypeScript, Go, Java, Kotlin and C#: service URLs, database hosts and literal queue and topic names. Queues and topics carry impact from publisher to consumer. Only literal names are read (computed names such as `${var.env}-orders` are not), and secrets in connection strings are dropped |
+| **Source code** | Python, Elixir, Rust, JavaScript, TypeScript, Go, Java, Kotlin and C#: service URLs, database hosts and literal queue and topic names. Queues and topics carry impact from publisher to consumer. Common idioms are recognised, such as Java `new Hostname("payment")` and Spring `convertAndSend("queue", ...)`. Only literal names are read (computed names such as `${var.env}-orders` are not), and secrets in connection strings are dropped |
 | **Gateways** | Kubernetes `Ingress` and Gateway API `HTTPRoute` objects become a gateway node with a `routes_to` edge to each service they forward to. A route to a service depgraph doesn't know goes to `unresolved.json`. A service whose source code calls the gateway's hostname (for example `https://shop.acme-store.io`) gets a candidate edge to the gateway, so a change in a backend shows the gateway and its callers as affected. Wildcard hosts are skipped. With the optional AWS and Azure reads, load balancers, HTTP API Gateway, Application Gateway and API Management show up the same way (`docs/tutorials/09-cloud-discovery.md`). Terraform and CloudFormation load balancers and service meshes are not read |
 | **Firewall rules** | `kind: FirewallRule` YAML, and AWS security groups from Terraform and CloudFormation. A group is linked to the service it is attached to |
 | **API and event contracts** | OpenAPI, AsyncAPI and `.proto` files become contract nodes. The repo's component provides the contract; a proto import is a declared use, and a call to the provider is a candidate use, so a contract change shows who it reaches. An AsyncAPI file also links its service to each channel as a topic (publisher or consumer), so event changes reach their consumers. Spec reading is heuristic. `depgraph contract-diff` lists removed (breaking) and added operations between two versions, and the merge-request note uses it; fields and types are not compared |
@@ -135,6 +135,15 @@ depgraph consumers billing-api --env prod
 depgraph impact billing-api --env prod
 depgraph deploy-order
 depgraph drift --env prod                # writes drift_report/prod.md
+```
+
+What changed since the last run, and how the graph looked before:
+
+```bash
+depgraph diff                            # the two newest runs: added, removed and changed nodes and edges
+depgraph diff --from previous            # the previous run against the current snapshot
+depgraph runs                            # list archived runs
+depgraph at --date 2026-01-10T00:00:00Z  # the graph as it was then
 ```
 
 These are sample service names from the demo. Read commands support options such as `--snapshot`, `--env`, `--depth` and `--format table|json|mermaid` where applicable. Impact scores rank paths using observed call share and a hardness factor; they are **not probabilities**. `impact` also shows why each node is affected: the chain of ties (`via`) and whether the route is `confirmed` or only `inferred` from candidate ties, which means potentially affected, not proven. See [all graph questions](docs/tutorials/03-ask-questions.md).
