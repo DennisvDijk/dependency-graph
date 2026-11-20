@@ -888,6 +888,23 @@ mod tests {
     }
 
     #[test]
+    fn impact_on_a_cycle_ends_and_lists_each_node_once_without_the_start() {
+        let graph = fixture();
+        assert!(!cycles(&graph, Some(Env::Prod)).is_empty());
+        let ids: Vec<_> = impact(&graph, "c", Some(Env::Prod))
+            .unwrap()
+            .into_iter()
+            .map(|visit| visit.id)
+            .collect();
+        let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+        assert_eq!(ids.len(), unique.len(), "{ids:?}");
+        assert!(!ids.contains(&"component:c".to_owned()), "{ids:?}");
+        let paths = impact_paths(&graph, "c", Some(Env::Prod)).unwrap();
+        assert!(!paths.contains_key("component:c"));
+        assert!(paths.contains_key("component:a") && paths.contains_key("component:b"));
+    }
+
+    #[test]
     fn deploy_order_reports_the_cycle_and_ignores_soft_edges() {
         let graph = fixture();
         let blocked = deploy_order(
