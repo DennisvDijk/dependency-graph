@@ -1,0 +1,12 @@
+asyncapi: 3.0.0
+info:
+  title: Notification events
+  version: 1.0.0
+channels:
+  paid:
+    address: invoice-paid
+operations:
+  onInvoicePaid:
+    action: receive
+    channel:
+      $ref: '#/channels/paid'

@@ -1,0 +1,8 @@
+asyncapi: 2.6.0
+info:
+  title: Billing events
+  version: 1.0.0
+channels:
+  invoice-paid:
+    subscribe:
+      summary: billing sends this when an invoice is paid
