@@ -1,0 +1,6 @@
+projects:
+  - {path: demo/bookinfo/productpage, dir: productpage}
+  - {path: demo/bookinfo/details, dir: details}
+  - {path: demo/bookinfo/ratings, dir: ratings}
+  - {path: demo/bookinfo/reviews, dir: reviews}
+  - {path: demo/bookinfo/manifests, dir: manifests}
