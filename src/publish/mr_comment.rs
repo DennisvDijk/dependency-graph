@@ -30,6 +30,9 @@ pub struct MrCheck<'a> {
     pub override_label: &'a str,
     /// Labels already on the merge request.
     pub labels: &'a [String],
+    /// Operation-level changes of the contract files in this merge request.
+    /// Empty when the base version was not available.
+    pub contract_diffs: &'a [crate::contracts::ContractDiff],
 }
 
 /// The note body and whether a contract file changed.
@@ -86,6 +89,26 @@ pub fn build_note(check: &MrCheck<'_>) -> MrNote {
     for path in &contract_hits {
         lines.push(format!("- {path}"));
     }
+    for diff in check.contract_diffs {
+        let verdict = if diff.is_breaking() {
+            "BREAKING"
+        } else {
+            "additive"
+        };
+        lines.push(format!("contract {}: {verdict}", diff.path));
+        if diff.deleted {
+            lines.push("  - file deleted".to_owned());
+        }
+        for op in &diff.removed {
+            lines.push(format!("  - removed {op}"));
+        }
+        for op in &diff.added {
+            lines.push(format!("  - added {op}"));
+        }
+        if diff.truncated {
+            lines.push("  - too many operations to compare; nothing claimed".to_owned());
+        }
+    }
     lines.push("prod consumers:".to_owned());
     match consumers {
         Some(visits) if !visits.is_empty() => {
@@ -108,7 +131,14 @@ pub fn build_note(check: &MrCheck<'_>) -> MrNote {
         .labels
         .iter()
         .any(|label| label == check.override_label);
-    let requires_approval = check.blocking && !contract_hits.is_empty() && observed && !overridden;
+    // With operation-level diffs, only a breaking change needs approval.
+    // Without them (base version not available) any contract file change does.
+    let risky = if check.contract_diffs.is_empty() {
+        !contract_hits.is_empty()
+    } else {
+        check.contract_diffs.iter().any(|diff| diff.is_breaking())
+    };
+    let requires_approval = check.blocking && risky && observed && !overridden;
     if requires_approval {
         lines.push(
             "BLOCKING: contract change has observed prod consumers. An extra approval or the override label is required."
@@ -332,6 +362,7 @@ mod tests {
             blocking: false,
             override_label: "depgraph-override",
             labels: &[],
+            contract_diffs: &[],
         });
         assert_eq!(note.component.as_deref(), Some("payments-api"));
         assert!(note.contract_change);
@@ -340,5 +371,83 @@ mod tests {
         assert!(note.body.contains("component:billing-api"));
         assert!(note.body.contains("openapi/api.yaml"));
         assert!(!note.body.contains("README.md"));
+    }
+
+    #[test]
+    fn only_a_breaking_diff_asks_for_approval_when_diffs_are_known() {
+        let snapshot = GraphSnapshot {
+            schema_version: "0.1.0".into(),
+            run_id: "test".into(),
+            generated_at: Timestamp::parse("2026-01-15T00:00:00Z").unwrap(),
+            sources: BTreeMap::new(),
+            nodes: vec![
+                Node {
+                    id: "component:payments-api".into(),
+                    node_type: NodeType::Component,
+                    attrs: BTreeMap::new(),
+                },
+                Node {
+                    id: "component:billing-api".into(),
+                    node_type: NodeType::Component,
+                    attrs: BTreeMap::new(),
+                },
+            ],
+            edges: vec![Edge {
+                id: "edge:test".into(),
+                edge_type: EdgeType::ObservedCalls,
+                from_id: "component:billing-api".into(),
+                to_id: "component:payments-api".into(),
+                env: Some(Env::Prod),
+                sources: vec![EdgeSource {
+                    kind: SourceKind::Istio,
+                    first_seen: Timestamp::parse("2026-01-01T00:00:00Z").unwrap(),
+                    last_seen: Timestamp::parse("2026-01-15T00:00:00Z").unwrap(),
+                    evidence_ref: None,
+                }],
+                status: EdgeStatus::Both,
+                criticality: Default::default(),
+                criticality_source: Default::default(),
+                active: true,
+                attrs: Default::default(),
+            }],
+        };
+        let mut aliases = Aliases::default();
+        aliases
+            .aliases
+            .insert("org/payments".into(), "payments-api".into());
+        let old = "openapi: 3.0.0\ninfo: {title: P, version: '1'}\npaths:\n  /a: {get: {}}\n  /b: {post: {}}\n";
+        let breaking = crate::contracts::diff(
+            "openapi/api.yaml",
+            Some(old),
+            Some("openapi: 3.0.0\ninfo: {title: P, version: '2'}\npaths:\n  /a: {get: {}}\n"),
+        )
+        .unwrap();
+        let additive = crate::contracts::diff(
+            "openapi/api.yaml",
+            Some(old),
+            Some(&format!("{old}  /c: {{get: {{}}}}\n")),
+        )
+        .unwrap();
+        let note = |diffs: &[crate::contracts::ContractDiff]| {
+            build_note(&MrCheck {
+                project_path: "org/payments",
+                snapshot: &snapshot,
+                aliases: &aliases,
+                contract_paths: &["openapi/**".into()],
+                changed_files: &["openapi/api.yaml".into()],
+                blocking: true,
+                override_label: "depgraph-override",
+                labels: &[],
+                contract_diffs: diffs,
+            })
+        };
+        let hard = note(&[breaking]);
+        assert!(hard.requires_approval, "{}", hard.body);
+        assert!(hard.body.contains("BREAKING") && hard.body.contains("removed POST /b"));
+        assert!(!note(&[additive]).requires_approval);
+        assert!(
+            note(&[]).requires_approval,
+            "no diff known: any contract change asks"
+        );
     }
 }

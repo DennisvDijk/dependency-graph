@@ -290,9 +290,118 @@ pub fn records(project_path: &str, path: &str, text: &str) -> Vec<RawRecord> {
     records
 }
 
+/// What changed in one contract between two versions of its file.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ContractDiff {
+    /// Path of the file.
+    pub path: String,
+    /// Format, when either side could be read.
+    pub format: String,
+    /// Operations in the old version and not in the new one. Callers can break.
+    pub removed: Vec<String>,
+    /// Operations only in the new version. Safe for existing callers.
+    pub added: Vec<String>,
+    /// Old version string, or empty.
+    pub old_version: String,
+    /// New version string, or empty.
+    pub new_version: String,
+    /// The file was deleted.
+    pub deleted: bool,
+    /// An operation list hit the size cut, so removals may be wrong. Nothing is claimed.
+    pub truncated: bool,
+}
+
+impl ContractDiff {
+    /// Removing an operation, or the whole file, can break a caller.
+    #[must_use]
+    pub fn is_breaking(&self) -> bool {
+        !self.truncated && (self.deleted || !self.removed.is_empty())
+    }
+}
+
+/// Compare two versions of one file. `None` for old means the file is new;
+/// `None` for new means it was deleted. `None` result: neither side is a
+/// contract, or nothing changed at operation level.
+///
+/// Only operations are compared (paths and methods, rpc names, channels).
+/// Changed fields, types or required parameters are not seen.
+#[must_use]
+pub fn diff(path: &str, old: Option<&str>, new: Option<&str>) -> Option<ContractDiff> {
+    let old = old.and_then(|text| parse(path, text, ""));
+    let new = new.and_then(|text| parse(path, text, ""));
+    if old.is_none() && new.is_none() {
+        return None;
+    }
+    let ops = |c: &Option<Contract>| c.as_ref().map(|c| c.operations.clone()).unwrap_or_default();
+    let (old_ops, new_ops) = (ops(&old), ops(&new));
+    let removed: Vec<String> = old_ops
+        .iter()
+        .filter(|op| !new_ops.contains(op))
+        .cloned()
+        .collect();
+    let added: Vec<String> = new_ops
+        .iter()
+        .filter(|op| !old_ops.contains(op))
+        .cloned()
+        .collect();
+    let truncated = old_ops.len() >= MAX_OPERATIONS || new_ops.len() >= MAX_OPERATIONS;
+    let deleted = new.is_none();
+    if removed.is_empty() && added.is_empty() && !deleted {
+        return None;
+    }
+    let format = new
+        .as_ref()
+        .or(old.as_ref())
+        .map(|c| c.format.as_str().to_owned())
+        .unwrap_or_default();
+    let version = |c: &Option<Contract>| c.as_ref().map(|c| c.version.clone()).unwrap_or_default();
+    Some(ContractDiff {
+        path: path.to_owned(),
+        format,
+        removed,
+        added,
+        old_version: version(&old),
+        new_version: version(&new),
+        deleted,
+        truncated,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removed_operations_are_breaking_and_added_ones_are_not() {
+        let old = "openapi: 3.0.0\ninfo: {title: Pay API, version: '1'}\npaths:\n  /a: {get: {}}\n  /b: {post: {}}\n";
+        let new = "openapi: 3.0.0\ninfo: {title: Pay API, version: '2'}\npaths:\n  /a: {get: {}}\n  /c: {get: {}}\n";
+        let d = diff("api/openapi.yaml", Some(old), Some(new)).unwrap();
+        assert_eq!(d.removed, vec!["POST /b"]);
+        assert_eq!(d.added, vec!["GET /c"]);
+        assert!(d.is_breaking());
+        assert_eq!((d.old_version.as_str(), d.new_version.as_str()), ("1", "2"));
+        let additive = diff(
+            "api/openapi.yaml",
+            Some(old),
+            Some(&format!("{old}  /z: {{get: {{}}}}\n")),
+        )
+        .unwrap();
+        assert!(!additive.is_breaking());
+        assert_eq!(additive.added, vec!["GET /z"]);
+        assert!(diff("api/openapi.yaml", Some(old), Some(old)).is_none());
+    }
+
+    #[test]
+    fn a_deleted_or_new_file_and_a_non_contract_are_handled() {
+        let old =
+            "syntax = \"proto3\";\npackage p.v1;\nservice S {\n  rpc Get (A) returns (B);\n}\n";
+        let gone = diff("p.proto", Some(old), None).unwrap();
+        assert!(gone.deleted && gone.is_breaking());
+        let fresh = diff("p.proto", None, Some(old)).unwrap();
+        assert!(!fresh.is_breaking());
+        assert_eq!(fresh.added.len(), 1);
+        assert!(diff("x/openapi.yaml", Some("hello: 1"), Some("hello: 2")).is_none());
+    }
 
     const OPENAPI: &str = "openapi: 3.0.3\ninfo:\n  title: Payments API\n  version: 2.1.0\npaths:\n  /payments:\n    post: {}\n    get: {}\n  /payments/{id}:\n    get: {}\n";
 

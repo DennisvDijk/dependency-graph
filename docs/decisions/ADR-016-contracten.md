@@ -1,6 +1,6 @@
 # ADR-016: API- en eventcontracten als eigen node
 
-Status: geaccepteerd (slice 1 van 3)
+Status: geaccepteerd (slice 1 en 2 van 3)
 
 ## Besluit
 
@@ -16,7 +16,10 @@ Een OpenAPI-, AsyncAPI- of proto-bestand in een repo wordt een node `resource:co
 
 De parser is regel- en sleutelgebaseerd en leest per project maximaal 50 bestanden. Het is een heuristiek, geen volledige spec-validatie.
 
-## Volgende slices
+## Slice 2: diff
 
-2. `depgraph contract-diff` en de MR-check: breaking changes tussen twee spec-versies.
+`depgraph contract-diff` vergelijkt alleen operaties: een verwijderde operatie (of verwijderd bestand) is breaking, een toegevoegde niet. Velden, types en verplichte parameters worden niet gezien. De MR-check gebruikt dit als de basisversie beschikbaar is; dan vraagt alleen een breaking wijziging met geobserveerde prod-consumers om goedkeuring. Zonder basisversie geldt het oude gedrag (elk contractbestand). Bij een afgekapte operatielijst (500) wordt niets beweerd.
+
+## Volgende slice
+
 3. Events: AsyncAPI send/receive gekoppeld aan queue- en topic-nodes, met de te informeren eigenaren.

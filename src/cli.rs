@@ -104,6 +104,8 @@ pub enum Command {
     Completions(CompletionArgs),
     /// Install the agent skill for Claude Code, OpenCode, Pi and others.
     Skill(SkillArgs),
+    /// Compare two versions of an API or event contract and list breaking changes.
+    ContractDiff(ContractDiffArgs),
     /// Exit 0 when the MCP server answers. For container health checks.
     Healthcheck(HealthcheckArgs),
     /// List archived snapshot runs.
@@ -292,6 +294,32 @@ pub struct MrCheckArgs {
     /// Label already on the merge request. Repeatable.
     #[arg(long)]
     pub label: Vec<String>,
+    /// Git revision of the merge request's base, to compare contract files
+    /// against. Defaults to `CI_MERGE_REQUEST_DIFF_BASE_SHA`. Run inside the checkout.
+    #[arg(long)]
+    pub contract_base: Option<String>,
+}
+
+/// `depgraph contract-diff`.
+#[derive(Debug, clap::Args)]
+pub struct ContractDiffArgs {
+    /// Old version of one contract file. Use with `--new`.
+    #[arg(long, requires = "new", conflicts_with = "base")]
+    pub old: Option<PathBuf>,
+    /// New version of one contract file. Use with `--old`.
+    #[arg(long, requires = "old")]
+    pub new: Option<PathBuf>,
+    /// Git revision to compare the given files against (run inside the checkout).
+    #[arg(long)]
+    pub base: Option<String>,
+    /// Contract files to compare with `--base`.
+    pub files: Vec<String>,
+    /// Print JSON.
+    #[arg(long)]
+    pub json: bool,
+    /// Exit with an error when a change can break a caller.
+    #[arg(long)]
+    pub fail_on_breaking: bool,
 }
 
 /// `depgraph publish drift-issue`.
@@ -814,6 +842,7 @@ fn execute(cli: Cli) -> Result<(), Error> {
         Command::McpConfig(args) => run_mcp_config(args),
         Command::Completions(args) => run_completions(args),
         Command::Skill(args) => run_skill(args),
+        Command::ContractDiff(args) => run_contract_diff(args),
         Command::Healthcheck(args) => run_healthcheck(args),
         Command::Runs(args) => run_runs(args),
         Command::Retain(args) => run_retain(args),
@@ -1704,6 +1733,11 @@ fn run_mr_check(args: MrCheckArgs) -> Result<(), Error> {
         .project
         .or_else(|| std::env::var("CI_PROJECT_PATH").ok())
         .ok_or_else(|| Error::Config("mr-check needs --project or CI_PROJECT_PATH".to_owned()))?;
+    let contract_diffs = contract_diffs_for(
+        &args.changed_file,
+        args.contract_base
+            .or_else(|| std::env::var("CI_MERGE_REQUEST_DIFF_BASE_SHA").ok()),
+    );
     let note = publish::build_note(&publish::MrCheck {
         project_path: &project_path,
         snapshot: &snapshot,
@@ -1713,6 +1747,7 @@ fn run_mr_check(args: MrCheckArgs) -> Result<(), Error> {
         blocking: args.blocking || project.config.mr_check.blocking,
         override_label: &project.config.mr_check.override_label,
         labels: &args.label,
+        contract_diffs: &contract_diffs,
     });
     if args.dry_run {
         println!("{}", note.body);
@@ -1927,6 +1962,100 @@ fn skill_targets(args: &SkillInstallArgs) -> Result<Vec<(String, PathBuf)>, Erro
             )
         })
         .collect())
+}
+
+/// The file as it was at `base`, or `None` when it did not exist there.
+fn git_show(base: &str, path: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["show", &format!("{base}:{path}")])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Operation-level changes of the changed contract files. Empty when there
+/// is no base to compare with.
+fn contract_diffs_for(
+    changed: &[String],
+    base: Option<String>,
+) -> Vec<crate::contracts::ContractDiff> {
+    let Some(base) = base else {
+        return Vec::new();
+    };
+    changed
+        .iter()
+        .filter(|path| crate::contracts::is_contract_path(path))
+        .filter_map(|path| {
+            let new = fs::read_to_string(path).ok();
+            crate::contracts::diff(path, git_show(&base, path).as_deref(), new.as_deref())
+        })
+        .collect()
+}
+
+fn run_contract_diff(args: ContractDiffArgs) -> Result<(), Error> {
+    let diffs = match (&args.old, &args.new, &args.base) {
+        (Some(old), Some(new), _) => {
+            let path = new.to_string_lossy().into_owned();
+            crate::contracts::diff(
+                &path,
+                fs::read_to_string(old).ok().as_deref(),
+                fs::read_to_string(new).ok().as_deref(),
+            )
+            .into_iter()
+            .collect()
+        }
+        (_, _, Some(base)) if !args.files.is_empty() => {
+            contract_diffs_for(&args.files, Some(base.clone()))
+        }
+        _ => {
+            return Err(Error::Usage(
+                "give --old and --new, or --base with the contract files".into(),
+            ));
+        }
+    };
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&diffs)
+                .map_err(|err| Error::Validation(err.to_string()))?
+        );
+    } else if diffs.is_empty() {
+        println!("no operation-level change");
+    }
+    if !args.json {
+        for diff in &diffs {
+            let verdict = if diff.is_breaking() {
+                "BREAKING"
+            } else {
+                "additive"
+            };
+            println!("{} ({}): {verdict}", diff.path, diff.format);
+            if diff.deleted {
+                println!("  - file deleted");
+            }
+            for op in &diff.removed {
+                println!("  - removed {op}");
+            }
+            for op in &diff.added {
+                println!("  + added {op}");
+            }
+            if diff.truncated {
+                println!("  ! too many operations to compare; nothing claimed");
+            }
+        }
+        println!("note: only operations are compared, not fields, types or parameters");
+    }
+    if args.fail_on_breaking
+        && diffs
+            .iter()
+            .any(crate::contracts::ContractDiff::is_breaking)
+    {
+        return Err(Error::Validation("breaking contract change".into()));
+    }
+    Ok(())
 }
 
 fn run_skill(args: SkillArgs) -> Result<(), Error> {

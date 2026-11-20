@@ -57,6 +57,10 @@ Every read command accepts `--snapshot <path>` (default `data/snapshot.json`), `
 | `depgraph scorecard` | Data quality per owner. An aid, not a ranking for blame. |
 | `depgraph stats` | Edge count and query speed. |
 
+## Contracts
+
+`depgraph contract-diff --base <git-ref> <file>...` (or `--old A --new B`) lists operations a contract version removed (can break callers) and added (safe). Add `--fail-on-breaking` to fail a pipeline. It compares operations only: a changed field, type or required parameter is not seen, so no breaking result does not prove compatibility.
+
 ## Accuracy
 
 `depgraph eval --snapshot S --truth truth.yaml --min-precision 0.9 --min-recall 0.7` scores a snapshot against a hand-written list (`edges: ["a -> b"]`). Use it only when the user has a truth list. Do not write a truth list from the tool's own output; that proves nothing.
