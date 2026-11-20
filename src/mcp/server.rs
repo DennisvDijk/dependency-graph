@@ -35,6 +35,8 @@ pub struct McpState {
     pub snapshot: GraphSnapshot,
     /// Alias table for `component_context` and name lookup.
     pub aliases: Aliases,
+    /// Archived runs, the folder `runs` next to the snapshot. `diff` reads it.
+    pub runs: std::path::PathBuf,
     /// Cached JWKS. Unused when `insecure` is set.
     pub jwks: tokio::sync::Mutex<JwksCache>,
     /// Client used only for the JWKS URL. It does not receive the access token.
@@ -119,6 +121,7 @@ pub(crate) fn build_state(
         insecure,
         snapshot,
         aliases,
+        runs: crate::store::runs_dir(snapshot_path),
         jwks: tokio::sync::Mutex::new(JwksCache::default()),
         http: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))

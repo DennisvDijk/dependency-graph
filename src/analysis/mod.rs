@@ -387,9 +387,57 @@ fn render_critical(
 fn render_diff(format: OutputFormat, diff: &algo::SnapshotDiff) -> String {
     match format {
         OutputFormat::Json => serde_json::to_string_pretty(diff).unwrap_or_else(|_| "{}".into()),
-        OutputFormat::Mermaid => "flowchart LR".to_owned(),
+        OutputFormat::Mermaid => diff_mermaid(diff),
         OutputFormat::Table => diff_table(diff),
     }
+}
+
+/// Added ties as `+`, removed as dashed `-`, changed as thick `~`.
+fn diff_mermaid(diff: &algo::SnapshotDiff) -> String {
+    use std::collections::BTreeSet;
+    fn node(lines: &mut Vec<String>, seen: &mut BTreeSet<String>, id: &str, label: &str) {
+        if seen.insert(id.to_owned()) {
+            lines.push(format!(
+                "  {}[\"{}\"]",
+                mermaid_id(id),
+                label.replace('"', "'")
+            ));
+        }
+    }
+    fn tie(
+        lines: &mut Vec<String>,
+        seen: &mut BTreeSet<String>,
+        e: &algo::EdgeView,
+        arrow: &str,
+        mark: &str,
+    ) {
+        node(lines, seen, &e.from, &e.from);
+        node(lines, seen, &e.to, &e.to);
+        let label = format!("{mark} {}", e.edge_type).replace('"', "'");
+        lines.push(format!(
+            "  {} {arrow}|\"{label}\"| {}",
+            mermaid_id(&e.from),
+            mermaid_id(&e.to)
+        ));
+    }
+    let mut lines = vec!["flowchart LR".to_owned()];
+    let mut seen = BTreeSet::new();
+    for id in &diff.nodes_added {
+        node(&mut lines, &mut seen, id, &format!("+ {id}"));
+    }
+    for id in &diff.nodes_removed {
+        node(&mut lines, &mut seen, id, &format!("- {id}"));
+    }
+    for e in &diff.edges_added {
+        tie(&mut lines, &mut seen, e, "-->", "+");
+    }
+    for e in &diff.edges_removed {
+        tie(&mut lines, &mut seen, e, "-.->", "-");
+    }
+    for change in &diff.edges_changed {
+        tie(&mut lines, &mut seen, &change.edge, "==>", "~");
+    }
+    lines.join("\n")
 }
 
 fn diff_table(diff: &algo::SnapshotDiff) -> String {
@@ -734,7 +782,7 @@ pub fn diff(request: &ReadRequest) -> Result<(), Error> {
 }
 
 /// A run key, or `latest` and `previous`.
-fn resolve_run(runs: &Path, key: &str) -> Result<String, Error> {
+pub(crate) fn resolve_run(runs: &Path, key: &str) -> Result<String, Error> {
     let keys = crate::store::list_runs(runs)?;
     let found = match key {
         "latest" => keys.last().cloned(),
@@ -824,4 +872,56 @@ pub fn critical(request: &ReadRequest) -> Result<(), Error> {
         render_critical(request.format, &graph, request.env, hardness, &ranked)
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod diff_render_tests {
+    use super::*;
+    use crate::analysis::algo::{EdgeChange, EdgeView, SnapshotDiff};
+
+    fn view(from: &str, to: &str) -> EdgeView {
+        EdgeView {
+            from: from.into(),
+            to: to.into(),
+            edge_type: "calls".into(),
+            env: None,
+            status: "both".into(),
+        }
+    }
+
+    #[test]
+    fn mermaid_draws_added_removed_and_changed_ties_distinctly() {
+        let diff = SnapshotDiff {
+            nodes_added: vec!["component:new".into()],
+            nodes_removed: vec!["component:old".into()],
+            edges_added: vec![view("component:a", "component:b")],
+            edges_removed: vec![view("component:a", "component:c")],
+            edges_changed: vec![EdgeChange {
+                edge: view("component:b", "component:c"),
+                changes: vec!["status candidate -> both".into()],
+            }],
+        };
+        let out = diff_mermaid(&diff);
+        assert!(out.starts_with("flowchart LR"), "{out}");
+        assert!(
+            out.contains("component_a -->|\"+ calls\"| component_b"),
+            "{out}"
+        );
+        assert!(
+            out.contains("component_a -.->|\"- calls\"| component_c"),
+            "{out}"
+        );
+        assert!(
+            out.contains("component_b ==>|\"~ calls\"| component_c"),
+            "{out}"
+        );
+        assert!(out.contains("[\"+ component:new\"]") && out.contains("[\"- component:old\"]"));
+        // Each node is declared once.
+        assert_eq!(out.matches("component_a[").count(), 1, "{out}");
+    }
+
+    #[test]
+    fn an_empty_diff_is_an_empty_chart() {
+        assert_eq!(diff_mermaid(&SnapshotDiff::default()), "flowchart LR");
+    }
 }
