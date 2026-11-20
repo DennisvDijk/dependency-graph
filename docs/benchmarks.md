@@ -57,12 +57,13 @@ Next candidates: OpenTelemetry Demo, Istio Bookinfo.
 | System | Where the calls are written | Truth | Precision | Recall |
 |---|---|---|---|---|
 | Online Boutique (Go, C#, Java, Node, Python) | manifest env vars | 16 edges | 1.00 | 1.00 |
-| Sock Shop (Java, Go, Node) | source and `application.properties` | 14 edges | 1.00 | 0.79 |
+| Sock Shop (Java, Go, Node) | source and `application.properties` | 14 edges | 1.00 | 1.00 |
 
 Sock Shop is the harder one: the hosts are literals in code, not env vars. It was
-added after Boutique was tuned, so it is the first score not fitted to its own
-test. Fixing it exposed four real gaps (a host with a `%s` domain suffix,
-`${var:default}` hosts, SQL `tcp(host:port)` DSNs, `*.host=` settings in
-properties files) and one resolution fix (a database that runs as a workload is
-a component, not a second node). The three edges it still misses are listed in
-its README, so the ratchet shows real headroom.
+added after Boutique was tuned. Fixing it exposed four real gaps (a host with a
+`%s` domain suffix, `${var:default}` hosts, SQL `tcp(host:port)` DSNs, `*.host=`
+settings in properties files), one resolution fix (a database that runs as a
+workload is a component, not a second node) and two Java idioms (host wrapper
+classes such as `new Hostname("payment")`, and `convertAndSend("queue", msg)`).
+Those last two were added after seeing the misses, so 1.00 here is tuned, not
+independent evidence.

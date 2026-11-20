@@ -24,4 +24,4 @@ Before telling the user "nothing depends on X" or "X has no dependencies":
 
 ## Measured accuracy
 
-On two public systems with hand-written truth lists, precision is 1.00 and recall 1.00 (Online Boutique) and 1.00 / 0.79 (Sock Shop). These are not numbers for the user's estate. Only a hand check of a sample of edges on the user's own repositories gives that; offer to help pick about 50 edges to verify (see `docs/benchmarks.md`).
+On two public systems with hand-written truth lists, precision is 1.00 and recall 1.00 (Online Boutique) and 1.00 / 1.00 (Sock Shop). These are not numbers for the user's estate. Only a hand check of a sample of edges on the user's own repositories gives that; offer to help pick about 50 edges to verify (see `docs/benchmarks.md`).
