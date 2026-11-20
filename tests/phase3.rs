@@ -130,6 +130,7 @@ fn state(issued: &Issued) -> Arc<McpState> {
         ),
         jwks_url: format!("http://{address}/jwks"),
         insecure: false,
+        runs: std::path::PathBuf::from("no-such-runs"),
         snapshot: snapshot(),
         aliases,
         jwks: tokio::sync::Mutex::new(depgraph::mcp::JwksCache::default()),

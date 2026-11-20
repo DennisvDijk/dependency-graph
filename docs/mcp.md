@@ -76,6 +76,8 @@ depgraph caches the JWKS and fetches it again when it sees an unknown `kid`, so 
 
 `show`, `deps`, `consumers`, `impact`, `deploy_order`, `cycles`, `library_impact`, `drift`, `critical_nodes`, `orphans`, `diff`, and `component_context`.
 
+`diff` compares archived runs (the `runs` folder next to the served snapshot). With no arguments it compares the two newest; `from` alone compares that run with the current graph; `from` and `to` compare any two. Run keys, `latest` and `previous` work. A key is a plain folder name: anything with a path, a leading dot or odd characters is refused.
+
 `component_context` takes a component name or alias and returns the GitLab project path, web URL, default branch, catalog path, manifest paths, owner, and the direct dependencies and consumers. Agents should call it before opening the repository.
 
 `library_impact` returns `libraries disabled`.

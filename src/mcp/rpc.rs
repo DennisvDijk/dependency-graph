@@ -209,8 +209,8 @@ fn tool_meta(name: &str) -> (&'static str, &'static str, &'static [&'static str]
             &[],
         ),
         "diff" => (
-            "Diff two runs",
-            "Not available over MCP: it needs two snapshots. Use `depgraph diff` on the command line.",
+            "What changed between two runs",
+            "Nodes and ties added, removed or changed between two archived runs. No arguments: the two newest. `from` alone: that run against the current graph. Run keys, or `latest` and `previous`.",
             &[],
         ),
         "component_context" => (
@@ -224,6 +224,42 @@ fn tool_meta(name: &str) -> (&'static str, &'static str, &'static [&'static str]
             &[],
         ),
         _ => ("", "", &[]),
+    }
+}
+
+/// A run key is a plain folder name, never a path.
+fn safe_run_key(key: &str) -> bool {
+    !key.is_empty()
+        && !key.starts_with('.')
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+}
+
+/// The two graphs `diff` compares: the two newest runs, `from` against the
+/// current graph, or `from` against `to`.
+fn diff_graphs(
+    state: &McpState,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<(crate::models::GraphSnapshot, crate::models::GraphSnapshot), crate::error::Error> {
+    use crate::error::Error;
+    for key in [from, to].into_iter().flatten() {
+        if !safe_run_key(key) {
+            return Err(Error::Validation(format!("`{key}` is not a run key")));
+        }
+    }
+    let load = |key: &str| {
+        crate::store::load_run(
+            &state.runs,
+            &crate::analysis::resolve_run(&state.runs, key)?,
+        )
+    };
+    match (from, to) {
+        (Some(from), Some(to)) => Ok((load(from)?, load(to)?)),
+        (Some(from), None) => Ok((load(from)?, state.snapshot.clone())),
+        (None, Some(_)) => Err(Error::Validation("`to` needs a `from`".to_owned())),
+        (None, None) => Ok((load("previous")?, load("latest")?)),
     }
 }
 
@@ -253,6 +289,14 @@ pub fn tool_definitions() -> Vec<Value> {
                             "type": "string",
                             "enum": ["dev", "acc", "prod"],
                             "description": "Only ties in this environment. Omit for all."
+                        },
+                        "from": {
+                            "type": "string",
+                            "description": "Used by diff. An archived run key, `latest` or `previous`."
+                        },
+                        "to": {
+                            "type": "string",
+                            "description": "Used by diff. Omit to compare against the current graph."
                         },
                         "depth": {
                             "type": "integer",
@@ -409,10 +453,10 @@ fn call_tool(state: &McpState, params: &Value) -> Result<Value, ToolError> {
         }
         "orphans" => json!({ "orphans": algo::orphans(graph) }),
         "diff" => {
-            return Err(ToolError::Failed(
-                "diff needs two snapshots and is not available over MCP; run `depgraph diff --from <run> --to <run>`"
-                    .to_owned(),
-            ));
+            let text = |key: &str| args.get(key).and_then(Value::as_str);
+            let (left, right) = diff_graphs(state, text("from"), text("to")).map_err(failed)?;
+            serde_json::to_value(algo::diff(&left, &right))
+                .map_err(|err| ToolError::Failed(err.to_string()))?
         }
         "component_context" => component_context(state, component, env)?,
         "scorecard" => {

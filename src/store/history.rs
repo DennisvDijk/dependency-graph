@@ -107,7 +107,7 @@ pub fn retain(runs: &Path, now: &Timestamp, retention_days: u32) -> Result<Vec<S
     Ok(removed)
 }
 
-fn runs_dir(snapshot: &Path) -> PathBuf {
+pub(crate) fn runs_dir(snapshot: &Path) -> PathBuf {
     snapshot
         .parent()
         .unwrap_or_else(|| Path::new("."))

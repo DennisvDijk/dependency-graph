@@ -19,6 +19,7 @@ fn state() -> McpState {
         policy: AccessPolicy::generic("https://idp.example.com", "http://127.0.0.1:8080"),
         jwks_url: String::new(),
         insecure: true,
+        runs: std::path::PathBuf::from("no-such-runs"),
         snapshot: GraphSnapshot {
             schema_version: "0.1.0".into(),
             run_id: "test".into(),
@@ -135,4 +136,59 @@ fn a_bad_env_is_reported_instead_of_ignored() {
     let reply = call(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
         "params":{"name":"impact","arguments":{"component":"payments","env":"production"}}}));
     assert_eq!(reply["result"]["isError"], true);
+}
+
+#[test]
+fn diff_reads_archived_runs_and_refuses_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut older = state().snapshot;
+    older.generated_at = Timestamp::parse("2026-01-01T00:00:00Z").unwrap();
+    let mut newer = older.clone();
+    newer.generated_at = Timestamp::parse("2026-01-02T00:00:00Z").unwrap();
+    let mut extra = newer.nodes[0].clone();
+    extra.id = "component:new-one".into();
+    newer.nodes.push(extra);
+    for (key, graph) in [
+        ("2026-01-01T00-00-00Z", &older),
+        ("2026-01-02T00-00-00Z", &newer),
+    ] {
+        let run = dir.path().join(key);
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(
+            run.join("snapshot.json"),
+            serde_json::to_string(graph).unwrap(),
+        )
+        .unwrap();
+    }
+    let mut served = state();
+    served.runs = dir.path().to_path_buf();
+    let ask = |arguments: Value| {
+        handle_message(
+            &served,
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":"diff","arguments":arguments}}),
+        )
+        .unwrap()
+    };
+
+    let newest = ask(json!({}));
+    assert_eq!(newest["result"]["isError"], false, "{newest}");
+    assert_eq!(
+        newest["result"]["structuredContent"]["nodes_added"][0],
+        "component:new-one"
+    );
+
+    let explicit = ask(json!({"from": "2026-01-01T00-00-00Z", "to": "latest"}));
+    assert_eq!(
+        explicit["result"]["structuredContent"]["nodes_added"][0],
+        "component:new-one"
+    );
+
+    // A run key is a folder name, never a path.
+    for bad in ["../../etc", "/etc/passwd", ".hidden", "a/b", ""] {
+        let reply = ask(json!({"from": bad}));
+        assert_eq!(reply["result"]["isError"], true, "{bad}: {reply}");
+    }
+    let lonely = ask(json!({"to": "latest"}));
+    assert_eq!(lonely["result"]["isError"], true);
 }

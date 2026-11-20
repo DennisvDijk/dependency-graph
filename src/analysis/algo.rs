@@ -189,7 +189,7 @@ pub struct EdgeChange {
 }
 
 /// Nodes and edges that differ between two snapshots.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SnapshotDiff {
     /// Node ids only in `right`.
     pub nodes_added: Vec<String>,

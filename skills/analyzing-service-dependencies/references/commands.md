@@ -45,7 +45,7 @@ Every read command accepts `--snapshot <path>` (default `data/snapshot.json`), `
 
 ## History
 
-`depgraph runs` lists archived runs. `depgraph diff` compares the two newest runs (what changed since last run); `--from <run> --to <run>` compares any two, and `latest` and `previous` work as run names. It names added, removed and changed edges. `depgraph at --date <date>` shows the graph at a time. `depgraph timeline` shows deployments and incidents together.
+`depgraph runs` lists archived runs. `depgraph diff` compares the two newest runs (what changed since last run); `--from <run> --to <run>` compares any two, and `latest` and `previous` work as run names. It names added, removed and changed edges, and `--format mermaid` draws them (`+` added, dashed `-` removed, thick `~` changed). Over MCP the `diff` tool does the same. `depgraph at --date <date>` shows the graph at a time. `depgraph timeline` shows deployments and incidents together.
 
 ## Health
 
