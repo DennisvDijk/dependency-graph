@@ -471,22 +471,40 @@ fn env_service_hosts(value: &serde_json::Value) -> Vec<String> {
             let Some(text) = entry.get("value").and_then(|v| v.as_str()) else {
                 continue;
             };
-            let Some((host, port)) = text.rsplit_once(':') else {
+            let key = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let Some(name) = env_host(key, text) else {
                 continue;
             };
-            if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
-                continue;
-            }
-            let name = host.split('.').next().unwrap_or(host);
-            if name != "localhost"
-                && crate::ids::is_kebab_case(name)
-                && !found.iter().any(|existing| existing == name)
-            {
-                found.push(name.to_owned());
+            if name != "localhost" && !found.contains(&name) {
+                found.push(name);
             }
         }
     }
     found
+}
+
+/// The service an environment setting points at, if it says so plainly.
+///
+/// Three shapes count: `host:port`, a URL with a scheme and a host
+/// (`mongodb://mongodb:27017/test`), and a bare host when the setting is named
+/// like one (`MYSQL_DB_HOST: mysqldb`, `RATINGS_HOSTNAME`). Anything else, such
+/// as a plain word in `LOG_LEVEL`, is not read.
+fn env_host(key: &str, text: &str) -> Option<String> {
+    let text = text.trim();
+    let rest = text.split_once("://").map_or(text, |(_, rest)| rest);
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
+    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
+    let key = key.to_ascii_uppercase();
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => host,
+        Some(_) => return None,
+        None if text.contains("://") || key.ends_with("_HOST") || key.ends_with("_HOSTNAME") => {
+            authority
+        }
+        None => return None,
+    };
+    let name = host.split('.').next().unwrap_or(host);
+    crate::ids::is_kebab_case(name).then(|| name.to_owned())
 }
 
 /// Gateways read from Kubernetes `Ingress` and Gateway API `HTTPRoute` objects.
@@ -1099,6 +1117,29 @@ mod manifest_selection_tests {
         assert_eq!(workload_name(&labelled).as_deref(), Some("web"));
         let plain: serde_json::Value = serde_json::json!({"metadata": {"name": "worker"}});
         assert_eq!(workload_name(&plain).as_deref(), Some("worker"));
+    }
+
+    #[test]
+    fn env_hosts_read_urls_and_host_named_settings_only() {
+        assert_eq!(
+            env_host("MONGO_DB_URL", "mongodb://mongodb:27017/test").as_deref(),
+            Some("mongodb")
+        );
+        assert_eq!(
+            env_host("DB", "postgres://u:p@orders-db.shop.svc:5432/x").as_deref(),
+            Some("orders-db")
+        );
+        assert_eq!(
+            env_host("MYSQL_DB_HOST", "mysqldb").as_deref(),
+            Some("mysqldb")
+        );
+        // Traps: plain words, ports, paths and localhost are not services.
+        assert_eq!(env_host("LOG_LEVEL", "debug"), None);
+        assert_eq!(env_host("MODE", "mysqldb"), None);
+        assert_eq!(env_host("DB_PORT", "3306"), None);
+        assert_eq!(env_host("CONFIG_PATH", "/etc/app/config.yaml"), None);
+        assert_eq!(env_host("X", "Some Words Here:80"), None);
+        assert_eq!(env_host("X_HOST", "Not_Kebab"), None);
     }
 
     #[test]

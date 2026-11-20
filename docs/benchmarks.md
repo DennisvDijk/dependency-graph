@@ -50,7 +50,7 @@ false edge, add the smallest trap that reproduces it, then fix the scanner.
 3. Write `truth.yaml` from the manifests' env vars and service addresses.
 4. Add `#[test] fn <name>() { benchmark("<name>", "0.90", "0.90"); }` and ratchet up.
 
-Next candidates: OpenTelemetry Demo, Istio Bookinfo.
+Next candidate: OpenTelemetry Demo.
 
 ## Systems today
 
@@ -58,6 +58,7 @@ Next candidates: OpenTelemetry Demo, Istio Bookinfo.
 |---|---|---|---|---|
 | Online Boutique (Go, C#, Java, Node, Python) | manifest env vars | 16 edges | 1.00 | 1.00 |
 | Sock Shop (Java, Go, Node) | source and `application.properties` | 14 edges | 1.00 | 1.00 |
+| Istio Bookinfo (Python, Ruby, Node, Java) | env defaults in source, manifest env URLs | 6 edges | 1.00 | 1.00 |
 
 Sock Shop is the harder one: the hosts are literals in code, not env vars. It was
 added after Boutique was tuned. Fixing it exposed four real gaps (a host with a
@@ -67,3 +68,8 @@ workload is a component, not a second node) and two Java idioms (host wrapper
 classes such as `new Hostname("payment")`, and `convertAndSend("queue", msg)`).
 Those last two were added after seeing the misses, so 1.00 here is tuned, not
 independent evidence.
+
+Istio Bookinfo first scored recall 0.00. Fixing it added host defaults in code
+(`os.environ.get("X_HOSTNAME")` style, in four languages) and manifest env values
+that are URLs or bare hosts in `*_HOST` settings. Those were added after seeing the
+misses, so 1.00 here is tuned too.

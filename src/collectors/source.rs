@@ -189,6 +189,17 @@ static HOST_WRAPPER: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("host wrapper pattern")
 });
+/// A host that has a literal default when its environment setting is unset:
+/// `os.environ.get("RATINGS_HOSTNAME", "ratings")`, Python's
+/// `"ratings" if os.environ.get("X_HOSTNAME") is None else ...`, Java's
+/// `System.getenv("X_HOSTNAME") == null ? "ratings" : ...` and JavaScript's
+/// `process.env.X_HOST || "ratings"`. Only settings named like a host count.
+static ENV_HOST_DEFAULT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?:(?:getenv|environ\.get)\(\s*["'][A-Z0-9_]*HOST(?:NAME)?["']\s*,\s*["']([a-z][a-z0-9\-]*)["']\s*\))|(?:["']([a-z][a-z0-9\-]*)["']\s+if\s*\(?\s*os\.environ\.get\(\s*["'][A-Z0-9_]*HOST(?:NAME)?["']\s*\)\s+is\s+None)|(?:getenv\(\s*"[A-Z0-9_]*HOST(?:NAME)?"\s*\)\s*==\s*null\s*\?\s*"([a-z][a-z0-9\-]*)")|(?:process\.env\.[A-Z0-9_]*HOST(?:NAME)?\s*(?:\|\||\?\?)\s*["']([a-z][a-z0-9\-]*)["'])"#,
+    )
+    .expect("env host default pattern")
+});
 static MARKER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?i)sqs|sns|kafka|rabbit|amqp|pika|nats|pubsub|pub/sub|broadway|lapin|rdkafka|brod\b|kinesis|eventbridge",
@@ -452,6 +463,12 @@ fn scan(text: &str, findings: &mut BTreeSet<Finding>) {
                     findings.insert(Finding::Database(name));
                 }
                 Host::External(_) | Host::Skip => {}
+            }
+        }
+        for capture in ENV_HOST_DEFAULT.captures_iter(line) {
+            let host = (1..=4).find_map(|i| capture.get(i)).map(|m| m.as_str());
+            if let Some(Host::Service(name)) = host.map(classify_host) {
+                findings.insert(Finding::Service(name));
             }
         }
         for capture in HOST_WRAPPER.captures_iter(line) {
@@ -725,6 +742,34 @@ sqs.send_message(QueueUrl="https://sqs.eu-west-1.amazonaws.com/123456789012/orde
 "#;
         let got = found("src/a.py", text);
         assert!(got.is_empty(), "{got:?}");
+    }
+
+    #[test]
+    fn env_host_defaults_are_read_in_four_languages() {
+        let python = r#"a = "ratings" if (os.environ.get("RATINGS_HOSTNAME") is None) else os.environ.get("RATINGS_HOSTNAME")
+b = os.environ.get("DETAILS_HOST", "details")"#;
+        let java = r#"String h = System.getenv("RATINGS_HOSTNAME") == null ? "ratings" : System.getenv("RATINGS_HOSTNAME");"#;
+        let js = r#"const h = process.env.REVIEWS_HOST || "reviews";"#;
+        assert_eq!(
+            found("a.py", python).len(),
+            2,
+            "{:?}",
+            found("a.py", python)
+        );
+        assert_eq!(found("A.java", java).len(), 1);
+        assert_eq!(found("a.js", js).len(), 1);
+    }
+
+    #[test]
+    fn trap_env_defaults_only_count_for_host_settings() {
+        let text = r#"
+a = "info" if os.environ.get("LOG_LEVEL") is None else x
+b = os.environ.get("REGION", "eu-west")
+c = os.environ.get("DB_HOST", "localhost")
+d = process.env.PORT || "ratings"
+e = os.environ.get("API_HOST", "")
+"#;
+        assert!(found("a.py", text).is_empty(), "{:?}", found("a.py", text));
     }
 
     #[test]

@@ -1,0 +1,14 @@
+# Hand-derived from the pinned sources (see README.md), before looking at
+# depgraph's output. Components use their short name; resources use their full id.
+edges:
+  # productpage.py: getProductDetails, getProductReviews, getProductRatings.
+  - productpage -> details
+  - productpage -> reviews
+  - productpage -> ratings
+  # LibertyRestEndpoint.java: ratings_service = http://<RATINGS_HOSTNAME|ratings>:9080/ratings
+  - reviews -> ratings
+  # ratings.js reads MONGO_DB_URL, or the MYSQL_DB_* settings when DB_TYPE=mysql.
+  # The manifests set them: bookinfo-ratings-v2.yaml (mongodb://mongodb:27017)
+  # and bookinfo-ratings-v2-mysql.yaml (MYSQL_DB_HOST=mysqldb).
+  - ratings -> mongodb
+  - ratings -> mysqldb

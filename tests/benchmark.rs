@@ -113,3 +113,8 @@ fn online_boutique() {
 fn sock_shop() {
     benchmark("sockshop", "0.95", "0.95");
 }
+
+#[test]
+fn istio_bookinfo() {
+    benchmark("bookinfo", "0.95", "0.95");
+}
