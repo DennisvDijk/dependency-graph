@@ -48,3 +48,17 @@ The job is `allow_failure: true`: a missing snapshot or token never blocks a mer
 ## Blocking mode (off by default)
 
 With `mr_check.blocking: true`, a contract change with observed prod consumers asks for extra approval, unless the MR carries the label `depgraph-override` (`mr_check.override_label`). Turning this on for a team is a deliberate decision, so the default stays off. To try it on one pipeline without changing config, pass `--blocking`.
+
+## Breaking or not
+
+When the merge request's base commit is available in the checkout (`--contract-base`, default `CI_MERGE_REQUEST_DIFF_BASE_SHA`), the note compares each changed OpenAPI, AsyncAPI or proto file with its base version:
+
+```text
+contract openapi/billing.yaml: BREAKING
+  - removed POST /invoices
+  - added GET /health
+```
+
+A removed operation (or a deleted file) is breaking; an added one is additive. With blocking on, only a breaking change with observed prod consumers asks for approval. Without the base version, any contract file change does, as before.
+
+Only operations are compared. A changed field, type or required parameter is not seen. To check a file by hand: `depgraph contract-diff --base origin/main openapi/billing.yaml`.

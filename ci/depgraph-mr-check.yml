@@ -3,6 +3,10 @@
 #     - project: <tool-group>/depgraph
 #       file: ci/depgraph-mr-check.yml
 #
+# When the base commit is in the checkout (set GIT_DEPTH or fetch it), the note
+# also lists removed and added contract operations, and only a removed one
+# counts as breaking. Without it, any contract file change counts.
+#
 # The job is allowed to fail so a missing snapshot or token cannot block the
 # merge request. It posts one note and updates that same note on later pipelines.
 
