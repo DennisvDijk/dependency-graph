@@ -42,3 +42,24 @@ jobs:
           sudo install -m 0755 "/tmp/cargo-deny-${version}-x86_64-unknown-linux-musl/cargo-deny" /usr/local/bin/cargo-deny
       - name: cargo deny
         run: cargo deny check
+
+  image:
+    name: docker build and smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t depgraph:ci .
+      - name: Runs as non-root and answers --help
+        run: |
+          docker run --rm depgraph:ci --help | grep -q serve-mcp
+          test "$(docker inspect depgraph:ci --format '{{.Config.User}}')" = "nonroot:nonroot"
+      - name: Serves, passes its healthcheck, stops on SIGTERM
+        run: |
+          mkdir -p data
+          echo '{"schema_version":"0.1.0","run_id":"ci","generated_at":"2026-01-01T00:00:00Z","sources":{},"nodes":[],"edges":[]}' > data/snapshot.json
+          docker run -d --name dg -v "$PWD/config:/app/config:ro" -v "$PWD/data:/app/data:ro" depgraph:ci
+          sleep 3
+          docker exec dg /usr/local/bin/depgraph healthcheck
+          docker stop -t 10 dg
+          test "$(docker inspect dg --format '{{.State.ExitCode}}')" = "0"
