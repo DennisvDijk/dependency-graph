@@ -174,6 +174,21 @@ static KAFKA_PRODUCE: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("produce pattern")
 });
+/// Spring's `rabbitTemplate.convertAndSend("shipping-task", message)`: a
+/// literal queue name and then a value. Three arguments mean exchange and
+/// routing key, which is not read.
+static AMQP_SEND: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\.convertAndSend\(\s*"([^"\s${}#]+)"\s*,\s*[A-Za-z_]\w*\s*[,)]"#)
+        .expect("amqp send pattern")
+});
+/// A host wrapped in a small class: `new Hostname("payment")`. Only a bare
+/// service name counts; the usual rules for hosts still apply.
+static HOST_WRAPPER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"\bnew\s+(?:Hostname|HostName|ServiceHost|ServiceName)\(\s*"([a-z][a-z0-9\-]*)"\s*\)"#,
+    )
+    .expect("host wrapper pattern")
+});
 static MARKER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?i)sqs|sns|kafka|rabbit|amqp|pika|nats|pubsub|pub/sub|broadway|lapin|rdkafka|brod\b|kinesis|eventbridge",
@@ -439,6 +454,11 @@ fn scan(text: &str, findings: &mut BTreeSet<Finding>) {
                 Host::External(_) | Host::Skip => {}
             }
         }
+        for capture in HOST_WRAPPER.captures_iter(line) {
+            if let Host::Service(name) = classify_host(&capture[1]) {
+                findings.insert(Finding::Service(name));
+            }
+        }
         for capture in DATABASE
             .captures_iter(line)
             .chain(DATABASE_DEFAULT.captures_iter(line))
@@ -491,6 +511,11 @@ fn scan(text: &str, findings: &mut BTreeSet<Finding>) {
                 Some(false) => findings.insert(Finding::Consumes(kind, name)),
                 None => false,
             };
+        }
+        for capture in AMQP_SEND.captures_iter(line) {
+            if let Some(name) = kebab(&capture[1]).filter(|name| !is_dead_letter(name)) {
+                findings.insert(Finding::Publishes("queue", name));
+            }
         }
         for capture in KAFKA_CONSUME.captures_iter(line) {
             if let Some(name) = kebab(&capture[1]) {
@@ -766,6 +791,32 @@ ExAws.SQS.send_message(queue: "receipts-out", body)
             got.contains(&"publish queue receipts-out".to_owned()),
             "{got:?}"
         );
+    }
+
+    #[test]
+    fn java_host_wrappers_and_spring_send_are_read_and_traps_are_not() {
+        let text = r#"
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+String pay = new ServiceUri(new Hostname("payment"), new Domain(d), "/auth").toUri();
+rabbitTemplate.convertAndSend("shipping-task", shipment);
+rabbitTemplate.convertAndSend("exchange", "routing.key", shipment);
+String local = new Hostname("localhost");
+String dyn = new Hostname(name);
+"#;
+        let got = found("src/Config.java", text);
+        assert!(
+            got.contains(&"publish queue shipping-task".to_owned()),
+            "{got:?}"
+        );
+        let services: Vec<_> = got.iter().filter(|f| f.starts_with("service")).collect();
+        assert!(got.iter().any(|f| f.contains("payment")), "{got:?}");
+        assert!(
+            !got.iter().any(|f| f.contains("localhost")
+                || f.contains("routing")
+                || f.contains("exchange")),
+            "{got:?} {services:?}"
+        );
+        assert_eq!(got.len(), 2, "{got:?}");
     }
 
     #[test]

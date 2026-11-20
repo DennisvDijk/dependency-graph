@@ -111,5 +111,5 @@ fn online_boutique() {
 
 #[test]
 fn sock_shop() {
-    benchmark("sockshop", "0.95", "0.75");
+    benchmark("sockshop", "0.95", "0.95");
 }

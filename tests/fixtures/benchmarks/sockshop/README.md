@@ -29,7 +29,9 @@ manifest env vars. So `truth.yaml` is read from source:
 - catalogue `main.go` (a SQL DSN with `tcp(catalogue-db:3306)`)
 - the `shipping-task` queue name in shipping and queue-master
 
-Known misses, kept in the truth on purpose: `orders -> payment`,
-`orders -> shipping` (hosts built with a Java `Hostname` helper) and
-`shipping -> shipping-task` (a publish call with a bare string). The ratchet in
+Two common Java idioms were read after the first run flagged them as misses:
+`new Hostname("payment")` style host wrappers and Spring's
+`rabbitTemplate.convertAndSend("shipping-task", ...)`. These patterns were added
+after seeing this system, so the score is tuned here, as Boutique's is. Trap tests
+in `src/collectors/source.rs` guard the precision side. The ratchet in
 `tests/benchmark.rs` is set just below the current score.
