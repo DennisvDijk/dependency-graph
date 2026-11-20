@@ -157,7 +157,7 @@ depgraph is ready for a **supervised pilot**, not yet a trusted source of truth.
 - **MCP server.** Only asymmetric token signatures (RSA, ECDSA, EdDSA); key-set fetches have a cooldown; `--insecure-local` accepts only loopback Host and Origin headers.
 - **Supply chain.** `cargo deny` runs on every change. A `v*` tag builds a release signed with cosign (GitLab also signs the container image), with checksums and a dependency list; GitHub adds build provenance ([releases](docs/releases.md)). Neither release pipeline has run on a real tag yet.
 - **CI.** GitHub Actions gates this repository. `.gitlab-ci.yml` runs the same checks plus the scheduled collectors, but has not run on a real GitLab runner yet.
-- **Not covered.** Network traffic never counts as a dependency; field-level contract changes are not compared; the licence is undecided (below).
+- **Not covered.** Network traffic never counts as a dependency; field-level contract changes are not compared.
 
 ## Documentation
 
@@ -185,4 +185,4 @@ Collectors read source systems; commands that write merge-request notes, issues 
 
 ## Licence
 
-The project is currently **unlicensed** (`UNLICENSED` in `Cargo.toml`); a licence has not been chosen.
+Apache License 2.0, see [LICENSE](LICENSE). Contributions are accepted under the same terms. The benchmark fixtures under `tests/fixtures/benchmarks/` keep their upstream licences.
