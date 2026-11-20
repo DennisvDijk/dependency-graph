@@ -293,6 +293,20 @@ pub enum EdgeStatus {
     NotApplicable,
 }
 
+impl EdgeStatus {
+    /// The name used in snapshots.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Both => "both",
+            Self::ObservedOnly => "observed_only",
+            Self::DeclaredOnly => "declared_only",
+            Self::Candidate => "candidate",
+            Self::NotApplicable => "n/a",
+        }
+    }
+}
+
 /// Where a hard/soft label came from. A heuristic is evidence, not a cause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]

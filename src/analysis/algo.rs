@@ -162,6 +162,32 @@ pub struct CriticalNode {
     pub articulation: bool,
 }
 
+/// One edge in a diff, readable without the snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EdgeView {
+    /// Source node id.
+    pub from: String,
+    /// Target node id.
+    pub to: String,
+    /// Edge type, as written in the snapshot.
+    #[serde(rename = "type")]
+    pub edge_type: String,
+    /// Canonical environment, when the edge has one.
+    pub env: Option<String>,
+    /// Evidence status.
+    pub status: String,
+}
+
+/// An edge present on both sides whose evidence changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EdgeChange {
+    /// The edge, as it is on the right side.
+    #[serde(flatten)]
+    pub edge: EdgeView,
+    /// What changed, such as `status candidate -> both`.
+    pub changes: Vec<String>,
+}
+
 /// Nodes and edges that differ between two snapshots.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SnapshotDiff {
@@ -169,10 +195,12 @@ pub struct SnapshotDiff {
     pub nodes_added: Vec<String>,
     /// Node ids only in `left`.
     pub nodes_removed: Vec<String>,
-    /// Edge ids only in `right`.
-    pub edges_added: Vec<String>,
-    /// Edge ids only in `left`.
-    pub edges_removed: Vec<String>,
+    /// Edges only in `right`.
+    pub edges_added: Vec<EdgeView>,
+    /// Edges only in `left`.
+    pub edges_removed: Vec<EdgeView>,
+    /// Edges on both sides whose status, criticality or active flag changed.
+    pub edges_changed: Vec<EdgeChange>,
 }
 
 /// What `c` depends on, walking outgoing edges up to `depth`.
@@ -339,13 +367,76 @@ pub fn orphans(graph: &GraphSnapshot) -> Vec<String> {
 pub fn diff(left: &GraphSnapshot, right: &GraphSnapshot) -> SnapshotDiff {
     let left_nodes: BTreeSet<_> = left.nodes.iter().map(|node| node.id.as_str()).collect();
     let right_nodes: BTreeSet<_> = right.nodes.iter().map(|node| node.id.as_str()).collect();
-    let left_edges: BTreeSet<_> = left.edges.iter().map(|edge| edge.id.as_str()).collect();
-    let right_edges: BTreeSet<_> = right.edges.iter().map(|edge| edge.id.as_str()).collect();
+    let left_edges: BTreeMap<&str, &Edge> = left.edges.iter().map(|e| (e.id.as_str(), e)).collect();
+    let right_edges: BTreeMap<&str, &Edge> =
+        right.edges.iter().map(|e| (e.id.as_str(), e)).collect();
+    let mut edges_added: Vec<EdgeView> = right_edges
+        .iter()
+        .filter(|(id, _)| !left_edges.contains_key(*id))
+        .map(|(_, e)| edge_view(e))
+        .collect();
+    let mut edges_removed: Vec<EdgeView> = left_edges
+        .iter()
+        .filter(|(id, _)| !right_edges.contains_key(*id))
+        .map(|(_, e)| edge_view(e))
+        .collect();
+    let mut edges_changed = Vec::new();
+    for (id, new) in &right_edges {
+        let Some(old) = left_edges.get(id) else {
+            continue;
+        };
+        let mut changes = Vec::new();
+        if old.status != new.status {
+            changes.push(format!(
+                "status {} -> {}",
+                old.status.as_str(),
+                new.status.as_str()
+            ));
+        }
+        if old.criticality != new.criticality {
+            changes.push(format!(
+                "criticality {} -> {}",
+                format!("{:?}", old.criticality).to_lowercase(),
+                format!("{:?}", new.criticality).to_lowercase()
+            ));
+        }
+        if old.active != new.active {
+            changes.push(format!("active {} -> {}", old.active, new.active));
+        }
+        if !changes.is_empty() {
+            edges_changed.push(EdgeChange {
+                edge: edge_view(new),
+                changes,
+            });
+        }
+    }
+    let key = |e: &EdgeView| {
+        (
+            e.from.clone(),
+            e.to.clone(),
+            e.edge_type.clone(),
+            e.env.clone(),
+        )
+    };
+    edges_added.sort_by_key(key);
+    edges_removed.sort_by_key(key);
+    edges_changed.sort_by_key(|c| key(&c.edge));
     SnapshotDiff {
         nodes_added: difference(&right_nodes, &left_nodes),
         nodes_removed: difference(&left_nodes, &right_nodes),
-        edges_added: difference(&right_edges, &left_edges),
-        edges_removed: difference(&left_edges, &right_edges),
+        edges_added,
+        edges_removed,
+        edges_changed,
+    }
+}
+
+fn edge_view(edge: &Edge) -> EdgeView {
+    EdgeView {
+        from: edge.from_id.clone(),
+        to: edge.to_id.clone(),
+        edge_type: edge.edge_type.as_str().to_owned(),
+        env: edge.env.map(|env| env.as_str().to_owned()),
+        status: edge.status.as_str().to_owned(),
     }
 }
 
@@ -899,6 +990,35 @@ mod tests {
         let before = Timestamp::parse("2025-01-01T00:00:00Z").unwrap();
         assert!(edges_at(&left, &before).is_empty());
         assert_eq!(library_impact_disabled(), "libraries disabled");
+    }
+
+    #[test]
+    fn diff_names_added_removed_and_changed_edges() {
+        let left = fixture();
+        let mut right = fixture();
+        let removed = right.edges.remove(0);
+        right.edges.push(edge(
+            "component:a",
+            "component:f",
+            EdgeType::DeclaredDependsOn,
+            Some(Env::Prod),
+            false,
+            true,
+        ));
+        right.edges[0].status = EdgeStatus::Both;
+        let changed = right.edges[0].clone();
+        let diff = diff(&left, &right);
+        assert_eq!(diff.edges_removed.len(), 1);
+        assert_eq!(diff.edges_removed[0].from, removed.from_id);
+        assert_eq!(diff.edges_added.len(), 1);
+        assert_eq!(diff.edges_added[0].to, "component:f");
+        assert_eq!(diff.edges_added[0].env.as_deref(), Some("prod"));
+        assert_eq!(diff.edges_changed.len(), 1);
+        assert_eq!(diff.edges_changed[0].edge.from, changed.from_id);
+        assert_eq!(
+            diff.edges_changed[0].changes,
+            vec!["status declared_only -> both".to_owned()]
+        );
     }
 
     #[test]
