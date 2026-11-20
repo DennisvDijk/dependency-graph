@@ -30,7 +30,12 @@ COPY src ./src
 COPY config ./config
 COPY schemas ./schemas
 COPY skills ./skills
-RUN cargo build --release --locked
+# COPY keeps the files' old timestamps, so without this cargo may reuse the
+# empty stand-in program from the layer above. Then fail the build if the
+# binary does not behave like depgraph.
+RUN touch src/main.rs src/lib.rs \
+ && cargo build --release --locked \
+ && ./target/release/depgraph --help | grep -q serve-mcp
 
 # gcr.io/distroless/cc-debian12:nonroot
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
