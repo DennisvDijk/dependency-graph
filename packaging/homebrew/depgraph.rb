@@ -5,7 +5,7 @@ class Depgraph < Formula
   desc "Self-hosted dependency graph for runtime dependencies and deployments"
   homepage "https://github.com/DennisvDijk/dependency-graph"
   version "0.1.0"
-  license "UNLICENSED"
+  license "Apache-2.0"
   depends_on "rust" => :build
 
   on_macos do
