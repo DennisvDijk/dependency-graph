@@ -38,6 +38,6 @@ Install without a checkout, after a GitHub release exists:
 curl -fsSL https://raw.githubusercontent.com/DennisvDijk/dependency-graph/main/packaging/install.sh | sh
 ```
 
-Or `cargo install --git https://github.com/DennisvDijk/dependency-graph --locked`. The container image is `docker build -t depgraph .` (see the Dockerfile). Homebrew: `packaging/homebrew/depgraph.rb`.
+Or `cargo install --git https://github.com/DennisvDijk/dependency-graph --locked`. The container image is `docker build -t depgraph .`; see [docker.md](docker.md). Homebrew: `packaging/homebrew/depgraph.rb`.
 
 Entra ID is off unless `auth.provider: entra`. Then the MCP client uses the browser. Do not paste a token. Steps are in [mcp.md](mcp.md).
