@@ -92,7 +92,7 @@ Collectors gather source records. The normalizer resolves them into a snapshot a
 
 | Source | What depgraph finds |
 |---|---|
-| **Catalog files and manifests** | Components, owners, declared `dependsOn`, Kubernetes manifests, network policies, `docker-compose` `depends_on` |
+| **Catalog files and manifests** | Components, owners, declared `dependsOn`, Kubernetes manifests, network policies, `docker-compose` `depends_on`, services built from source, and hosts named in `environment` (URLs, `host:port`, `*_HOST` settings; `.env` files and secret-named keys are never read) |
 | **Source code** | Python, Elixir, Rust, JavaScript, TypeScript, Go, Java, Kotlin and C#: service URLs, database hosts, literal queue and topic names, and common idioms such as Java `new Hostname("payment")` and Spring `convertAndSend("queue", ...)`. Queues and topics carry impact from publisher to consumer. Computed names (`${var.env}-orders`) are not read; secrets in connection strings are dropped |
 | **API and event contracts** | OpenAPI, AsyncAPI and `.proto` files become contract nodes. The repo's component provides the contract; a proto import is a declared use and a call to the provider is a candidate use, so a contract change shows who it reaches. AsyncAPI channels link to topics, so event changes reach consumers. Spec reading is heuristic; fields and types are not compared |
 | **Gateways** | Kubernetes `Ingress` and Gateway API `HTTPRoute` become a gateway node with `routes_to` edges. A service whose code calls the gateway's hostname gets a candidate edge to it. With the optional AWS and Azure reads, load balancers, API Gateway, Application Gateway and API Management appear the same way. Terraform and CloudFormation load balancers and service meshes are not read |
@@ -152,7 +152,7 @@ Cloud discovery is **opt-in**, read-only, and can incur charges; flow logs and r
 
 depgraph is ready for a **supervised pilot**, not yet a trusted source of truth. Check edges by hand before anyone relies on them.
 
-- **Accuracy.** CI scores the whole pipeline against two real open-source systems with hand-written truth: Online Boutique and Sock Shop, precision and recall 1.00 on both ([benchmarks](docs/benchmarks.md)). The scanner was tuned on those two, so read that as what it can read, not a forecast for your estate. Small `trap_*` tests guard precision: code that mentions a service without calling it must produce nothing.
+- **Accuracy.** CI scores the whole pipeline against four real open-source systems with hand-written truth: Online Boutique, Sock Shop, Istio Bookinfo and the OpenTelemetry Demo, precision and recall 1.00 on all four ([benchmarks](docs/benchmarks.md)). The scanner was tuned on those four after seeing its misses, so read that as what it can read, not a forecast for your estate. Small `trap_*` tests guard precision: code that mentions a service without calling it must produce nothing.
 - **Secrets.** A test plants fake secrets in Terraform, Python, Compose and Kubernetes files and fails if any reaches an output. It covers those file types, not every collector.
 - **MCP server.** Only asymmetric token signatures (RSA, ECDSA, EdDSA); key-set fetches have a cooldown; `--insecure-local` accepts only loopback Host and Origin headers.
 - **Supply chain.** `cargo deny` runs on every change. A `v*` tag builds a release signed with cosign (GitLab also signs the container image), with checksums and a dependency list; GitHub adds build provenance ([releases](docs/releases.md)). Neither release pipeline has run on a real tag yet.

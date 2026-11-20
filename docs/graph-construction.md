@@ -135,7 +135,7 @@ filter (`index`), then walks it:
 - **deploy order:** a topological sort over deploy edges; callees come first.
 - **cycles:** strongly connected groups (Tarjan) on the induced subgraph.
 - **critical nodes:** betweenness centrality on the undirected graph.
-- **diff / edges_at:** set difference of two snapshots; evidence windows for a point in time.
+- **diff / edges_at:** set difference of two snapshots (`depgraph diff`, also `--format mermaid` and the MCP `diff` tool, which reads archived runs by key such as `latest` and `previous`); evidence windows for a point in time.
 
 ## Tools and why each one
 
