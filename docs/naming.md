@@ -8,7 +8,7 @@ Canonieke omgevingen zijn `dev`, `acc` en `prod`. Een bronnaam (`staging`, `prod
 | --- | --- | --- |
 | component | `component:<naam>` | lowercase kebab-case |
 | deployment | `deployment:<naam>@<env>` | dezelfde naam als het component; `env` is `dev`, `acc` of `prod` |
-| resource | `resource:<kind>:<naam>` | kind is `database`, `topic`, `queue`, `gateway`, `external-api`, `model-endpoint`, `identity-provider`, `network-policy`, `firewall-rule`, `infra` of `other` |
+| resource | `resource:<kind>:<naam>` | kind is `database`, `topic`, `queue`, `gateway`, `external-api`, `model-endpoint`, `identity-provider`, `network-policy`, `firewall-rule`, `infra`, `contract` of `other` |
 | library | `library:<purl-zonder-versie>` | `pkg:<type>/<naam>`, zonder `@versie`, `?qualifiers` of `#subpath` |
 
 Een deployment `deployment:payments-api@prod` verwijst naar het bestaande node `component:payments-api`. Het type van het node moet bij het id-voorvoegsel horen.
@@ -24,7 +24,7 @@ Het edge-id is `edge:` plus de lowercase hex SHA-256 van deze UTF-8-tekst, zonde
 <env>
 ```
 
-`<env>` is leeg als de edge geen omgeving heeft. `<type>` is de wire-waarde: `declared_depends_on`, `observed_calls`, `network_traffic`, `candidate_calls`, `deployed_as`, `runs_in_cluster`, `has_workload`, `uses_library`, `publishes_to`, `consumes_from`, `routes_to`.
+`<env>` is leeg als de edge geen omgeving heeft. `<type>` is de wire-waarde: `declared_depends_on`, `observed_calls`, `network_traffic`, `candidate_calls`, `deployed_as`, `runs_in_cluster`, `has_workload`, `uses_library`, `publishes_to`, `consumes_from`, `routes_to`, `provides_contract`, `uses_contract`.
 
 Bekend voorbeeld, omgeving leeg:
 
@@ -53,6 +53,7 @@ De code groepeert types op één plek (`EdgeType::class()` in `src/models.rs` en
 | --- | --- | --- | --- |
 | dependency | `declared_depends_on`, `observed_calls`, `candidate_calls`, `routes_to` | ja | `routes_to` wordt niet omgekeerd: een wijziging bij de backend bereikt de gateway ervoor |
 | messaging | `publishes_to`, `consumes_from` | ja | `publishes_to` wordt bij de analyse omgedraaid: een uitgever merkt niets van zijn topic |
+| contract | `provides_contract`, `uses_contract` | ja | `provides_contract` wordt omgekeerd: een wijziging van het contract raakt de aanbieder niet, maar wel wie het gebruikt. Een gebruik dat alleen uit een bekende aanroep is afgeleid is een `candidate` |
 | deployment | `deployed_as` | ja | |
 | placement | `runs_in_cluster`, `has_workload` | nee | zegt waar iets draait, niet wat waarvan afhangt |
 | library | `uses_library` | ja | |
@@ -64,6 +65,7 @@ De code groepeert types op één plek (`EdgeType::class()` in `src/models.rs` en
 | messaging | `topic`, `queue` |
 | network | `gateway`, `network-policy`, `firewall-rule` |
 | external | `external-api`, `model-endpoint`, `identity-provider` |
+| contract | `contract` |
 | platform | `infra`, `other` |
 
 ## Canonical output

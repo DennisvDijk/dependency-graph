@@ -1,0 +1,9 @@
+syntax = "proto3";
+package billing.v1;
+
+import "orders/v1/orders.proto";
+import "google/protobuf/timestamp.proto";
+
+service Billing {
+  rpc Invoice(InvoiceRequest) returns (InvoiceReply);
+}

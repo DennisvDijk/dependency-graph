@@ -83,6 +83,11 @@ pub fn merge_records(
     let mut components: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut resources: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut resource_labels: BTreeMap<(String, String), String> = BTreeMap::new();
+    // Extra node attributes per resource. Contracts keep format, version and operations here.
+    let mut resource_attrs: BTreeMap<(String, String), BTreeMap<String, Value>> = BTreeMap::new();
+    // API and event contracts found as files, and the proto files each repo imports.
+    let mut contract_decls: Vec<ContractDecl> = Vec::new();
+    let mut contract_imports: Vec<(String, String)> = Vec::new();
     // (component from label, project path, resource kind, resource name)
     let mut resource_links: Vec<(Option<String>, String, String, String)> = Vec::new();
     // Indexes into `resource_links` whose component name is matched loosely.
@@ -170,6 +175,33 @@ pub fn merge_records(
                 if !owner.is_empty() || !system.is_empty() {
                     owners.entry(name).or_insert((owner, system));
                 }
+            }
+            "contract" => {
+                let name = text_field(&record.payload, "name");
+                if !ids::is_kebab_case(&name) {
+                    unresolved.push(unresolved_row(
+                        "contract",
+                        &name,
+                        "name is not kebab-case",
+                        0,
+                    ));
+                    continue;
+                }
+                contract_decls.push(ContractDecl {
+                    project_path: text_field(&record.payload, "project_path"),
+                    path: text_field(&record.payload, "path"),
+                    format: text_field(&record.payload, "format"),
+                    name,
+                    title: text_field(&record.payload, "title"),
+                    version: text_field(&record.payload, "version"),
+                    operations: string_list(&record.payload, "operations"),
+                });
+            }
+            "contract_use" => {
+                contract_imports.push((
+                    text_field(&record.payload, "project_path"),
+                    text_field(&record.payload, "import"),
+                ));
             }
             "team" => {
                 let team = text_field(&record.payload, "name");
@@ -419,6 +451,30 @@ pub fn merge_records(
         resource_links[index].0 = matched;
     }
 
+    for decl in &contract_decls {
+        let key = ("contract".to_owned(), decl.name.clone());
+        if resources.contains_key(&key) {
+            continue;
+        }
+        resources.insert(key.clone(), "contracts".to_owned());
+        let mut attrs = BTreeMap::new();
+        attrs.insert("format".to_owned(), Value::String(decl.format.clone()));
+        attrs.insert("title".to_owned(), Value::String(decl.title.clone()));
+        if !decl.version.is_empty() {
+            attrs.insert("version".to_owned(), Value::String(decl.version.clone()));
+        }
+        attrs.insert("path".to_owned(), Value::String(decl.path.clone()));
+        attrs.insert(
+            "project_path".to_owned(),
+            Value::String(decl.project_path.clone()),
+        );
+        attrs.insert(
+            "operations".to_owned(),
+            Value::Array(decl.operations.iter().cloned().map(Value::String).collect()),
+        );
+        resource_attrs.insert(key, attrs);
+    }
+
     let mut inferred = BTreeSet::new();
     let mut runtime_edges = runtime_edges(&mut RuntimeBuild {
         observed: &observed,
@@ -496,6 +552,9 @@ pub fn merge_records(
                 "display_name".to_owned(),
                 serde_json::Value::String(label.clone()),
             );
+        }
+        if let Some(extra) = resource_attrs.get(&(kind.clone(), name.clone())) {
+            attrs.extend(extra.clone());
         }
         if inferred.contains(&id) {
             attrs.insert("inferred".to_owned(), serde_json::Value::Bool(true));
@@ -840,6 +899,16 @@ pub fn merge_records(
         });
     }
     edges.extend(fold_same_id(flow_edges));
+    let found = contract_edges(
+        &contract_decls,
+        &contract_imports,
+        &project_components,
+        &components,
+        &edges,
+        generated_at,
+        &mut unresolved,
+    );
+    edges.extend(found);
     inherit_criticality(&mut edges);
     assign_status(&mut edges);
     expire_edges(
@@ -1197,6 +1266,17 @@ struct Message {
     publishes: bool,
     kind: String,
     name: String,
+}
+
+/// An API or event contract found as a file in a repository.
+struct ContractDecl {
+    project_path: String,
+    path: String,
+    format: String,
+    name: String,
+    title: String,
+    version: String,
+    operations: Vec<String>,
 }
 
 /// A queue that receives from a topic, found in the infrastructure templates.
@@ -1663,6 +1743,150 @@ fn runtime_edges(build: &mut RuntimeBuild<'_>) -> Vec<Edge> {
     fold_same_id(edges)
 }
 
+fn contract_edge(
+    edge_type: EdgeType,
+    from_id: &str,
+    to_id: &str,
+    evidence: &str,
+    generated_at: &Timestamp,
+) -> Edge {
+    Edge {
+        id: ids::edge_id(edge_type, from_id, to_id, None),
+        edge_type,
+        from_id: from_id.to_owned(),
+        to_id: to_id.to_owned(),
+        env: None,
+        sources: vec![EdgeSource {
+            kind: SourceKind::Static,
+            first_seen: generated_at.clone(),
+            last_seen: generated_at.clone(),
+            evidence_ref: Some(evidence.to_owned()),
+        }],
+        status: EdgeStatus::DeclaredOnly,
+        criticality: Default::default(),
+        criticality_source: Default::default(),
+        active: true,
+        attrs: EdgeAttrs::default(),
+    }
+}
+
+/// Edges for contracts.
+///
+/// The component that owns the repository holding a spec provides it. A proto
+/// file that imports another repository's proto file uses that contract. For
+/// HTTP and gRPC contracts, a component that calls the provider is taken to
+/// use the contract; that tie is marked as inferred (`calls-provider`),
+/// because calling a service does not prove which of its contracts is used.
+fn contract_edges(
+    decls: &[ContractDecl],
+    imports: &[(String, String)],
+    project_components: &BTreeMap<String, BTreeSet<String>>,
+    components: &BTreeMap<String, BTreeSet<String>>,
+    edges: &[Edge],
+    generated_at: &Timestamp,
+    unresolved: &mut Vec<Unresolved>,
+) -> Vec<Edge> {
+    let single_component = |project_path: &str| -> Option<String> {
+        let owners = project_components.get(project_path)?;
+        if owners.len() == 1 {
+            return owners.iter().next().cloned();
+        }
+        // A repository with several components: the one named like the repository.
+        let by_name = crate::contracts::slug(project_path.rsplit('/').next().unwrap_or(""));
+        owners.contains(&by_name).then_some(by_name)
+    };
+    let mut found = Vec::new();
+    let mut seen: BTreeSet<(EdgeType, String, String)> = BTreeSet::new();
+    let mut providers: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for decl in decls {
+        let to_id = format!("resource:contract:{}", decl.name);
+        let owner = single_component(&decl.project_path).or_else(|| {
+            let by_name = crate::contracts::slug(decl.project_path.rsplit('/').next()?);
+            components.contains_key(&by_name).then_some(by_name)
+        });
+        let Some(owner) = owner else {
+            unresolved.push(unresolved_row(
+                "contract",
+                &decl.name,
+                "no single component owns this repository",
+                0,
+            ));
+            continue;
+        };
+        let from_id = format!("component:{owner}");
+        providers
+            .entry(decl.name.clone())
+            .or_default()
+            .insert(owner.clone());
+        if seen.insert((EdgeType::ProvidesContract, from_id.clone(), to_id.clone())) {
+            found.push(contract_edge(
+                EdgeType::ProvidesContract,
+                &from_id,
+                &to_id,
+                "contract-file",
+                generated_at,
+            ));
+        }
+    }
+    for (project_path, import) in imports {
+        let Some(consumer) = single_component(project_path) else {
+            continue;
+        };
+        for decl in decls.iter().filter(|decl| {
+            decl.format == "proto"
+                && decl.project_path != *project_path
+                && (decl.path == *import || decl.path.ends_with(&format!("/{import}")))
+        }) {
+            if providers
+                .get(&decl.name)
+                .is_some_and(|owners| owners.contains(&consumer))
+            {
+                continue;
+            }
+            let from_id = format!("component:{consumer}");
+            let to_id = format!("resource:contract:{}", decl.name);
+            if seen.insert((EdgeType::UsesContract, from_id.clone(), to_id.clone())) {
+                found.push(contract_edge(
+                    EdgeType::UsesContract,
+                    &from_id,
+                    &to_id,
+                    "proto-import",
+                    generated_at,
+                ));
+            }
+        }
+    }
+    for decl in decls.iter().filter(|decl| decl.format != "asyncapi") {
+        let to_id = format!("resource:contract:{}", decl.name);
+        let Some(owners) = providers.get(&decl.name) else {
+            continue;
+        };
+        for edge in edges.iter().filter(|edge| {
+            matches!(
+                edge.edge_type,
+                EdgeType::DeclaredDependsOn | EdgeType::ObservedCalls | EdgeType::CandidateCalls
+            ) && edge.from_id.starts_with("component:")
+        }) {
+            let Some(target) = edge.to_id.strip_prefix("component:") else {
+                continue;
+            };
+            if !owners.contains(target) || owners.contains(&edge.from_id["component:".len()..]) {
+                continue;
+            }
+            if seen.insert((EdgeType::UsesContract, edge.from_id.clone(), to_id.clone())) {
+                found.push(contract_edge(
+                    EdgeType::UsesContract,
+                    &edge.from_id,
+                    &to_id,
+                    "calls-provider",
+                    generated_at,
+                ));
+            }
+        }
+    }
+    found
+}
+
 fn fold_same_id(edges: Vec<Edge>) -> Vec<Edge> {
     let mut folded: BTreeMap<String, Edge> = BTreeMap::new();
     for edge in edges {
@@ -1886,7 +2110,18 @@ fn assign_status(edges: &mut [Edge]) {
                     EdgeStatus::ObservedOnly
                 }
             }
-            EdgeType::RoutesTo => EdgeStatus::DeclaredOnly,
+            EdgeType::RoutesTo | EdgeType::ProvidesContract => EdgeStatus::DeclaredOnly,
+            EdgeType::UsesContract => {
+                if edge
+                    .sources
+                    .iter()
+                    .any(|source| source.evidence_ref.as_deref() == Some("calls-provider"))
+                {
+                    EdgeStatus::Candidate
+                } else {
+                    EdgeStatus::DeclaredOnly
+                }
+            }
             EdgeType::CandidateCalls | EdgeType::PublishesTo | EdgeType::ConsumesFrom => {
                 EdgeStatus::Candidate
             }

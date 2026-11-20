@@ -115,6 +115,9 @@ fn every_node_is_expected() {
         "deployment:keycloak@prod",
         "deployment:orders-py@acc",
         "deployment:orders-py@prod",
+        "resource:contract:billing-v1-proto",
+        "resource:contract:orders-api-openapi",
+        "resource:contract:orders-v1-proto",
         "resource:database:orders-db",
         "resource:gateway:public-edge",
         "resource:queue:notify-jobs",
@@ -190,6 +193,17 @@ fn every_edge_is_expected() {
         "consumes_from resource:queue:notify-jobs -> resource:topic:order-events - candidate unknown static",
         "candidate_calls component:orders-py -> component:billing-ex - candidate unknown static",
         "candidate_calls component:orders-py -> component:notifications - candidate soft static",
+        // Contracts. A spec file makes its repo's only component the provider.
+        // A proto import is a declared use; other uses are inferred from a
+        // known call to the provider, so they stay candidates.
+        "provides_contract component:billing-ex -> resource:contract:billing-v1-proto - declared_only unknown static",
+        "provides_contract component:orders-py -> resource:contract:orders-api-openapi - declared_only unknown static",
+        "provides_contract component:orders-py -> resource:contract:orders-v1-proto - declared_only unknown static",
+        "uses_contract component:billing-ex -> resource:contract:orders-api-openapi - candidate unknown static",
+        "uses_contract component:billing-ex -> resource:contract:orders-v1-proto - declared_only unknown static",
+        "uses_contract component:edge-proxy-rs -> resource:contract:orders-api-openapi - candidate unknown static",
+        "uses_contract component:edge-proxy-rs -> resource:contract:orders-v1-proto - candidate unknown static",
+        "uses_contract component:orders-py -> resource:contract:billing-v1-proto - candidate unknown static",
         // GitLab deployments; `staging` maps to acc.
         "deployed_as component:orders-py -> deployment:orders-py@prod prod n/a unknown static",
         "deployed_as component:orders-py -> deployment:orders-py@acc acc n/a unknown static",

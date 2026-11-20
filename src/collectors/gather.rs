@@ -157,6 +157,19 @@ pub async fn records_from_gitlab(
                 &project.path_with_namespace,
                 &sources,
             ));
+            for path in paths
+                .iter()
+                .filter(|path| crate::contracts::is_contract_path(path))
+                .take(crate::contracts::MAX_PER_PROJECT)
+            {
+                if let Some(text) = client.file_text(project.id, path, &branch).await? {
+                    records.extend(crate::contracts::records(
+                        &project.path_with_namespace,
+                        path,
+                        &text,
+                    ));
+                }
+            }
             let mut terraform: Vec<(String, String)> = Vec::new();
             for item in manifest_items(tree) {
                 if let Some(text) = client.file_text(project.id, &item.path, &branch).await? {
@@ -315,6 +328,15 @@ fn records_from_tree(project_path: &str, root: &Path) -> Result<Vec<RawRecord>, 
         }
     }
     records.extend(super::source::source_records(project_path, &sources));
+    for path in paths
+        .iter()
+        .filter(|path| crate::contracts::is_contract_path(path))
+        .take(crate::contracts::MAX_PER_PROJECT)
+    {
+        if let Ok(text) = fs::read_to_string(root.join(path)) {
+            records.extend(crate::contracts::records(project_path, path, &text));
+        }
+    }
     let mut terraform: Vec<(String, String)> = Vec::new();
     for (path, text) in files {
         if path.ends_with(".tf") {
