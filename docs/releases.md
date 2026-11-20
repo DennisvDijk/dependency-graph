@@ -78,5 +78,4 @@ In the GitHub workflow every action that touches the release is pinned to a comm
 ## Not covered yet
 
 - Neither pipeline has run on a real tag yet. Expect a runner or network detail on the first run; try a `v0.0.1-test` tag in a scratch project first (it creates a real release, which you can delete).
-- Base images in the Dockerfile are pinned by tag, not by digest.
 - The GitLab cosign image default is a moving tag, and the CI workflow (not the release one) still uses version tags for its actions.
