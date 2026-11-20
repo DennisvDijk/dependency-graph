@@ -12,7 +12,7 @@ use petgraph::graph::{Graph, NodeIndex};
 use petgraph::visit::EdgeRef;
 
 use crate::error::Error;
-use crate::models::{Criticality, Edge, EdgeType, Env, GraphSnapshot, Timestamp};
+use crate::models::{Criticality, Edge, EdgeStatus, EdgeType, Env, GraphSnapshot, Timestamp};
 
 /// One step away from the start node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -25,6 +25,107 @@ pub struct Visit {
     /// either direction. It follows the `--env` filter, so a node can be a hub
     /// in all environments and not in one.
     pub links: usize,
+}
+
+/// One step of an impact path: `dependent` depends on `dependency`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Hop {
+    /// The side that is affected by a change on the other side.
+    pub dependent: String,
+    /// The side the change starts from.
+    pub dependency: String,
+    /// What kind of tie this is.
+    pub edge_type: EdgeType,
+    /// Whether the tie was declared, observed, both, or only inferred.
+    pub status: EdgeStatus,
+    /// Environment of the tie, when it has one.
+    pub env: Option<Env>,
+}
+
+/// Why a node is affected: the chain of ties from the changed node to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImpactPath {
+    /// Hops in order, starting at the changed node.
+    pub hops: Vec<Hop>,
+    /// True when every route to this node uses at least one `candidate` tie.
+    /// It is then potentially affected, not confirmed.
+    pub inferred: bool,
+}
+
+/// For each node reached by [`impact`], the best chain of ties that reaches it.
+///
+/// "Best" is fewest `candidate` ties first, then fewest hops, so a node that
+/// has a confirmed route is never explained by an inferred one. Ties are
+/// compared as ids, so the result is the same on every run.
+///
+/// # Errors
+///
+/// Returns an error when `component` is not in the snapshot.
+pub fn impact_paths(
+    graph: &GraphSnapshot,
+    component: &str,
+    env: Option<Env>,
+) -> Result<BTreeMap<String, ImpactPath>, Error> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let start = resolve_id(graph, component)
+        .ok_or_else(|| Error::Validation(format!("unknown node `{component}`")))?;
+    // dependency id -> ties to its dependents.
+    let mut out: BTreeMap<&str, Vec<(&Edge, &str)>> = BTreeMap::new();
+    for edge in &graph.edges {
+        if !edge.active || !env_matches(edge, env) || !dependency_edge(edge) {
+            continue;
+        }
+        let (dependent, dependency) = if edge.edge_type.points_to_dependent() {
+            (edge.to_id.as_str(), edge.from_id.as_str())
+        } else {
+            (edge.from_id.as_str(), edge.to_id.as_str())
+        };
+        out.entry(dependency).or_default().push((edge, dependent));
+    }
+    let mut best: BTreeMap<String, (usize, usize, Vec<Hop>)> = BTreeMap::new();
+    best.insert(start.clone(), (0, 0, Vec::new()));
+    let mut heap = BinaryHeap::from([Reverse((0_usize, 0_usize, start.clone()))]);
+    while let Some(Reverse((candidates, hops, node))) = heap.pop() {
+        let Some((c, h, path)) = best.get(&node).cloned() else {
+            continue;
+        };
+        if (c, h) != (candidates, hops) {
+            continue;
+        }
+        for (edge, dependent) in out.get(node.as_str()).into_iter().flatten() {
+            let cost = (c + usize::from(edge.status == EdgeStatus::Candidate), h + 1);
+            let better = best
+                .get(*dependent)
+                .is_none_or(|(bc, bh, _)| cost < (*bc, *bh));
+            if !better {
+                continue;
+            }
+            let mut next = path.clone();
+            next.push(Hop {
+                dependent: (*dependent).to_owned(),
+                dependency: node.clone(),
+                edge_type: edge.edge_type,
+                status: edge.status,
+                env: edge.env,
+            });
+            best.insert((*dependent).to_owned(), (cost.0, cost.1, next));
+            heap.push(Reverse((cost.0, cost.1, (*dependent).to_owned())));
+        }
+    }
+    best.remove(&start);
+    Ok(best
+        .into_iter()
+        .map(|(id, (candidates, _, hops))| {
+            (
+                id,
+                ImpactPath {
+                    inferred: candidates > 0,
+                    hops,
+                },
+            )
+        })
+        .collect())
 }
 
 /// From this many links a node is a hub: a shared database, a platform

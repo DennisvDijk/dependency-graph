@@ -137,7 +137,7 @@ depgraph deploy-order
 depgraph drift --env prod                # writes drift_report/prod.md
 ```
 
-These are sample service names from the demo. Read commands support options such as `--snapshot`, `--env`, `--depth` and `--format table|json|mermaid` where applicable. Impact scores rank paths using observed call share and a hardness factor; they are **not probabilities**. See [all graph questions](docs/tutorials/03-ask-questions.md).
+These are sample service names from the demo. Read commands support options such as `--snapshot`, `--env`, `--depth` and `--format table|json|mermaid` where applicable. Impact scores rank paths using observed call share and a hardness factor; they are **not probabilities**. `impact` also shows why each node is affected: the chain of ties (`via`) and whether the route is `confirmed` or only `inferred` from candidate ties, which means potentially affected, not proven. See [all graph questions](docs/tutorials/03-ask-questions.md).
 
 ## Suggestions and AI assistants
 

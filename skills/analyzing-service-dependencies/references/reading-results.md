@@ -39,3 +39,7 @@ Impact walks from the changed thing to what depends on it. Results are ranked by
 ## Node attributes
 
 `owner`, `department`, `lifecycle` come from catalog files. `system`, `languages`, `container` come from sources. An empty `owner` means no catalog file names one.
+
+## Why a node is affected
+
+`depgraph impact` adds two columns (JSON: `basis` and `via`). `via` is the chain of ties from the changed node to this one. `basis` is `confirmed` when some route uses only declared or observed ties, and `inferred` when every route needs a `candidate` tie. Say "potentially affected" for `inferred`; it is not proof of breakage. The chain shown is the best-evidenced one, so it can be longer than `depth`, which counts the shortest route of any kind. Over MCP the same chain is `path.hops` and `path.inferred`.

@@ -183,6 +183,39 @@ pub(crate) fn affected_owners(
     owners.into_iter().collect()
 }
 
+/// `confirmed` when some route to this node uses only declared or observed
+/// ties, `inferred` when every route uses a candidate tie.
+fn basis_of(visit: &crate::score::ScoredVisit) -> &'static str {
+    match &visit.path {
+        Some(path) if path.inferred => "inferred",
+        Some(_) => "confirmed",
+        None => "unknown",
+    }
+}
+
+/// The chain of ties, from the changed node outward.
+fn via_text(visit: &crate::score::ScoredVisit) -> String {
+    let Some(path) = &visit.path else {
+        return String::new();
+    };
+    path.hops
+        .iter()
+        .map(|hop| {
+            format!(
+                "{} <- {} ({}, {})",
+                hop.dependency,
+                hop.dependent,
+                hop.edge_type.as_str(),
+                serde_json::to_value(hop.status)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn render_scored(
     format: OutputFormat,
     visits: &[crate::score::ScoredVisit],
@@ -196,6 +229,8 @@ fn render_scored(
                 "links": visit.links,
                 "hub": visit.links >= algo::HUB_LINKS,
                 "path_score": visit.path_score,
+                "basis": basis_of(visit),
+                "via": visit.path,
                 "owner": owner_of(graph, &visit.id),
             })).collect::<Vec<_>>(),
             "owners": affected_owners(graph, visits),
@@ -209,7 +244,7 @@ fn render_scored(
             lines.join("\n")
         }
         OutputFormat::Table => {
-            let mut lines = vec!["depth\tpath_score\tid\tlinks\thub\towner".to_owned()];
+            let mut lines = vec!["depth\tpath_score\tid\tlinks\thub\towner\tbasis\tvia".to_owned()];
             for visit in visits {
                 let hub = if visit.links >= algo::HUB_LINKS {
                     "hub"
@@ -217,12 +252,14 @@ fn render_scored(
                     ""
                 };
                 lines.push(format!(
-                    "{}\t{:.3}\t{}\t{}\t{hub}\t{}",
+                    "{}\t{:.3}\t{}\t{}\t{hub}\t{}\t{}\t{}",
                     visit.depth,
                     visit.path_score,
                     visit.id,
                     visit.links,
-                    owner_of(graph, &visit.id)
+                    owner_of(graph, &visit.id),
+                    basis_of(visit),
+                    via_text(visit)
                 ));
             }
             let owners = affected_owners(graph, visits);

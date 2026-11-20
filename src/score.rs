@@ -67,6 +67,7 @@ pub fn ranked_impact(
         .map(|_| component_id(graph, component))
         .unwrap_or_else(|| component_id(graph, component));
     let scores = path_scores(graph, &target, env, hardness, &weights);
+    let mut paths = algo::impact_paths(graph, component, env).unwrap_or_default();
     let mut ranked: Vec<ScoredVisit> = visits
         .into_iter()
         .map(|visit| ScoredVisit {
@@ -74,6 +75,7 @@ pub fn ranked_impact(
             depth: visit.depth,
             links: visit.links,
             path_score: scores.get(&visit.id).copied().unwrap_or(0.0),
+            path: paths.remove(&visit.id),
         })
         .collect();
     ranked.sort_by(|left, right| {
@@ -98,6 +100,9 @@ pub struct ScoredVisit {
     pub links: usize,
     /// Product of weight times hardness. Not a probability.
     pub path_score: f64,
+    /// The chain of ties that explains why this node is affected. `inferred`
+    /// means every route uses a candidate tie: potentially affected, not confirmed.
+    pub path: Option<algo::ImpactPath>,
 }
 
 /// Sum of `weight * hardness` on active edges, for ranking.
