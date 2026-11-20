@@ -1,0 +1,19 @@
+projects:
+  - {path: demo/otel/ad, dir: ad}
+  - {path: demo/otel/cart, dir: cart}
+  - {path: demo/otel/checkout, dir: checkout}
+  - {path: demo/otel/currency, dir: currency}
+  - {path: demo/otel/email, dir: email}
+  - {path: demo/otel/frontend, dir: frontend}
+  - {path: demo/otel/frontend-proxy, dir: frontend-proxy}
+  - {path: demo/otel/image-provider, dir: image-provider}
+  - {path: demo/otel/load-generator, dir: load-generator}
+  - {path: demo/otel/payment, dir: payment}
+  - {path: demo/otel/product-catalog, dir: product-catalog}
+  - {path: demo/otel/quote, dir: quote}
+  - {path: demo/otel/recommendation, dir: recommendation}
+  - {path: demo/otel/shipping, dir: shipping}
+  - {path: demo/otel/flagd, dir: flagd}
+  - {path: demo/otel/flagd-ui, dir: flagd-ui}
+  - {path: demo/otel/telemetry-docs, dir: telemetry-docs}
+  - {path: demo/otel/compose, dir: compose}

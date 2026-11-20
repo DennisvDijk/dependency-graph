@@ -50,7 +50,7 @@ false edge, add the smallest trap that reproduces it, then fix the scanner.
 3. Write `truth.yaml` from the manifests' env vars and service addresses.
 4. Add `#[test] fn <name>() { benchmark("<name>", "0.90", "0.90"); }` and ratchet up.
 
-Next candidate: OpenTelemetry Demo.
+Next candidates: a system wired through Helm values or Terraform.
 
 ## Systems today
 
@@ -59,6 +59,7 @@ Next candidate: OpenTelemetry Demo.
 | Online Boutique (Go, C#, Java, Node, Python) | manifest env vars | 16 edges | 1.00 | 1.00 |
 | Sock Shop (Java, Go, Node) | source and `application.properties` | 14 edges | 1.00 | 1.00 |
 | Istio Bookinfo (Python, Ruby, Node, Java) | env defaults in source, manifest env URLs | 6 edges | 1.00 | 1.00 |
+| OpenTelemetry Demo (11 languages) | compose `environment` addresses | 32 edges | 1.00 | 1.00 |
 
 Sock Shop is the harder one: the hosts are literals in code, not env vars. It was
 added after Boutique was tuned. Fixing it exposed four real gaps (a host with a
@@ -73,3 +74,11 @@ Istio Bookinfo first scored recall 0.00. Fixing it added host defaults in code
 (`os.environ.get("X_HOSTNAME")` style, in four languages) and manifest env values
 that are URLs or bare hosts in `*_HOST` settings. Those were added after seeing the
 misses, so 1.00 here is tuned too.
+
+The OpenTelemetry Demo wires services through compose and an `.env` file. depgraph
+reads compose `environment` values (a list or a map; host:port, a URL, or a
+`*_HOST` setting) but never `.env` files and never a setting named like a
+credential, so the fixture carries a trimmed compose with the values written in
+(see its README). A compose service built from source becomes a component; one
+that only runs an image does not. A first run found nothing, then a `0.0.0.0` bind
+address read as a service; both were fixed after seeing them, so 1.00 is tuned.

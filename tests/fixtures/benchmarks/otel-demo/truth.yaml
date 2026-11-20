@@ -1,0 +1,35 @@
+# Derived from the pinned compose.yaml and .env (see README.md): every address
+# setting that names another service in this fixture. Components use their short name.
+edges:
+  - ad -> flagd
+  - cart -> flagd
+  - checkout -> flagd
+  - checkout -> cart
+  - checkout -> currency
+  - checkout -> email
+  - checkout -> payment
+  - checkout -> product-catalog
+  - checkout -> shipping
+  - email -> flagd
+  - frontend -> flagd
+  - frontend -> ad
+  - frontend -> cart
+  - frontend -> checkout
+  - frontend -> currency
+  - frontend -> product-catalog
+  - frontend -> recommendation
+  - frontend -> shipping
+  - frontend-proxy -> frontend
+  - frontend-proxy -> load-generator
+  - frontend-proxy -> image-provider
+  - frontend-proxy -> flagd
+  - frontend-proxy -> flagd-ui
+  - frontend-proxy -> telemetry-docs
+  - load-generator -> frontend-proxy
+  - load-generator -> flagd
+  - payment -> flagd
+  - product-catalog -> flagd
+  - recommendation -> product-catalog
+  - recommendation -> flagd
+  - shipping -> quote
+  - shipping -> flagd

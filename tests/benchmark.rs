@@ -118,3 +118,8 @@ fn sock_shop() {
 fn istio_bookinfo() {
     benchmark("bookinfo", "0.95", "0.95");
 }
+
+#[test]
+fn otel_demo() {
+    benchmark("otel-demo", "0.95", "0.95");
+}
