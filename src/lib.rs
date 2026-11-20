@@ -12,6 +12,7 @@ pub mod classify;
 pub mod cli;
 pub mod collectors;
 pub mod config;
+pub mod contracts;
 pub mod doctor;
 pub mod error;
 pub mod eval;

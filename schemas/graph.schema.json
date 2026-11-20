@@ -291,6 +291,16 @@
           "const": "routes_to",
           "description": "A gateway, ingress or load balancer forwards traffic to a service.",
           "type": "string"
+        },
+        {
+          "const": "provides_contract",
+          "description": "A component provides an API or event contract (OpenAPI, AsyncAPI, proto).",
+          "type": "string"
+        },
+        {
+          "const": "uses_contract",
+          "description": "A component relies on a contract another component provides.",
+          "type": "string"
         }
       ]
     },

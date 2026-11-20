@@ -98,6 +98,7 @@ The model is deliberately small and closed. It is defined in Rust (`src/models.r
 | `candidate_calls` | static evidence suggests a tie; not proof |
 | `deployed_as`, `runs_in_cluster`, `has_workload` | structure |
 | `publishes_to`, `consumes_from` | messaging, with direction taken from the surrounding code |
+| `provides_contract`, `uses_contract` | an OpenAPI, AsyncAPI or proto file: the repo's component provides it; a proto import is a declared use, a call to the provider a candidate use |
 | `routes_to` | gateway to backend |
 | `uses_library` | library use |
 

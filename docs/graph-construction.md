@@ -80,6 +80,7 @@ with the node type or validation fails.
 | component runs as a deployment | `deployed_as` | component → deployment |
 | deployment in cluster / workload of component | `runs_in_cluster`, `has_workload` | |
 | code publishes or reads a queue/topic | `publishes_to`, `consumes_from` | per the surrounding verb |
+| an OpenAPI/AsyncAPI/proto file in the repo | `provides_contract`, `uses_contract` | provider is the repo's only component; proto imports are declared uses, calls to the provider are candidates |
 | gateway forwards to a service | `routes_to` | gateway → service, **not reversed** in impact |
 
 **Edge id** = `edge:` + SHA-256 of `type \n from \n to \n env` (UTF-8, no trailing newline).

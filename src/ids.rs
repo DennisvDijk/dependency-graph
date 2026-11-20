@@ -69,6 +69,8 @@ pub enum ResourceKind {
     FirewallRule,
     /// An infrastructure component from IaC. Accepted in ADR-007.
     Infra,
+    /// An API or event contract: OpenAPI, AsyncAPI or proto. Accepted in ADR-016.
+    Contract,
     /// Anything else that still needs a node.
     Other,
 }
@@ -84,13 +86,15 @@ pub enum ResourceFamily {
     Network,
     /// Lives outside the estate.
     External,
+    /// An agreement between a provider and its users: an API or event contract.
+    Contract,
     /// Platform pieces and anything else.
     Platform,
 }
 
 impl ResourceKind {
     /// Every kind. Tests use it to keep docs in step.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Database,
         Self::Topic,
         Self::Queue,
@@ -101,6 +105,7 @@ impl ResourceKind {
         Self::NetworkPolicy,
         Self::FirewallRule,
         Self::Infra,
+        Self::Contract,
         Self::Other,
     ];
 
@@ -114,6 +119,7 @@ impl ResourceKind {
             Self::ExternalApi | Self::ModelEndpoint | Self::IdentityProvider => {
                 ResourceFamily::External
             }
+            Self::Contract => ResourceFamily::Contract,
             Self::Infra | Self::Other => ResourceFamily::Platform,
         }
     }
@@ -132,6 +138,7 @@ impl ResourceKind {
             Self::NetworkPolicy => "network-policy",
             Self::FirewallRule => "firewall-rule",
             Self::Infra => "infra",
+            Self::Contract => "contract",
             Self::Other => "other",
         }
     }
@@ -150,6 +157,7 @@ impl ResourceKind {
             "network-policy" => Self::NetworkPolicy,
             "firewall-rule" => Self::FirewallRule,
             "infra" => Self::Infra,
+            "contract" => Self::Contract,
             "other" => Self::Other,
             _ => return None,
         })

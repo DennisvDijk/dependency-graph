@@ -202,6 +202,8 @@ fn azure_subscription_ties_asgs_and_application_insights_calls() {
             // An ASG belongs to its `app` tag, or else to its name.
             "declared_depends_on component:edge-proxy-rs -> resource:firewall-rule:asg-storefront - n/a static",
             "declared_depends_on component:billing-ex -> resource:firewall-rule:billing-ex-asg - n/a static",
+            // A candidate call to the provider of a contract is a candidate use of it.
+            "uses_contract component:edge-proxy-rs -> resource:contract:billing-v1-proto - candidate static",
             // An Allow rule between two ASGs; Deny rules and address prefixes add nothing.
             "candidate_calls component:edge-proxy-rs -> component:billing-ex - candidate static",
             // Application Insights dependencies.

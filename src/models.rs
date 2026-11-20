@@ -138,6 +138,10 @@ pub enum EdgeType {
     ConsumesFrom,
     /// A gateway, ingress or load balancer forwards traffic to a service.
     RoutesTo,
+    /// A component provides an API or event contract (OpenAPI, AsyncAPI, proto).
+    ProvidesContract,
+    /// A component relies on a contract another component provides.
+    UsesContract,
 }
 
 /// The family an edge type belongs to. One definition, used wherever the code
@@ -156,11 +160,13 @@ pub enum EdgeClass {
     Library,
     /// Packets were seen. Direction is not call direction.
     Traffic,
+    /// An API or event contract is provided or used.
+    Contract,
 }
 
 impl EdgeType {
     /// Every edge type, in wire order. Tests use it to keep docs and schema in step.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 13] = [
         Self::DeclaredDependsOn,
         Self::ObservedCalls,
         Self::NetworkTraffic,
@@ -172,6 +178,8 @@ impl EdgeType {
         Self::PublishesTo,
         Self::ConsumesFrom,
         Self::RoutesTo,
+        Self::ProvidesContract,
+        Self::UsesContract,
     ];
 
     /// The family of this edge type. Adding a type forces a decision here.
@@ -187,6 +195,7 @@ impl EdgeType {
             Self::RunsInCluster | Self::HasWorkload => EdgeClass::Placement,
             Self::UsesLibrary => EdgeClass::Library,
             Self::NetworkTraffic => EdgeClass::Traffic,
+            Self::ProvidesContract | Self::UsesContract => EdgeClass::Contract,
         }
     }
 
@@ -199,11 +208,13 @@ impl EdgeType {
 
     /// Whether the edge is stored pointing away from the thing that depends on
     /// the other end. A publisher is not affected by the topic it writes to, so
-    /// `publishes_to` is flipped when the graph is walked. `routes_to` is not
+    /// `publishes_to` is flipped when the graph is walked. So is
+    /// `provides_contract`: a change in the provider reaches the contract and
+    /// then the components that use it. `routes_to` is not
     /// flipped: a backend change must reach the gateway in front of it.
     #[must_use]
     pub const fn points_to_dependent(self) -> bool {
-        matches!(self, Self::PublishesTo)
+        matches!(self, Self::PublishesTo | Self::ProvidesContract)
     }
 
     /// Whether the edge links two services or resources in a way a person would
@@ -231,6 +242,8 @@ impl EdgeType {
             Self::PublishesTo => "publishes_to",
             Self::ConsumesFrom => "consumes_from",
             Self::RoutesTo => "routes_to",
+            Self::ProvidesContract => "provides_contract",
+            Self::UsesContract => "uses_contract",
         }
     }
 }

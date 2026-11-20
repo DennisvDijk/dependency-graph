@@ -27,6 +27,7 @@ A missing edge is a gap, not proof of independence. A wrong edge looks like know
 | `candidate_calls` | static evidence | yes, as a candidate |
 | `routes_to` | gateway to backend | yes; a backend change reaches the gateway in front |
 | `publishes_to`, `consumes_from` | messaging | yes; a change to a publisher reaches its topic, and so the topic's consumers |
+| `provides_contract`, `uses_contract` | an OpenAPI, AsyncAPI or proto file | yes; a change to a contract reaches everyone who uses it. A proto import is declared; a use inferred from a call to the provider is a candidate |
 | `network_traffic` | packets between addresses | no, direction is not call direction |
 | `deployed_as`, `runs_in_cluster`, `has_workload` | placement | no |
 | `uses_library` | library use (libraries are off by default) | yes, when libraries are enabled |
