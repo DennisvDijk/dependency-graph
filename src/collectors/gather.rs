@@ -370,7 +370,7 @@ fn records_from_file(project_path: &str, path: &str, text: &str) -> Vec<RawRecor
         return records;
     }
     if is_compose_file(path) {
-        return compose_records(text);
+        return compose_records(project_path, text);
     }
     if text.contains("AWS::") && text.contains("Resources:") {
         return super::aws::cloudformation_records(project_path, text);
@@ -491,6 +491,18 @@ fn env_service_hosts(value: &serde_json::Value) -> Vec<String> {
 /// as a plain word in `LOG_LEVEL`, is not read.
 fn env_host(key: &str, text: &str) -> Option<String> {
     let text = text.trim();
+    // A credential-looking setting is never read, whatever its value looks like.
+    let upper = key.to_ascii_uppercase();
+    if ["PASSWORD", "PASSWD", "SECRET", "TOKEN", "KEY", "CREDENTIAL"]
+        .iter()
+        .any(|word| upper.contains(word))
+    {
+        return None;
+    }
+    // An unresolved `${VAR}` is not a host; `.env` files are never read.
+    if text.contains("${") || text.contains('$') {
+        return None;
+    }
     let rest = text.split_once("://").map_or(text, |(_, rest)| rest);
     let rest = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
     let authority = rest.split(['/', '?']).next().unwrap_or(rest);
@@ -503,6 +515,10 @@ fn env_host(key: &str, text: &str) -> Option<String> {
         }
         None => return None,
     };
+    // An address such as `0.0.0.0` or `10.2.3.4` names no service.
+    if host.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return None;
+    }
     let name = host.split('.').next().unwrap_or(host);
     crate::ids::is_kebab_case(name).then(|| name.to_owned())
 }
@@ -889,7 +905,7 @@ fn is_compose_file(path: &str) -> bool {
 
 /// Candidate calls from docker-compose `depends_on`. Only pairs where both
 /// services are known components end up in the graph.
-fn compose_records(text: &str) -> Vec<RawRecord> {
+fn compose_records(project_path: &str, text: &str) -> Vec<RawRecord> {
     let Ok(value) = yaml_serde::from_str::<Value>(text) else {
         return Vec::new();
     };
@@ -898,6 +914,15 @@ fn compose_records(text: &str) -> Vec<RawRecord> {
     };
     let mut records = Vec::new();
     for (service, body) in services {
+        // A service built from source is part of this system; one that only runs
+        // an image (a database, a proxy) is not a component of its own.
+        if body.get("build").is_some() && crate::ids::is_kebab_case(service) {
+            records.push(record(
+                "k8s_workloads",
+                "component",
+                json!({"name": service, "depends_on": [], "project_path": project_path}),
+            ));
+        }
         let deps: Vec<String> = match body.get("depends_on") {
             Some(Value::Array(items)) => items
                 .iter()
@@ -907,6 +932,15 @@ fn compose_records(text: &str) -> Vec<RawRecord> {
             Some(Value::Object(map)) => map.keys().cloned().collect(),
             _ => Vec::new(),
         };
+        for destination in compose_env_hosts(body) {
+            if destination != *service && crate::ids::is_kebab_case(service) {
+                records.push(record(
+                    "k8s_workloads",
+                    "candidate_call",
+                    json!({"source": service, "destination": destination, "loose": true}),
+                ));
+            }
+        }
         for dep in deps {
             if crate::ids::is_kebab_case(service) && crate::ids::is_kebab_case(&dep) {
                 records.push(record(
@@ -918,6 +952,36 @@ fn compose_records(text: &str) -> Vec<RawRecord> {
         }
     }
     records
+}
+
+/// Services named by a compose service's `environment` values, as a list
+/// (`KEY=value`) or a map. Only values written in the file are read: a bare
+/// `- KEY` or a `${VAR}` takes its value from the shell or an `.env` file,
+/// which are never read.
+fn compose_env_hosts(body: &Value) -> Vec<String> {
+    let pairs: Vec<(String, String)> = match body.get("environment") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .filter_map(|item| item.split_once('='))
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect(),
+        Some(Value::Object(map)) => map
+            .iter()
+            .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_owned())))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut found: Vec<String> = Vec::new();
+    for (key, value) in pairs {
+        if let Some(name) = env_host(&key, &value)
+            && name != "localhost"
+            && !found.contains(&name)
+        {
+            found.push(name);
+        }
+    }
+    found
 }
 
 /// Languages and container use of a repository, from its file names.
@@ -1120,6 +1184,53 @@ mod manifest_selection_tests {
     }
 
     #[test]
+    fn compose_environment_values_become_candidates_and_nothing_else() {
+        let text = r#"
+services:
+  checkout:
+    build: .
+    environment:
+      - CART_ADDR=cart:7070
+      - EMAIL_ADDR=http://email:6060
+      - DB_PASSWORD=db:5432
+      - API_TOKEN=http://vault:8200
+      - FROM_ENV_FILE
+      - SHELL_ADDR=${PAYMENT_ADDR}
+      - LOG_LEVEL=debug
+  web:
+    build: .
+    environment:
+      BACKEND_HOST: backend
+      SECRET_ADDR: hidden:1
+"#;
+        let mut found: Vec<String> = compose_records("group/app", text)
+            .iter()
+            .filter(|r| r.kind == "candidate_call")
+            .map(|r| format!("{}->{}", r.payload["source"], r.payload["destination"]))
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                "\"checkout\"->\"cart\"",
+                "\"checkout\"->\"email\"",
+                "\"web\"->\"backend\""
+            ]
+        );
+    }
+
+    #[test]
+    fn only_services_built_from_source_become_components() {
+        let text = "services:\n  api:\n    build: .\n  postgres:\n    image: postgres:16\n";
+        let names: Vec<String> = compose_records("group/app", text)
+            .iter()
+            .filter(|r| r.kind == "component")
+            .map(|r| r.payload["name"].as_str().unwrap_or("").to_owned())
+            .collect();
+        assert_eq!(names, ["api"]);
+    }
+
+    #[test]
     fn env_hosts_read_urls_and_host_named_settings_only() {
         assert_eq!(
             env_host("MONGO_DB_URL", "mongodb://mongodb:27017/test").as_deref(),
@@ -1134,6 +1245,8 @@ mod manifest_selection_tests {
             Some("mysqldb")
         );
         // Traps: plain words, ports, paths and localhost are not services.
+        assert_eq!(env_host("BIND_ADDR", "0.0.0.0"), None);
+        assert_eq!(env_host("DB_ADDR", "10.2.3.4:5432"), None);
         assert_eq!(env_host("LOG_LEVEL", "debug"), None);
         assert_eq!(env_host("MODE", "mysqldb"), None);
         assert_eq!(env_host("DB_PORT", "3306"), None);

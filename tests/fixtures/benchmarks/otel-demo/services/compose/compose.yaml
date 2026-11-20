@@ -1,0 +1,98 @@
+# Trimmed from upstream compose.yaml: only the address settings, with the
+# values the upstream .env gives them written in, and `build: .` on each
+# service (they are all built from source upstream). See ../../README.md.
+services:
+  ad:
+    build: .
+    environment:
+      - FLAGD_HOST=flagd
+  cart:
+    build: .
+    environment:
+      - FLAGD_HOST=flagd
+      - VALKEY_ADDR=valkey-cart:6379
+  checkout:
+    build: .
+    environment:
+      - FLAGD_HOST=flagd
+      - CART_ADDR=cart:7070
+      - CURRENCY_ADDR=currency:7001
+      - EMAIL_ADDR=http://email:6060
+      - PAYMENT_ADDR=payment:50051
+      - PRODUCT_CATALOG_ADDR=product-catalog:3550
+      - SHIPPING_ADDR=http://shipping:50050
+  currency:
+    build: .
+  email:
+    build: .
+    environment:
+      - FLAGD_HOST=flagd
+  frontend:
+    build: .
+    environment:
+      - FRONTEND_ADDR=frontend:8080
+      - AD_ADDR=ad:9555
+      - CART_ADDR=cart:7070
+      - CHECKOUT_ADDR=checkout:5050
+      - CURRENCY_ADDR=currency:7001
+      - PRODUCT_CATALOG_ADDR=product-catalog:3550
+      - RECOMMENDATION_ADDR=recommendation:9001
+      - SHIPPING_ADDR=http://shipping:50050
+      - OTEL_COLLECTOR_HOST=otel-collector
+      - FLAGD_HOST=flagd
+  frontend-proxy:
+    build: .
+    environment:
+      - FRONTEND_HOST=frontend
+      - LOCUST_WEB_HOST=load-generator
+      - GRAFANA_HOST=grafana
+      - JAEGER_HOST=jaeger
+      - OPAMP_SERVER_HOST=opamp-server
+      - OTEL_COLLECTOR_HOST=otel-collector
+      - IMAGE_PROVIDER_HOST=image-provider
+      - ENVOY_ADDR=0.0.0.0
+      - FIREPIT_HOST=firepit
+      - FLAGD_HOST=flagd
+      - FLAGD_UI_HOST=flagd-ui
+      - TELEMETRY_DOCS_HOST=telemetry-docs
+      - CHATBOT_HOST=chatbot
+  image-provider:
+    build: .
+    environment:
+      - OTEL_COLLECTOR_HOST=otel-collector
+  load-generator:
+    build: .
+    environment:
+      - LOCUST_HOST=http://frontend-proxy:8080
+      - LOCUST_WEB_HOST=0.0.0.0
+      - FLAGD_HOST=flagd
+  payment:
+    build: .
+    environment:
+      - FLAGD_HOST=flagd
+  product-catalog:
+    build: .
+    environment:
+      - FLAGD_HOST=flagd
+  quote:
+    build: .
+  recommendation:
+    build: .
+    environment:
+      - PRODUCT_CATALOG_ADDR=product-catalog:3550
+      - FLAGD_HOST=flagd
+  shipping:
+    build: .
+    environment:
+      - QUOTE_ADDR=http://quote:8090
+      - FLAGD_HOST=flagd
+  flagd:
+    build: .
+  flagd-ui:
+    build: .
+    environment:
+      - PHX_HOST=localhost
+  telemetry-docs:
+    build: .
+    environment:
+      - OTEL_COLLECTOR_HOST=otel-collector
