@@ -115,13 +115,16 @@ fn every_node_is_expected() {
         "deployment:keycloak@prod",
         "deployment:orders-py@acc",
         "deployment:orders-py@prod",
+        "resource:contract:billing-events-asyncapi",
         "resource:contract:billing-v1-proto",
+        "resource:contract:notification-events-asyncapi",
         "resource:contract:orders-api-openapi",
         "resource:contract:orders-v1-proto",
         "resource:database:orders-db",
         "resource:gateway:public-edge",
         "resource:queue:notify-jobs",
         "resource:topic:order-events",
+        "resource:topic:invoice-paid",
         "resource:database:redis-cache",
         "resource:external-api:api-openai-com",
         "resource:external-api:api-stripe-com",
@@ -204,6 +207,14 @@ fn every_edge_is_expected() {
         "uses_contract component:edge-proxy-rs -> resource:contract:orders-api-openapi - candidate unknown static",
         "uses_contract component:edge-proxy-rs -> resource:contract:orders-v1-proto - candidate unknown static",
         "uses_contract component:orders-py -> resource:contract:billing-v1-proto - candidate unknown static",
+        // Events. An AsyncAPI file says which channels its service sends and
+        // receives; the channel is a topic, so a change to billing-ex's event
+        // reaches notifications through it. v2 `subscribe` and v3 `send` mean
+        // the service publishes; v2 `publish` and v3 `receive` mean it consumes.
+        "provides_contract component:billing-ex -> resource:contract:billing-events-asyncapi - declared_only unknown static",
+        "provides_contract component:notifications -> resource:contract:notification-events-asyncapi - declared_only unknown static",
+        "publishes_to component:billing-ex -> resource:topic:invoice-paid - candidate unknown static",
+        "consumes_from component:notifications -> resource:topic:invoice-paid - candidate unknown static",
         // GitLab deployments; `staging` maps to acc.
         "deployed_as component:orders-py -> deployment:orders-py@prod prod n/a unknown static",
         "deployed_as component:orders-py -> deployment:orders-py@acc acc n/a unknown static",

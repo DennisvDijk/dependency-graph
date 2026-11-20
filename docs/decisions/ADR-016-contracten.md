@@ -1,6 +1,6 @@
 # ADR-016: API- en eventcontracten als eigen node
 
-Status: geaccepteerd (slice 1 en 2 van 3)
+Status: geaccepteerd (slice 1, 2 en 3)
 
 ## Besluit
 
@@ -20,6 +20,6 @@ De parser is regel- en sleutelgebaseerd en leest per project maximaal 50 bestand
 
 `depgraph contract-diff` vergelijkt alleen operaties: een verwijderde operatie (of verwijderd bestand) is breaking, een toegevoegde niet. Velden, types en verplichte parameters worden niet gezien. De MR-check gebruikt dit als de basisversie beschikbaar is; dan vraagt alleen een breaking wijziging met geobserveerde prod-consumers om goedkeuring. Zonder basisversie geldt het oude gedrag (elk contractbestand). Bij een afgekapte operatielijst (500) wordt niets beweerd.
 
-## Volgende slice
+## Slice 3: events
 
-3. Events: AsyncAPI send/receive gekoppeld aan queue- en topic-nodes, met de te informeren eigenaren.
+Een AsyncAPI-bestand zegt wat zijn eigen service met elk kanaal doet. Versie 2: `publish` betekent dat anderen naar de service publiceren, dus de service consumeert; `subscribe` betekent dat zij verstuurt. Versie 3: `action: send` of `receive`. Elk kanaal wordt een `topic`-node met `publishes_to` of `consumes_from` (status `candidate`: een spec kan verouderd zijn), dezelfde edges als de broncode-lezer. Zo bereikt een wijziging in een event de consumers, en `impact` toont de eigenaren om te informeren. AsyncAPI krijgt geen afgeleide `uses_contract`. Een kanaal dat in de infra als queue staat krijgt een topic-node naast de queue-node; de naam wordt niet geraden.

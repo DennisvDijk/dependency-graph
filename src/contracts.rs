@@ -183,6 +183,59 @@ fn asyncapi_operations(doc: &Value) -> Vec<String> {
     out
 }
 
+/// What an AsyncAPI document says its own service does with each channel:
+/// `(publishes, channel)`.
+///
+/// Version 2 describes the service's API: `publish` is what others may
+/// publish to it, so the service consumes; `subscribe` means it sends.
+/// Version 3 says so directly with `action: send|receive`.
+#[must_use]
+pub fn asyncapi_ties(text: &str) -> Vec<(bool, String)> {
+    let Ok(doc) = yaml_serde::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(bool, String)> = Vec::new();
+    let Some(channels) = doc.get("channels").and_then(Value::as_object) else {
+        return out;
+    };
+    let name_of = |key: &str, channel: &Value| {
+        channel
+            .get("address")
+            .and_then(Value::as_str)
+            .unwrap_or(key)
+            .to_owned()
+    };
+    if let Some(operations) = doc.get("operations").and_then(Value::as_object) {
+        for operation in operations.values() {
+            let publishes = match operation.get("action").and_then(Value::as_str) {
+                Some("send") => true,
+                Some("receive") => false,
+                _ => continue,
+            };
+            let key = operation
+                .get("channel")
+                .and_then(|channel| channel.get("$ref"))
+                .and_then(Value::as_str)
+                .and_then(|reference| reference.rsplit('/').next());
+            if let Some((key, channel)) = key.and_then(|key| Some((key, channels.get(key)?))) {
+                out.push((publishes, name_of(key, channel)));
+            }
+        }
+    }
+    for (key, channel) in channels {
+        if channel.get("publish").is_some() {
+            out.push((false, name_of(key, channel)));
+        }
+        if channel.get("subscribe").is_some() {
+            out.push((true, name_of(key, channel)));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out.truncate(MAX_OPERATIONS);
+    out
+}
+
 fn parse_proto(path: &str, text: &str, project_path: &str) -> Contract {
     let mut package = String::new();
     let mut service = String::new();
@@ -271,6 +324,27 @@ pub fn records(project_path: &str, path: &str, text: &str) -> Vec<RawRecord> {
             "operations": contract.operations,
         }),
     }];
+    // Who sends or receives each channel: a messaging tie to a topic, the same
+    // record the source reader writes. Only AsyncAPI says it.
+    if contract.format == Format::Asyncapi {
+        let repo = project_path.rsplit('/').next().unwrap_or(project_path);
+        for (publishes, channel) in asyncapi_ties(text) {
+            let name = slug(&channel);
+            if name.is_empty() {
+                continue;
+            }
+            records.push(RawRecord {
+                collector: "contracts".to_owned(),
+                kind: "messaging".to_owned(),
+                payload: json!({
+                    "source": repo,
+                    "direction": if publishes { "publish" } else { "consume" },
+                    "kind": "topic",
+                    "name": name,
+                }),
+            });
+        }
+    }
     for import in &contract.imports {
         // Well-known imports (google/protobuf/...) are not ours.
         if import.starts_with("google/") {
@@ -473,5 +547,24 @@ mod tests {
         let contract = parse("openapi.json", text, "org/inventory").expect("contract");
         assert_eq!(contract.name, "inventory-openapi");
         assert_eq!(contract.version, "3");
+    }
+
+    #[test]
+    fn asyncapi_directions_follow_the_version() {
+        let v2 = "asyncapi: 2.6.0\ninfo: {title: T, version: '1'}\nchannels:\n  orders/created:\n    publish: {}\n  invoice.paid:\n    subscribe: {}\n";
+        assert_eq!(
+            asyncapi_ties(v2),
+            vec![
+                (false, "orders/created".into()),
+                (true, "invoice.paid".into())
+            ]
+        );
+        let v3 = "asyncapi: 3.0.0\ninfo: {title: T, version: '1'}\nchannels:\n  paid:\n    address: invoice.paid\noperations:\n  onPaid:\n    action: receive\n    channel: {$ref: '#/channels/paid'}\n";
+        assert_eq!(asyncapi_ties(v3), vec![(false, "invoice.paid".into())]);
+        let recs = records("g/billing-ex", "asyncapi.yaml", v2);
+        let msgs: Vec<_> = recs.iter().filter(|r| r.kind == "messaging").collect();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1].payload["name"], "invoice-paid");
+        assert_eq!(msgs[1].payload["direction"], "publish");
     }
 }
