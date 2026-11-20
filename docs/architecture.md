@@ -32,7 +32,7 @@ Everything is read-only. Nothing is written to a repository, cluster or account.
 
 | Source | Examples |
 |---|---|
-| Declared | `catalog-info.yaml`, Kubernetes manifests, Helm/kustomize output, `docker-compose`, GitLab CI `environment:` |
+| Declared | `catalog-info.yaml`, Kubernetes manifests, Helm/kustomize output, `docker-compose` (services built from source become components; hosts in `environment` become candidate calls; `.env` files and secret-named keys are never read), GitLab CI `environment:` |
 | Infrastructure code | Terraform (real HCL parser), CloudFormation: queues, topics, subscriptions, security groups, Lambda triggers |
 | Source code | Python, Elixir, Rust, JS/TS, Go, Java, Kotlin, C#: URLs, database hosts, literal queue and topic names |
 | Gateways | Ingress, HTTPRoute; AWS ALB/NLB and API Gateway; Azure Application Gateway and API Management |

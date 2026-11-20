@@ -20,7 +20,7 @@ schedules described at the top of `.gitlab-ci.yml`.
 | `build` fails on validation | A collector produced a record the schema rejects | Download the `data` artifact, run `depgraph validate`, fix the collector or open an issue with the failing record (secrets are never in it) |
 | `freshness` fails, nothing else failed | The schedule was paused or deleted | CI/CD, Schedules: turn it on and run it |
 | Many rows in `data/unresolved.json` | Names do not match, or a new naming scheme | Run `depgraph suggest`, review, update `aliases.yaml` |
-| Graph looks wrong after a deploy | A new tool version changed output | Compare with `depgraph diff`, roll back with the previous release (`docs/releases.md`) |
+| Graph looks wrong after a deploy | A new tool version changed output | Compare with `depgraph diff --format mermaid`, roll back with the previous release (`docs/releases.md`) |
 
 ## Recover
 

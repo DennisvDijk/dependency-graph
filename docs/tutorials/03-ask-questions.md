@@ -55,7 +55,7 @@ depgraph diff --from 2026-01-08T00-00-00Z --to 2026-01-15T00-00-00Z
 depgraph at --date 2026-01-10T00:00:00Z                  # graph as it was then
 ```
 
-`diff` answers "what changed since last week?", useful right after an incident. It lists each added and removed node and edge by name (`from -> to  type (status) [env]`), and edges that are still there but whose status, criticality or active flag changed (for example `candidate -> both` after a run saw real calls). `latest` and `previous` stand for the newest and second-newest run. `--format json` gives the same lists for a script.
+`diff` answers "what changed since last week?", useful right after an incident. It lists each added and removed node and edge by name (`from -> to  type (status) [env]`), and edges that are still there but whose status, criticality or active flag changed (for example `candidate -> both` after a run saw real calls). `latest` and `previous` stand for the newest and second-newest run. `--format json` gives the same lists for a script. `--format mermaid` draws the change as a diagram: added edges with `+`, removed ones dashed, changed ones thick. Agents can ask the same through the MCP `diff` tool.
 
 ## Deployments next to incidents
 
