@@ -379,3 +379,69 @@ fn languages_and_containers_come_from_file_names() {
         .success()
         .stdout(predicate::str::contains("  languages: elixir"));
 }
+
+#[test]
+fn impact_explains_each_affected_node_and_marks_inferred_ones() {
+    let built = build();
+    let out = depgraph(&built.root)
+        .args([
+            "impact",
+            "keycloak",
+            "--snapshot",
+            "data/snapshot.json",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success();
+    let json: Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let visits = json["visits"].as_array().unwrap();
+    assert!(!visits.is_empty());
+    for visit in visits {
+        let hops = visit["via"]["hops"]
+            .as_array()
+            .expect("every node has a path");
+        // A confirmed route can be longer than the shortest one.
+        assert!(hops.len() >= visit["depth"].as_u64().unwrap() as usize);
+        assert_eq!(hops[0]["dependency"], "component:keycloak");
+        assert_eq!(hops.last().unwrap()["dependent"], visit["id"]);
+        let inferred = visit["via"]["inferred"].as_bool().unwrap();
+        assert_eq!(
+            visit["basis"],
+            if inferred { "inferred" } else { "confirmed" }
+        );
+    }
+    // orders-py reaches keycloak through a declared and observed tie.
+    let orders = visits
+        .iter()
+        .find(|v| v["id"] == "component:orders-py")
+        .unwrap();
+    assert_eq!(orders["basis"], "confirmed");
+    // billing-ex calls keycloak by a candidate tie at depth 1, but it also
+    // reaches it through orders-py's proto it imports: a longer, declared
+    // route. The path shown is the confirmed one.
+    let billing = visits
+        .iter()
+        .find(|v| v["id"] == "component:billing-ex")
+        .unwrap();
+    assert_eq!(billing["depth"], 1);
+    assert_eq!(billing["basis"], "confirmed");
+    assert_eq!(billing["via"]["hops"].as_array().unwrap().len(), 3);
+    // edge-proxy-rs is only ever reached through candidate ties.
+    let edge = visits
+        .iter()
+        .find(|v| v["id"] == "component:edge-proxy-rs")
+        .unwrap();
+    assert_eq!(edge["basis"], "inferred", "{edge}");
+    let table = depgraph(&built.root)
+        .args(["impact", "keycloak", "--snapshot", "data/snapshot.json"])
+        .assert()
+        .success();
+    let table = String::from_utf8(table.get_output().stdout.clone()).unwrap();
+    assert!(
+        table.contains("basis\tvia")
+            && table
+                .contains("component:keycloak <- component:orders-py (declared_depends_on, both)"),
+        "{table}"
+    );
+}
