@@ -37,7 +37,7 @@ Pick the command by the question. Add `--env prod` when the user cares about pro
 | Are there circular dependencies? | `depgraph cycles` |
 | What differs between declared and observed? | `depgraph drift` |
 | Which ties are hard (would fail without it)? | `depgraph critical` |
-| What changed since last run? | `depgraph diff --from <run> --to <run>` |
+| What changed since last run? | `depgraph diff` (two newest runs; or `--from <run> --to <run>`) |
 | A picture | add `--format mermaid` |
 | Data for a script | add `--format json` |
 

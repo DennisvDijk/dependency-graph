@@ -72,7 +72,7 @@ pub enum Command {
     Critical(ReadArgs),
     /// List nodes with no edges.
     Orphans(ReadArgs),
-    /// Diff two snapshots.
+    /// What changed between two runs. With no arguments: the two newest runs.
     Diff(ReadArgs),
     /// Show the graph at a point in time.
     At(ReadArgs),

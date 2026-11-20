@@ -386,22 +386,54 @@ fn render_critical(
 
 fn render_diff(format: OutputFormat, diff: &algo::SnapshotDiff) -> String {
     match format {
-        OutputFormat::Json => serde_json::to_string_pretty(&json!({
-            "nodes_added": diff.nodes_added,
-            "nodes_removed": diff.nodes_removed,
-            "edges_added": diff.edges_added,
-            "edges_removed": diff.edges_removed,
-        }))
-        .unwrap_or_else(|_| "{}".into()),
+        OutputFormat::Json => serde_json::to_string_pretty(diff).unwrap_or_else(|_| "{}".into()),
         OutputFormat::Mermaid => "flowchart LR".to_owned(),
-        OutputFormat::Table => format!(
-            "nodes added: {}\nnodes removed: {}\nedges added: {}\nedges removed: {}",
-            diff.nodes_added.len(),
-            diff.nodes_removed.len(),
-            diff.edges_added.len(),
-            diff.edges_removed.len()
-        ),
+        OutputFormat::Table => diff_table(diff),
     }
+}
+
+fn diff_table(diff: &algo::SnapshotDiff) -> String {
+    let edge = |e: &algo::EdgeView| {
+        let env = e
+            .env
+            .as_deref()
+            .map_or(String::new(), |env| format!(" [{env}]"));
+        format!(
+            "{} -> {}  {} ({}){env}",
+            e.from, e.to, e.edge_type, e.status
+        )
+    };
+    let mut out = format!(
+        "nodes: +{} -{}   edges: +{} -{} ~{}",
+        diff.nodes_added.len(),
+        diff.nodes_removed.len(),
+        diff.edges_added.len(),
+        diff.edges_removed.len(),
+        diff.edges_changed.len()
+    );
+    let mut section = |title: &str, lines: Vec<String>| {
+        if !lines.is_empty() {
+            out.push_str(&format!("\n\n{title}"));
+            for line in lines {
+                out.push_str(&format!("\n  {line}"));
+            }
+        }
+    };
+    section("nodes added", diff.nodes_added.clone());
+    section("nodes removed", diff.nodes_removed.clone());
+    section("edges added", diff.edges_added.iter().map(edge).collect());
+    section(
+        "edges removed",
+        diff.edges_removed.iter().map(edge).collect(),
+    );
+    section(
+        "edges changed",
+        diff.edges_changed
+            .iter()
+            .map(|c| format!("{}  [{}]", edge(&c.edge), c.changes.join(", ")))
+            .collect(),
+    );
+    out
 }
 
 fn find_node<'a>(graph: &'a GraphSnapshot, target: Option<&str>) -> Result<&'a Node, Error> {
@@ -670,28 +702,46 @@ fn push_section(lines: &mut Vec<String>, title: &str, edges: &[&Edge]) {
 ///
 /// Returns [`Error::NotImplemented`] in F0-1.
 pub fn diff(request: &ReadRequest) -> Result<(), Error> {
-    let (left, right) = if let (Some(from), Some(to)) = (&request.from_run, &request.to_run) {
-        let runs = request
-            .runs
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("data/runs"));
-        (
-            crate::store::load_run(&runs, from)?,
-            crate::store::load_run(&runs, to)?,
-        )
+    let runs = request
+        .runs
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("data/runs"));
+    let (left, right) = if let Some(from) = &request.from_run {
+        let left = crate::store::load_run(&runs, &resolve_run(&runs, from)?)?;
+        let right = match &request.to_run {
+            Some(to) => crate::store::load_run(&runs, &resolve_run(&runs, to)?)?,
+            None => load_graph(request)?,
+        };
+        (left, right)
+    } else if let Some(against) = request.against.as_deref() {
+        (load_graph(request)?, read_snapshot(Path::new(against))?)
     } else {
-        let left = load_graph(request)?;
-        let against = request.against.as_deref().ok_or_else(|| {
-            Error::Validation(
-                "diff needs a second snapshot or --from and --to. next: depgraph diff --from <run> --to <run>"
+        let keys = crate::store::list_runs(&runs)?;
+        let [.., previous, latest] = keys.as_slice() else {
+            return Err(Error::Validation(
+                "diff needs two archived runs, or --from <run>, or a second snapshot. next: depgraph runs"
                     .into(),
-            )
-        })?;
-        (left, read_snapshot(Path::new(against))?)
+            ));
+        };
+        (
+            crate::store::load_run(&runs, previous)?,
+            crate::store::load_run(&runs, latest)?,
+        )
     };
     let diff = algo::diff(&left, &right);
     println!("{}", render_diff(request.format, &diff));
     Ok(())
+}
+
+/// A run key, or `latest` and `previous`.
+fn resolve_run(runs: &Path, key: &str) -> Result<String, Error> {
+    let keys = crate::store::list_runs(runs)?;
+    let found = match key {
+        "latest" => keys.last().cloned(),
+        "previous" => keys.len().checked_sub(2).and_then(|i| keys.get(i).cloned()),
+        other => Some(other.to_owned()),
+    };
+    found.ok_or_else(|| Error::Store(format!("no run `{key}`. next: depgraph runs")))
 }
 
 /// The graph as of a point in time.
