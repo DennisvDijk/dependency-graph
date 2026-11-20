@@ -1,13 +1,15 @@
 # Releases and how to verify them
 
-Releases are built and signed by the GitLab pipeline (`.gitlab/release.yml`), not by hand. Pushing a tag such as `v0.2.0` starts it:
+Releases are built and signed by CI, not by hand: the GitLab pipeline (`.gitlab/release.yml`) and the GitHub workflow (`.github/workflows/release.yml`). Both run when a tag such as `v0.2.0` is pushed:
 
 ```bash
 git tag -s v0.2.0 -m "v0.2.0"     # -s signs the tag with your own key
 git push origin v0.2.0
 ```
 
-The pipeline builds the Linux binary, writes `SHA256SUMS` and a CycloneDX dependency list (`sbom.cdx.json`), signs each file and the container image with cosign, and creates the release with `glab release create`.
+**GitLab** builds the Linux binary, writes `SHA256SUMS` and a CycloneDX dependency list (`sbom.cdx.json`), signs each file and the container image with cosign, and creates the release with `glab release create`.
+
+**GitHub** builds the macOS (both architectures) and Linux binaries, then in one job writes `SHA256SUMS` and `sbom.cdx.json`, signs every file with keyless cosign, checks its own signatures, adds a build provenance attestation for each archive, and attaches everything to the release. It does not publish a container image.
 
 ## What you get
 
@@ -19,9 +21,27 @@ The pipeline builds the Linux binary, writes `SHA256SUMS` and a CycloneDX depend
 | `<file>.bundle` | Signature and certificate for each file |
 | `<registry>/<project>:<tag>` | Container image, signed by digest |
 
-macOS binaries are not part of the pipeline: they need a macOS runner. Add a job like `build-linux` with that runner's tag when you have one.
+The GitLab pipeline has no macOS binaries: they need a macOS runner. Add a job like `build-linux` with that runner's tag when you have one. The GitHub workflow builds them on GitHub's macOS runners.
 
 ## Verify before you run
+
+### A release from GitHub
+
+Replace `OWNER/REPO` with the repository. Use any release file in place of the archive.
+
+```bash
+cosign verify-blob \
+  --bundle depgraph-aarch64-apple-darwin.tar.gz.bundle \
+  --certificate-identity-regexp '^https://github.com/OWNER/REPO/\.github/workflows/release\.yml@refs/tags/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  depgraph-aarch64-apple-darwin.tar.gz
+
+gh attestation verify depgraph-aarch64-apple-darwin.tar.gz --repo OWNER/REPO   # build provenance
+
+sha256sum -c SHA256SUMS      # on macOS: shasum -a 256 -c SHA256SUMS
+```
+
+### A release from GitLab
 
 Replace `GITLAB` and `GROUP/PROJECT` with your GitLab address and project path.
 
@@ -51,8 +71,12 @@ A GitLab behind a firewall usually cannot. Two ways out:
 1. Run your own Sigstore (Fulcio and Rekor) and point cosign at it.
 2. Create a cosign key pair, store the private key and password as masked, protected CI/CD variables `COSIGN_PRIVATE_KEY` and `COSIGN_PASSWORD`, and publish the public key. The pipeline then signs with the key. Users verify with `--key cosign.pub` instead of the identity flags.
 
+## Pinned tools
+
+In the GitHub workflow every action that touches the release is pinned to a commit (the tag is in a comment). The GitLab cosign image is the CI/CD variable `COSIGN_IMAGE`. Its default is a moving tag; for production, mirror the image and set the variable to `registry/path@sha256:<digest>`.
+
 ## Not covered yet
 
-- The pipeline has not run on a real GitLab. Expect to fix a runner or network detail on the first tag; use a `v0.0.1-test` tag in a scratch project first.
+- Neither pipeline has run on a real tag yet. Expect a runner or network detail on the first run; try a `v0.0.1-test` tag in a scratch project first (it creates a real release, which you can delete).
 - Base images in the Dockerfile are pinned by tag, not by digest.
-- The older `.github/workflows/release.yml` still builds unsigned archives on GitHub. Delete it once GitLab is the only release path.
+- The GitLab cosign image default is a moving tag, and the CI workflow (not the release one) still uses version tags for its actions.
