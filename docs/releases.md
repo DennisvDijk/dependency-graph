@@ -11,6 +11,16 @@ git push origin v0.2.0
 
 **GitHub** builds the macOS (both architectures) and Linux binaries, then in one job writes `SHA256SUMS` and `sbom.cdx.json`, signs every file with keyless cosign, checks its own signatures, adds a build provenance attestation for each archive, and attaches everything to the release. It does not publish a container image.
 
+## Versioning
+
+depgraph follows [Semantic Versioning](https://semver.org/). While the version is `0.x`, a minor bump (`0.2.0`) may change the CLI, the MCP tools or the snapshot format; a patch bump (`0.1.1`) only fixes bugs. From `1.0.0` on:
+
+- **Major:** a removed or renamed command, flag or MCP tool, or a change to `schemas/graph.schema.json` that breaks an existing reader.
+- **Minor:** a new command, collector, output or optional field.
+- **Patch:** a fix that does not change the interface.
+
+The snapshot schema is versioned inside the file, so an older snapshot stays readable. Every user-visible change gets a line in [CHANGELOG.md](../CHANGELOG.md) under `Unreleased`; cutting a release means renaming that heading to the version and date, bumping `version` in `Cargo.toml`, and tagging as above.
+
 ## What you get
 
 | File | Purpose |
