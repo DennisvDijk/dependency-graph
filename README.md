@@ -168,7 +168,7 @@ depgraph is ready for a **supervised pilot**, not yet a trusted source of truth.
 | [Connect an AI assistant](docs/tutorials/04-ai-agent.md) · [Agents](docs/agents.md) | [Terraform, firewalls and containers](docs/tutorials/08-terraform-python-open-source.md) |
 | [Check a merge request](docs/tutorials/05-mr-check.md) | [Architecture](docs/architecture.md) · [How the graph is built](docs/graph-construction.md) · [Naming rules](docs/naming.md) · [Decisions](docs/decisions/) |
 | [When something doesn't resolve](docs/tutorials/07-troubleshooting.md) | [Benchmarks](docs/benchmarks.md) |
-| [Runbook](docs/runbook.md) · [All tutorials](docs/tutorials/README.md) | [Releases and signatures](docs/releases.md) · [Docker](docs/docker.md) · [MCP authentication](docs/mcp.md) |
+| [Runbook](docs/runbook.md) · [All tutorials](docs/tutorials/README.md) | [Releases and signatures](docs/releases.md) · [Changelog](CHANGELOG.md) · [Docker](docs/docker.md) · [MCP authentication](docs/mcp.md) |
 
 ## Development
 
